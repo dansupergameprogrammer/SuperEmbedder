@@ -1,0 +1,68 @@
+"""Guard-vitality tests for the zero-qrels guard (Coverage Model dimension 11, design
+Section 11 item 11): each guard is proven able to fire on the harness's own real code path,
+and the guard's own removal must turn a red run green. Run with:
+
+    py -3.13 -m pytest eval/k1/tests/test_guards.py -v
+"""
+from __future__ import annotations
+
+import pytest
+
+from eval.k1.guards import K1GuardError, validate_qrels_join
+
+
+def _healthy_inputs():
+    test_query_ids = ["q1", "q2", "q3"]
+    qrels_by_query = {
+        "q1": {"d1": 1.0, "d2": 1.0},
+        "q2": {"d3": 1.0},
+        "q3": {"d4": 2.0, "d5": 0.0},
+    }
+    corpus_ids = {"d1", "d2", "d3", "d4", "d5", "d6"}
+    return test_query_ids, qrels_by_query, corpus_ids
+
+
+def test_healthy_join_passes():
+    test_query_ids, qrels_by_query, corpus_ids = _healthy_inputs()
+    report = validate_qrels_join("unit", test_query_ids, qrels_by_query, corpus_ids)
+    assert report.test_query_count == 3
+    assert report.queries_with_zero_qrels == []
+    assert report.total_relevant_in_pool == 4  # d1,d2 (q1), d3 (q2), d4 (q3); d5 score 0 excluded
+
+
+def test_one_query_with_zero_qrels_rows_aborts():
+    """A single test query joining zero qrels rows must abort the whole run -- TE-12
+    Section 2.4's failure mode, transplanted to the public-set leg."""
+    test_query_ids, qrels_by_query, corpus_ids = _healthy_inputs()
+    qrels_by_query = dict(qrels_by_query)
+    del qrels_by_query["q2"]  # q2 now has zero qrels rows -- a real join drop
+    with pytest.raises(K1GuardError) as exc:
+        validate_qrels_join("unit", test_query_ids, qrels_by_query, corpus_ids)
+    assert exc.value.code == "K1_QRELS_EMPTY"
+    assert "q2" in str(exc.value)
+
+
+def test_set_level_join_emptied_by_a_real_join_error_aborts():
+    """This is the mutation that mirrors an actual query-id/document-id join error: every
+    qrels row still exists, but none of the judged document ids appear in the corpus pool
+    (e.g. the corpus loader used a different id column, or a revision mismatch shifted
+    every id). This is the failure must-reject 2 (design Section 6.4) exercises on real
+    candidate vectors; this test exercises it on the guard alone, at zero GPU cost."""
+    test_query_ids, qrels_by_query, _real_corpus_ids = _healthy_inputs()
+    emptied_corpus_ids = {"zzz1", "zzz2", "zzz3"}  # disjoint from every qrels docid
+    with pytest.raises(K1GuardError) as exc:
+        validate_qrels_join("unit", test_query_ids, qrels_by_query, emptied_corpus_ids)
+    assert exc.value.code == "K1_QRELS_EMPTY"
+    assert "matched nothing" in str(exc.value)
+
+
+def test_empty_test_query_list_aborts():
+    with pytest.raises(K1GuardError) as exc:
+        validate_qrels_join("unit", [], {}, {"d1"})
+    assert exc.value.code == "K1_QRELS_EMPTY"
+
+
+# The other half of Coverage Model dimension 11's requirement -- "the guard's own removal
+# must turn a red run green" -- is demonstrated in
+# eval/k1/tests/test_rank_score.py::test_guard_removed_turns_the_emptied_join_green,
+# because it exercises the scorer this guard sits in front of and lands with that module.
