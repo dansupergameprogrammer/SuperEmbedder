@@ -118,6 +118,29 @@ def test_achieved_resolving_power_shrinks_with_more_queries():
     assert rp_large < rp_small
 
 
+def test_unscoped_qrels_dilutes_the_mean_over_the_wrong_population():
+    """Regression for a bug caught at the bench during the U-K1 smoke run (build log): when
+    a caller runs on a POPULATION SUBSET (e.g. a truncated corpus whose surviving queries
+    are a strict subset of the full qrels' queries) and passes the scorer the FULL,
+    unscoped qrels_by_query dict rather than one restricted to the queries actually ranked,
+    every un-ranked query silently contributes a 0.0 to the mean -- diluting a perfect
+    per-query score into a number that looks like a near-total miss. This test pins BOTH
+    behaviours: the unscoped call IS diluted (documenting the failure shape so it is
+    recognisable if seen again), and the scoped call recovers the true value. The real
+    fix lives in runner.py, which scopes qrels_by_query to test_query_ids before calling
+    any scoring function."""
+    full_qrels = {f"q{i}": {"d0": 1.0} for i in range(100)}  # 100 queries in the full split
+    full_qrels["q0"] = {"d0": 1.0}
+    run = {"q0": [("d0", 0.9)]}  # only q0 was actually ranked (e.g. a truncated corpus run)
+
+    _per_q_unscoped, mean_unscoped = ndcg_at_k_own(full_qrels, run, k=10)
+    assert mean_unscoped == pytest.approx(1.0 / 100, abs=1e-9)  # diluted -- the bug shape
+
+    scoped_qrels = {"q0": full_qrels["q0"]}
+    _per_q_scoped, mean_scoped = ndcg_at_k_own(scoped_qrels, run, k=10)
+    assert mean_scoped == pytest.approx(1.0, abs=1e-9)  # correct once scoped
+
+
 def test_executed_chance_level_is_near_zero_for_sparse_relevance():
     """A large corpus with exactly one relevant document per query should show chance near
     1/N-scale, far below any real system's nDCG@10 -- sanity-checks the Monte Carlo
