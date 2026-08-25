@@ -21,6 +21,7 @@ from typing import Dict, List, Optional
 from eval.k1 import QUARANTINE_NOTICE
 from eval.k1.bm25_baseline import bm25_topk, build_bm25_index
 from eval.k1.embed_runner import embed_corpus, embed_queries
+from eval.k1.gate import GateVerdict, evaluate_gate
 from eval.k1.guards import K1GuardError, validate_qrels_join
 from eval.k1.rank_score import (
     achieved_resolving_power,
@@ -196,6 +197,14 @@ def run_gate(
 
         packet["sets"][set_name] = set_result
 
+    # The verdict stage (design Section 4, U-K1 fix round Finding C). Computes the F1/F2
+    # floor-gate arithmetic over this packet's own readings. This does NOT lift quarantine:
+    # per QUARANTINE_NOTICE and the design's Section 6.3, the verdict below is not
+    # load-bearing until the instrument commissions -- it is reported so a reader does not
+    # have to re-derive the design's own arithmetic by hand, nothing more.
+    gate_verdict: GateVerdict = evaluate_gate(packet)
+    packet["gate_verdict"] = asdict(gate_verdict)
+
     if output_dir is not None:
         output_dir.mkdir(parents=True, exist_ok=True)
         json_path = output_dir / f"{run_spec.run_id}.json"
@@ -221,5 +230,18 @@ def render_human_table(packet: dict) -> str:
                 f"  {name:<32}{m['ndcg_at_10']:>10.4f}{m['recall_at_10']:>12.4f}"
                 f"{m['mrr_at_10']:>10.4f}{m.get('achieved_resolving_power', float('nan')):>10.4f}"
             )
+        lines.append("")
+
+    gate_verdict = packet.get("gate_verdict")
+    if gate_verdict is not None:
+        lines.append("== gate verdict (F1/F2, design Section 4 -- quarantined, not load-bearing) ==")
+        lines.append(f"  overall: {'PASS' if gate_verdict['passed'] else 'FAIL/INCOMPLETE'} -- {gate_verdict['reason']}")
+        for set_name, by_model in gate_verdict["per_set"].items():
+            for model_name, verdict in by_model.items():
+                lines.append(f"  [{set_name}] {model_name}: {'PASS' if verdict['passed'] else 'FAIL'}")
+                lines.append(f"    {verdict['f1']['note']}")
+                lines.append(f"    {verdict['f2']['note']}")
+        for skip in gate_verdict.get("skips", []):
+            lines.append(f"  SKIPPED: {skip}")
         lines.append("")
     return "\n".join(lines)

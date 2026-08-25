@@ -8,7 +8,9 @@ import numpy as np
 import pytest
 
 from eval.k1.rank_score import (
+    ChanceResult,
     achieved_resolving_power,
+    chance_level_resolving_power,
     cosine_topk,
     executed_chance_level,
     mrr_at_k,
@@ -58,6 +60,57 @@ def test_ndcg_own_agrees_with_pytrec_eval():
     for qid in qrels:
         assert per_query_own[qid] == pytest.approx(per_query_pytrec[qid], abs=1e-6), qid
     assert mean_own == pytest.approx(mean_pytrec, abs=1e-6)
+
+
+def _graded_tie_problem():
+    """A deterministic, committed graded-relevance (0/1/2) fixture reproducing Finding B's
+    exact defect shape (U-K1 fix round, 2026-08-25, D-SLM4689): an EXACT score tie in the
+    top-k between a graded-relevant document and an irrelevant one. Before the fix,
+    ``ndcg_at_k_own`` breaks such a tie by the input list's own order (matching
+    ``cosine_topk``'s deterministic ascending-corpus-id convention), while ``pytrec_eval``'s
+    ``RelevanceEvaluator`` received a plain ``{docid: score}`` dict and re-sorted ties with
+    its own internal (undocumented) convention -- producing a real, measured 5.49e-4
+    disagreement on NFCorpus, ~500x the 1e-6 replication threshold. Reproduced here on a tiny
+    fixture: q1's rank 1/2 are an exact tie (score 0.7347) between a grade-2 relevant
+    document (``d_rel``) and an irrelevant one (``d_irrelevant``), with ``d_rel`` first in
+    the input order -- the same shape (grade-2 relevant document tied with an irrelevant one,
+    relevant document first) measured on NFCorpus query PLAIN-3131 in the commissioning run."""
+    qrels = {
+        "q1": {"d_rel": 2.0, "d_other": 1.0},
+        "q2": {"d_a": 1.0, "d_b": 2.0, "d_c": 0.0},
+    }
+    run = {
+        "q1": [("d_rel", 0.7347), ("d_irrelevant", 0.7347), ("d_other", 0.6), ("d_x", 0.1)],
+        "q2": [("d_b", 0.9), ("d_a", 0.8), ("d_c", 0.5)],
+    }
+    return qrels, run
+
+
+def test_ndcg_own_agrees_with_pytrec_eval_on_graded_relevance_with_a_tie():
+    """R1 pin (U-K1 fix round, 2026-08-25, Finding B / D-SLM4689): the instrument's own
+    scorer and the independent pytrec_eval scorer must agree to 1e-6 on a fixture that
+    includes graded (non-binary) relevance AND an exact score tie between a relevant and an
+    irrelevant document -- the exact defect shape found on NFCorpus. Before the
+    rank-preserving fix in ``ndcg_at_k_pytrec``, this fixture reproduces a real disagreement
+    (q1's two scorers place the tied documents in opposite order); after the fix, both
+    scorers read the identical order ``run`` already specifies and agree exactly."""
+    pytest.importorskip("pytrec_eval")
+    qrels, run = _graded_tie_problem()
+    per_query_own, mean_own = ndcg_at_k_own(qrels, run, k=10)
+    per_query_pytrec, mean_pytrec = ndcg_at_k_pytrec(qrels, run, k=10)
+    for qid in qrels:
+        assert per_query_own[qid] == pytest.approx(per_query_pytrec[qid], abs=1e-6), qid
+    assert mean_own == pytest.approx(mean_pytrec, abs=1e-6)
+    # q1's tie must be resolved in `run`'s own order (d_rel, the relevant document, ranked
+    # ahead of d_irrelevant) by BOTH scorers -- confirms the fix reproduces `run`'s order
+    # rather than a coincidental numeric match. Hand computation: DCG = 2/log2(2) + 0 +
+    # 1/log2(4) = 2.5; IDCG = 2/log2(2) + 1/log2(3) = 2.63093; nDCG = 0.95023. If either
+    # scorer instead placed d_irrelevant ahead of d_rel, DCG would be 0/log2(2) + 2/log2(3) +
+    # 1/log2(4) = 1.7618, giving nDCG = 0.66968 -- a different, lower value that is what the
+    # pre-fix disagreement actually looked like.
+    expected_q1 = 2.5 / (2.0 / math.log2(2) + 1.0 / math.log2(3))
+    assert per_query_own["q1"] == pytest.approx(expected_q1, abs=1e-9)
+    assert per_query_pytrec["q1"] == pytest.approx(expected_q1, abs=1e-9)
 
 
 def test_zero_idcg_query_scores_zero_not_an_exception():
@@ -156,6 +209,21 @@ def test_trec_run_file_round_trips(tmp_path):
         assert [docid for docid, _s in loaded[qid]] == [docid for docid, _s in run[qid]]
         for (_, orig_score), (_, loaded_score) in zip(run[qid], loaded[qid]):
             assert loaded_score == pytest.approx(orig_score, abs=1e-6)
+
+
+def test_chance_level_resolving_power_is_the_single_trial_spread_not_the_mean_ci():
+    """Pins the resolved interpretive gap (U-K1 fix round, 2026-08-25): the must-reject
+    resolving power is ``1.96 * chance.std`` (the spread of one trial-level draw), NOT
+    ``achieved_resolving_power`` reapplied to the per-trial list (the CI half-width on the
+    MEAN across trials, which shrinks with sqrt(trials) and would be far too tight for a
+    single-run candidate reading to ever land inside)."""
+    chance = ChanceResult(mean=0.001, std=0.0013, trials=1000, per_trial_set_ndcg=[0.001] * 1000)
+    rp = chance_level_resolving_power(chance)
+    assert rp == pytest.approx(1.96 * 0.0013, abs=1e-12)
+    # The rejected reading (CI half-width across trials) would be ~40x tighter at trials=1000
+    # and is deliberately NOT what this function returns.
+    wrong_reading = 1.96 * 0.0013 / math.sqrt(1000)
+    assert rp > wrong_reading * 10
 
 
 def test_executed_chance_level_is_near_zero_for_sparse_relevance():

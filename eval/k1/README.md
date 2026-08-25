@@ -31,6 +31,40 @@ Orchestration (not itself one of the six, but required to run any of them togeth
 `run_spec.py` (Run 0 / Run 1 / smoke rosters) and `runner.py` (`run_gate()`, one code path
 for all three).
 
+**The gate (design Section 4, not one of the six components -- the decision layer that reads
+the instrument's readings)**: `gate.py`. Computes the F1/F2 floor arithmetic
+(`evaluate_gate`) over an executed run packet and is wired into `runner.run_gate()` as the
+packet's `gate_verdict` field and into `render_human_table`'s text report. Computing this
+arithmetic does not lift quarantine -- a `gate_verdict` on a quarantined packet is exactly as
+quarantined as the readings it was computed from.
+
+## Commissioning status
+
+An independent seat executed the commissioning constructions once
+(`Claude/Mendeleev/u-k1-commissioning-execution-2026-08-25.md`, Wizard project records tree)
+and returned **NOT COMMISSIONED**, blocked by two build findings, both fixed in the U-K1 fix
+round (`Claude/Brunel/u-k1-fix1-2026-08-25.md`):
+
+- **Finding A (D-SLM4688)** -- 5 of ArguAna's 1,406 test queries' qrels rows referenced a
+  corpus-id genuinely absent from the pinned corpus (confirmed against a second, independent
+  mirror of the same upstream data -- not a fetch or join defect in this loader). Fixed by
+  `sets_lock.reconcile_qrels_to_corpus`, applied at both fetch and load time; the committed
+  `sets.lock.json`'s `arguana` entry now pins 1,401 test queries/qrels rows and records
+  `qrels_reconciled_dropped: 5`.
+- **Finding B (D-SLM4689)** -- `ndcg_at_k_own` and the independent `pytrec_eval` scorer (R1)
+  disagreed by 5.49e-4 on NFCorpus (graded relevance), ~500x the 1e-6 replication threshold.
+  Root cause: an exact cosine-score tie in a query's top-k, where `ndcg_at_k_own` preserves
+  `cosine_topk`'s own deterministic ascending-corpus-id tie-break but `pytrec_eval` received
+  a plain `{docid: score}` mapping and re-sorted ties by its own internal convention. Fixed
+  in `ndcg_at_k_pytrec` by scoring rank-preserving synthetic scores (strictly decreasing by
+  position) instead of the raw tied scores, so `pytrec_eval`'s sort cannot disagree with the
+  order already decided. Verified against the persisted NFCorpus run file: delta is now
+  exactly 0.0.
+
+**The fix has not yet been verified by re-running the commissioning constructions** -- per
+the commissioning spec's own disposition rule, that re-execution is a separate dispatch from
+this fix round. Every reading this instrument produces remains quarantined until it fires.
+
 ## Running it
 
 ```

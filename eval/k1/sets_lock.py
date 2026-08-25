@@ -57,6 +57,51 @@ def _sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _digest_of_rows(rows: List[dict]) -> str:
+    """A stable digest over materialized rows -- sorted by every column so row order (which
+    ``datasets``/Arrow does not guarantee is stable across cache rebuilds) cannot change the
+    digest."""
+    rows_sorted = sorted(rows, key=lambda r: json.dumps(r, sort_keys=True))
+    blob = json.dumps(rows_sorted, sort_keys=True).encode("utf-8")
+    return _sha256_bytes(blob)
+
+
+def reconcile_qrels_to_corpus(qrels_rows: List[dict], corpus_ids) -> "tuple[List[dict], List[dict]]":
+    """Drops qrels rows whose judged ``corpus-id`` is absent from the loaded corpus.
+
+    **Why this exists (U-K1 fix round, 2026-08-25, D-SLM4688).** A pinned set's ``corpus``
+    and ``default``/qrels Hugging Face dataset configs are independently versioned splits of
+    the same nominal revision sha and can genuinely disagree on which documents exist, even
+    though both are fetched at one pinned commit. Confirmed on ``mteb/arguana`` at its pinned
+    revision (the repository's only commit touching data, per its own commit history) and
+    independently reproduced against a second, unrelated mirror (``BeIR/arguana``): both
+    report the identical 8,674-document corpus, missing the identical 5 documents 5 of the
+    set's 1,406 test queries' qrels rows reference. This is not a fetch, cache, or join
+    defect in this loader -- the digest/count checks over the corpus as fetched already
+    passed before this function runs -- it is a genuine gap in the upstream corpus
+    distribution itself, present at the only revision that exists to pin. Re-pinning to a
+    different revision is not available (single-commit history for the data files); the
+    qrels are reconciled to the corpus that is actually loadable instead.
+
+    Applied identically at fetch time (``_fetch_one_set``, which is what ``sets.lock.json``'s
+    counts and digests are pinned from) and at load time (``load_set``), so a dropped row
+    is dropped consistently and the pinned digest/count always matches what a real run
+    actually scores against. A query whose only qrels row(s) are dropped this way silently
+    loses its last judgment and is caught downstream by the zero-qrels guard
+    (``guards.validate_qrels_join``, Probe A shape) rather than by this function -- this
+    function's job is only to make the loaded qrels internally consistent with the loaded
+    corpus, never to guarantee every query still has a surviving judgment.
+
+    Returns ``(kept_rows, dropped_rows)`` so a caller can log and pin exactly what was
+    reconciled away rather than silently discarding it.
+    """
+    kept: List[dict] = []
+    dropped: List[dict] = []
+    for row in qrels_rows:
+        (kept if row["corpus-id"] in corpus_ids else dropped).append(row)
+    return kept, dropped
+
+
 @dataclass
 class SetLockEntry:
     hf_repo: str
@@ -73,14 +118,19 @@ class SetLockEntry:
     bm25_b: float
     bm25_params_derived: bool
     fetch_date: str
+    qrels_reconciled_dropped: int = 0
 
 
 def _fetch_one_set(name: str, repo_id: str, hf_home: str) -> SetLockEntry:
     """Executes the fetch for one set: resolves the pinned revision, downloads the corpus,
-    queries and qrels(test split) configs via the ``datasets`` library, and computes
-    per-config digests and counts. This is the fetch ``mint_sets_lock`` runs; it is also
-    what ``load_set`` re-runs (against the pinned revision) when reading a set back, so the
-    same code path pins and reads."""
+    queries and qrels(test split) configs via the ``datasets`` library, reconciles the
+    qrels against the loaded corpus (``reconcile_qrels_to_corpus`` -- U-K1 fix round,
+    2026-08-25, D-SLM4688: a set's ``corpus`` and qrels configs can disagree on which
+    documents exist even at one pinned revision), and computes per-config digests and counts
+    over the reconciled data. This is the fetch ``mint_sets_lock`` runs; it is also what
+    ``load_set`` re-runs (against the pinned revision) when reading a set back, so the same
+    code path pins and reads -- including the reconciliation, so the pinned counts and
+    digests always match what a real run actually scores against."""
     import datasets
     from huggingface_hub import HfApi
 
@@ -91,22 +141,22 @@ def _fetch_one_set(name: str, repo_id: str, hf_home: str) -> SetLockEntry:
 
     corpus = datasets.load_dataset(
         repo_id, "corpus", split="corpus", revision=revision, cache_dir=os.path.join(hf_home, "datasets")
-    )
+    ).to_list()
     queries = datasets.load_dataset(
         repo_id, "queries", split="queries", revision=revision, cache_dir=os.path.join(hf_home, "datasets")
-    )
-    qrels_test = datasets.load_dataset(
+    ).to_list()
+    qrels_test_raw = datasets.load_dataset(
         repo_id, "default", split="test", revision=revision, cache_dir=os.path.join(hf_home, "datasets")
-    )
+    ).to_list()
 
-    def digest_of(ds) -> str:
-        # A stable digest over the materialized rows -- sorted by every column so row order
-        # (which datasets/Arrow does not guarantee is stable across cache rebuilds) cannot
-        # change the digest.
-        rows = ds.to_list()
-        rows_sorted = sorted(rows, key=lambda r: json.dumps(r, sort_keys=True))
-        blob = json.dumps(rows_sorted, sort_keys=True).encode("utf-8")
-        return _sha256_bytes(blob)
+    corpus_ids = {row["_id"] for row in corpus}
+    qrels_test, dropped_qrels = reconcile_qrels_to_corpus(qrels_test_raw, corpus_ids)
+    if dropped_qrels:
+        print(
+            f"[sets_lock] {name}: reconciled {len(dropped_qrels)} qrels row(s) whose "
+            f"corpus-id is absent from the loaded {len(corpus)}-document corpus: "
+            f"{[r['corpus-id'] for r in dropped_qrels]}"
+        )
 
     import datetime
 
@@ -118,17 +168,18 @@ def _fetch_one_set(name: str, repo_id: str, hf_home: str) -> SetLockEntry:
         license_derived=False,
         corpus_docs=len(corpus),
         queries_all=len(queries),
-        queries_test=len(set(qrels_test["query-id"])),
+        queries_test=len({row["query-id"] for row in qrels_test}),
         qrels_test_rows=len(qrels_test),
         file_digests={
-            "corpus": digest_of(corpus),
-            "queries": digest_of(queries),
-            "qrels_test": digest_of(qrels_test),
+            "corpus": _digest_of_rows(corpus),
+            "queries": _digest_of_rows(queries),
+            "qrels_test": _digest_of_rows(qrels_test),
         },
         bm25_k1=BEIR_BM25_K1,
         bm25_b=BEIR_BM25_B,
         bm25_params_derived=False,
         fetch_date=datetime.date.today().isoformat(),
+        qrels_reconciled_dropped=len(dropped_qrels),
     )
 
 
@@ -183,6 +234,13 @@ def load_set(
     ``allow_missing_license`` exists ONLY for an explicitly-labeled mechanism check
     (build-log spec gap G-1); the real gate path never sets it.
 
+    The returned ``qrels_test`` is reconciled against the loaded corpus
+    (``reconcile_qrels_to_corpus`` -- U-K1 fix round, 2026-08-25, D-SLM4688) before the count
+    guard runs, identically to how ``_fetch_one_set`` reconciles before pinning: a qrels row
+    naming a corpus-id the loaded corpus does not contain is dropped on both the pinning path
+    and the reading path, so the pinned count and digest always match what this function
+    actually returns.
+
     Returns ``(corpus: list[dict], queries: list[dict], qrels_test: list[dict])``.
     """
     import datasets
@@ -200,10 +258,13 @@ def load_set(
         repo_id, "queries", split="queries", revision=lock_entry.revision,
         cache_dir=os.path.join(hf_home, "datasets"),
     ).to_list()
-    qrels_test = datasets.load_dataset(
+    qrels_test_raw = datasets.load_dataset(
         repo_id, "default", split="test", revision=lock_entry.revision,
         cache_dir=os.path.join(hf_home, "datasets"),
     ).to_list()
+
+    corpus_ids_for_reconcile = {row["_id"] for row in corpus}
+    qrels_test, _dropped_qrels = reconcile_qrels_to_corpus(qrels_test_raw, corpus_ids_for_reconcile)
 
     check_count_match(f"{name}.corpus_docs", lock_entry.corpus_docs, len(corpus))
     check_count_match(f"{name}.queries_all", lock_entry.queries_all, len(queries))

@@ -57,7 +57,16 @@ def test_read_refuses_schema_mismatch(tmp_path):
 def test_committed_lock_file_matches_design_table():
     """The committed eval/k1/sets.lock.json is the executed fetch's own output (build log).
     This test pins it against the design's own Section 2.1 table so a future edit to the
-    lock file that silently drifts from the design is caught."""
+    lock file that silently drifts from the design is caught.
+
+    ArguAna's ``queries_test``/``qrels_test_rows`` are 1,401, not the design table's 1,406:
+    5 of the design's 1,406 test queries' qrels rows reference corpus-ids genuinely absent
+    from the pinned corpus (U-K1 fix round, 2026-08-25, D-SLM4688 -- independently confirmed
+    against a second, unrelated mirror of the same upstream data, and unfixable by re-pinning
+    since the data files have only ever had one commit). ``sets_lock.reconcile_qrels_to_corpus``
+    drops those 5 rows at both fetch and load time, so the pinned count reflects what a real
+    run actually scores against rather than the design's pre-build table, which predates the
+    instrument and could not have known about the gap."""
     from pathlib import Path
 
     lock_path = Path(__file__).resolve().parents[1] / "sets.lock.json"
@@ -66,10 +75,23 @@ def test_committed_lock_file_matches_design_table():
         "scifact": (5183, 1109, 300, 339),
         "nfcorpus": (3633, 3237, 323, 12334),
         "fiqa": (57638, 6648, 648, 1706),
-        "arguana": (8674, 1406, 1406, 1406),
+        "arguana": (8674, 1406, 1401, 1401),
     }
     for name, (corpus, q_all, q_test, qrels_rows) in expected.items():
         e = entries[name]
         assert (e.corpus_docs, e.queries_all, e.queries_test, e.qrels_test_rows) == (
             corpus, q_all, q_test, qrels_rows
         ), name
+
+
+def test_arguana_qrels_reconciled_against_corpus():
+    """Pins the specific reconciliation this fix round executed (D-SLM4688): ArguAna's
+    committed lock entry records exactly 5 qrels rows dropped for referencing a corpus-id
+    absent from the loaded corpus, and no other set's lock entry has ever needed this."""
+    from pathlib import Path
+
+    lock_path = Path(__file__).resolve().parents[1] / "sets.lock.json"
+    entries = read_sets_lock(lock_path)
+    assert entries["arguana"].qrels_reconciled_dropped == 5
+    for name in ("scifact", "nfcorpus", "fiqa"):
+        assert entries[name].qrels_reconciled_dropped == 0, name

@@ -213,6 +213,29 @@ def ndcg_at_k_pytrec(
     ships the primary path (``pytrec_eval``, confirmed installable on this Windows/Python
     3.13 toolchain -- see the build log) and the contingency is filed as a spec gap rather
     than built speculatively.
+
+    **Rank-preserving tie-break (U-K1 fix round, 2026-08-25, D-SLM4689).** ``run``'s order
+    already carries this instrument's own deterministic tie-break -- ``cosine_topk`` breaks
+    exact cosine-score ties by ascending corpus id (design Section 11 dimension 6). Handing
+    ``pytrec_eval`` the raw tied scores loses that order: its ``RelevanceEvaluator`` receives
+    a plain ``{docid: score}`` mapping and re-sorts internally with its own (unspecified,
+    C-side) tie-break, which does not agree with ours. On a set with any exact score tie in
+    the top-k -- confirmed on NFCorpus, whose 3,633-document corpus contains near/exact
+    duplicate abstracts -- the two scorers can therefore rank the same top-k *set* of
+    documents in a different *order*, and nDCG is order-sensitive: the graded relevance
+    document lands at a different rank under each scorer's tie-break, producing a real
+    disagreement (measured 5.49e-4 on NFCorpus, ~500x the 1e-6 replication threshold; SciFact
+    and FiQA-2018, whose relevance is binary and whose corpora produced no exact score tie in
+    this run, agreed to floating-point noise). This is not a gain-formula or truncation
+    defect -- both scorers use linear gain and identical top-k truncation -- it is a tie-break
+    divergence between two independent sort implementations given the same tied input.
+
+    The fix: replace each item's raw score with a strictly decreasing rank-index score
+    (``len(items) - rank``) before handing the run to ``pytrec_eval``. This has no ties by
+    construction, so ``pytrec_eval``'s sort reproduces ``run``'s existing order exactly,
+    regardless of its internal tie-break convention -- R1 becomes a check of ``ndcg_at_k_own``
+    against the identical *ranking* rather than a re-adjudication of ties ``cosine_topk``
+    already resolved.
     """
     try:
         import pytrec_eval
@@ -230,10 +253,13 @@ def ndcg_at_k_pytrec(
     qrel = {
         qid: {docid: int(rels[docid]) for docid in rels} for qid, rels in qrels_by_query.items()
     }
-    run_dict = {
-        qid: {docid: float(score) for docid, score in list(ranked)[:k]}
-        for qid, ranked in run.items()
-    }
+    run_dict = {}
+    for qid, ranked in run.items():
+        items = list(ranked)[:k]
+        n = len(items)
+        # Rank-preserving synthetic score: strictly decreasing by position, so no two items
+        # can tie and pytrec_eval's sort cannot disagree with the order `items` already has.
+        run_dict[qid] = {docid: float(n - rank) for rank, (docid, _score) in enumerate(items)}
     evaluator = pytrec_eval.RelevanceEvaluator(qrel, {f"ndcg_cut.{k}"})
     results = evaluator.evaluate(run_dict)
     per_query = {qid: metrics.get(f"ndcg_cut_{k}", 0.0) for qid, metrics in results.items()}
@@ -270,6 +296,42 @@ class ChanceResult:
     std: float
     trials: int
     per_trial_set_ndcg: List[float]
+
+
+def chance_level_resolving_power(chance: "ChanceResult") -> float:
+    """The minimum effect size a must-reject construction (design Section 6.4; commissioning
+    spec Section 2) compares a single candidate reading against: how far a genuinely
+    at-chance candidate's ONE nDCG@10 reading can plausibly land from the executed chance
+    mean.
+
+    **Resolved interpretive gap (U-K1 fix round, 2026-08-25, build log for the spec's author
+    to ratify).** The commissioning spec states this quantity as "the achieved resolving
+    power computed from the run's own R=1,000 chance-permutation dispersion" without writing
+    out the formula (`Claude/Mendeleev/u-k1-commissioning-2026-08-25.md` Section 2, Wizard
+    project records tree). Two readings exist:
+
+    1. Reapply ``achieved_resolving_power``'s own formula (``1.96 * sigma / sqrt(n)``) to the
+       ``trials``-length list of per-trial chance nDCG@10 values, i.e. treat the trial count
+       as ``n``. At ``trials=1000`` this yields an RP on the order of 1e-5 -- far tighter than
+       the spread of a single trial-level reading, and small enough that no single-run
+       candidate, including a genuinely at-chance one, could ever land inside it. Under this
+       reading the construction can never report "not distinguishable from chance," which
+       contradicts the spec's own framing of that outcome as the required, achievable,
+       passing result for a must-reject construction.
+    2. Use ``1.96 * chance.std`` directly (this function) -- the width of the natural spread
+       of ONE trial-level draw from the executed chance distribution, which is the quantity a
+       single candidate reading (itself one un-averaged draw) should be compared against.
+
+    Reading 2 is the only one under which the construction is well-posed at all --
+    `StandardsDocument.md` Section 5.4's enumerate-then-count rule (exactly one reading
+    survives) -- and is what the independent commissioning execution pass actually used
+    (`Claude/Mendeleev/u-k1-commissioning-execution-2026-08-25.md` Section 9, decision
+    D-SLM4687's provenance). This function encodes that resolution in code so a future
+    commissioning re-run reads it from here rather than re-deriving it from the spec's prose.
+    This resolution is filed for the commissioning spec's author to ratify -- it has not been
+    promoted to an amendment of `Claude/Mendeleev/u-k1-commissioning-2026-08-25.md` itself.
+    """
+    return 1.96 * chance.std
 
 
 def executed_chance_level(

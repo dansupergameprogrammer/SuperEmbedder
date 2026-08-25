@@ -1,14 +1,57 @@
 {
-  "date": "2026-08-25T11:36:33",
+  "date": "2026-08-25T12:41:28",
+  "gate_verdict": {
+    "four_set_complete": false,
+    "passed": false,
+    "per_model_passed": {
+      "qwen2.5-0.5b-instruct-ps1": false
+    },
+    "per_set": {
+      "scifact": {
+        "qwen2.5-0.5b-instruct-ps1": {
+          "f1": {
+            "achieved_rp": 0.0,
+            "candidate_value": 1.0,
+            "fires": false,
+            "floor": "F1",
+            "floor_label": "reference",
+            "floor_value": 1.0,
+            "note": "F1 passes: candidate (1.00000) meets or exceeds the reference floor (1.00000).",
+            "passed": true,
+            "shortfall": 0.0
+          },
+          "f2": {
+            "achieved_rp": 0.0,
+            "candidate_value": 1.0,
+            "fires": false,
+            "floor": "F2",
+            "floor_label": "bm25",
+            "floor_value": 1.0,
+            "note": "F2 passes: candidate (1.00000) meets or exceeds the bm25 floor (1.00000).",
+            "passed": true,
+            "shortfall": 0.0
+          },
+          "model_name": "qwen2.5-0.5b-instruct-ps1",
+          "passed": true,
+          "set_name": "scifact"
+        }
+      }
+    },
+    "reason": "qwen2.5-0.5b-instruct-ps1: gated on ['scifact'], missing ['arguana', 'fiqa', 'nfcorpus']",
+    "sets_present": [
+      "scifact"
+    ],
+    "skips": []
+  },
   "is_gate_reading": false,
-  "quarantine_notice": "U-K1 INSTRUMENT -- READINGS QUARANTINED. Commissioning (must-accept + two must-reject constructions, design Section 6.4) has not been executed by an independent seat. No reading emitted below is a gate verdict until that commissioning fires correctly.",
+  "quarantine_notice": "U-K1 INSTRUMENT -- READINGS QUARANTINED. Commissioning was executed once and returned NOT COMMISSIONED (build findings D-SLM4688/D-SLM4689, since fixed); the fix has not yet been verified by re-running the must-accept and both must-reject constructions (design Section 6.4) against an independent seat. No reading emitted below is a gate verdict until that re-run fires correctly.",
   "run_id": "smoke-scifact-50",
   "sets": {
     "scifact": {
       "corpus_docs_used": 50,
       "executed_chance": {
-        "mean": 0.09470249280100529,
-        "std": 0.1207130833742028,
+        "mean": 0.09969445497380824,
+        "std": 0.12899414911194207,
         "trials": 200
       },
       "guard": {
