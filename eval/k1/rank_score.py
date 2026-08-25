@@ -34,6 +34,17 @@ import numpy as np
 # --------------------------------------------------------------------------------------
 
 
+SELF_EXCLUSION_NOTE = (
+    "Self-exclusion convention: a candidate document whose id equals the ranking query's "
+    "own id is dropped from the ranked list before truncation to k (BEIR's "
+    "ignore_identical_ids=True, on by default in beir/retrieval/evaluation.py, which is the "
+    "convention every published anchor read against this instrument was itself produced "
+    "under). This fires only on sets where a query id can also name a corpus document "
+    "(ArguAna today); it is a no-op everywhere else, verified by executed check "
+    "(U-K1 fix round 2, D-SLM4699)."
+)
+
+
 def cosine_topk(
     query_vecs: np.ndarray,
     query_ids: Sequence[str],
@@ -46,8 +57,24 @@ def cosine_topk(
     broken by a deterministic rule (document id), because an unstable tie-break is a
     nondeterminism the digest would catch and nobody would understand").
 
-    Returns ``{query_id: [(corpus_id, score), ...]}``, length ``min(k, len(corpus_ids))``,
-    descending by score.
+    **Self-exclusion (U-K1 fix round 2, 2026-08-25, D-SLM4699; see ``SELF_EXCLUSION_NOTE``).**
+    Before truncating to ``k``, any candidate document whose id equals the ranking query's
+    own id is dropped from the full ranked order -- the general form of BEIR's
+    ``ignore_identical_ids=True`` (on by default in the reference evaluation harness, and the
+    convention the published anchors this instrument compares against were themselves
+    produced under). The drop happens against the *full* corpus-length ranking, before the
+    ``k``-slice, so a query with no id-collision never has its returned list shortened by
+    this step -- it is a no-op there by construction, not by the corpus happening to be large
+    enough. ArguAna is the only one of the four locked sets where a query's text is also
+    indexed as its own corpus document (component 3's build defect, confirmed against BEIR's
+    own source): without this exclusion, cosine similarity of a vector against its
+    byte-identical self is 1.0, guaranteeing the trivial self-match occupies rank 1 on the
+    large majority of queries and depresses the deciding metric, never contributing to its
+    numerator.
+
+    Returns ``{query_id: [(corpus_id, score), ...]}``, length ``min(k, len(corpus_ids))`` on
+    any query without a self-id collision in the corpus (one shorter only when the corpus
+    itself has fewer than ``k`` non-self documents), descending by score.
     """
     q = query_vecs.astype(np.float64)
     c = corpus_vecs.astype(np.float64)
@@ -68,7 +95,13 @@ def cosine_topk(
         scores_by_id_order = row[idx_sorted_by_id]
         # stable sort on -score preserves the id-ascending order among ties
         secondary = np.argsort(-scores_by_id_order, kind="stable")
-        top_idx = idx_sorted_by_id[secondary][:kk]
+        full_ranked_idx = idx_sorted_by_id[secondary]  # entire corpus, descending by score
+        # Self-exclusion: drop the query's own id from the FULL ranking before slicing to
+        # kk, so the exclusion never shortens the scored list for a query that has no
+        # id-collision with the corpus (the mask is all-True there and this is a no-op).
+        not_self = corpus_ids_arr[full_ranked_idx] != qid
+        filtered_idx = full_ranked_idx[not_self]
+        top_idx = filtered_idx[:kk]
         run[qid] = [(str(corpus_ids_arr[j]), float(row[j])) for j in top_idx]
     return run
 

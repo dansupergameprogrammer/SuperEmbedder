@@ -156,6 +156,71 @@ def test_cosine_topk_ranks_by_similarity():
     assert [docid for docid, _s in run["q1"]] == ["identical", "diagonal", "orthogonal"]
 
 
+def test_cosine_topk_excludes_query_own_id_from_the_ranked_list():
+    """Pin, U-K1 fix round 2 (D-SLM4699, Finding D). A committed fixture where a query's id
+    exists in the corpus, byte-identical to a real ArguAna row: the corpus contains the
+    query's own id at a vector identical to the query's, which cosine-scores 1.0 -- exactly
+    the mechanism that flooded ArguAna's rank 1. The self-id must be excluded from the
+    returned list, and the returned list must stay full-length (k), not shortened by the
+    exclusion, per the design's own disposition ("rank over top-(k+1) or filter before
+    truncation so the exclusion never shortens the scored list")."""
+    query_vecs = np.array([[1.0, 0.0]])
+    # corpus: the query's own id (identical vector, would rank 1 at score 1.0 unfiltered),
+    # plus 4 other documents so a full k=3 result remains available after the drop.
+    corpus_vecs = np.array([
+        [1.0, 0.0],   # "q1" -- the query's own id, byte-identical vector
+        [0.9, 0.1],   # "d_close" -- next-best real candidate
+        [0.7, 0.3],   # "d_mid"
+        [0.5, 0.5],   # "d_far"
+        [0.0, 1.0],   # "d_orthogonal"
+    ])
+    corpus_ids = ["q1", "d_close", "d_mid", "d_far", "d_orthogonal"]
+    run = cosine_topk(query_vecs, ["q1"], corpus_vecs, corpus_ids, k=3)
+    ranked_ids = [docid for docid, _score in run["q1"]]
+    assert "q1" not in ranked_ids  # the self-match is excluded
+    assert len(ranked_ids) == 3  # the list is NOT shortened by the exclusion (5 candidates, 1 self-excluded, 4 remain >= k)
+    assert ranked_ids == ["d_close", "d_mid", "d_far"]  # next-best real candidates, in order
+
+
+def test_cosine_topk_self_exclusion_is_a_no_op_when_no_id_overlaps():
+    """The other half of the same pin: a query id that never appears in the corpus (the
+    SciFact/NFCorpus/FiQA-2018 shape) must rank byte-identically with the exclusion logic
+    present as it would with it absent -- the feature is provably a no-op there, not merely
+    assumed to be. Compared directly against the pre-fix ranking logic (full ranked order,
+    sliced to k, no id filter)."""
+    query_vecs = np.array([[1.0, 0.0], [0.0, 1.0], [0.6, 0.8]])
+    corpus_vecs = np.array([[0.9, 0.1], [0.1, 0.9], [0.7, 0.7], [0.3, 0.3], [1.0, 0.0]])
+    # Query ids share no namespace with the corpus ids at all -- the no-overlap case.
+    corpus_ids = ["c0", "c1", "c2", "c3", "c4"]
+    query_ids = ["query-a", "query-b", "query-c"]
+
+    with_exclusion = cosine_topk(query_vecs, query_ids, corpus_vecs, corpus_ids, k=3)
+
+    # Pre-fix reference implementation, reproduced verbatim from before this fix round so the
+    # "no-op on no-overlap" claim is an executed comparison, not an assertion about the code.
+    def _pre_fix_cosine_topk(query_vecs, query_ids, corpus_vecs, corpus_ids, k):
+        q = query_vecs.astype(np.float64)
+        c = corpus_vecs.astype(np.float64)
+        q_norm = q / np.clip(np.linalg.norm(q, axis=1, keepdims=True), 1e-12, None)
+        c_norm = c / np.clip(np.linalg.norm(c, axis=1, keepdims=True), 1e-12, None)
+        sims = q_norm @ c_norm.T
+        corpus_ids_arr = np.asarray(corpus_ids)
+        order_by_id = np.argsort(corpus_ids_arr, kind="stable")
+        kk = min(k, len(corpus_ids))
+        run = {}
+        for i, qid in enumerate(query_ids):
+            row = sims[i]
+            scores_by_id_order = row[order_by_id]
+            secondary = np.argsort(-scores_by_id_order, kind="stable")
+            top_idx = order_by_id[secondary][:kk]
+            run[qid] = [(str(corpus_ids_arr[j]), float(row[j])) for j in top_idx]
+        return run
+
+    without_exclusion = _pre_fix_cosine_topk(query_vecs, query_ids, corpus_vecs, corpus_ids, k=3)
+
+    assert with_exclusion == without_exclusion  # byte-identical: the feature is a true no-op
+
+
 def test_recall_and_mrr_diagnostics():
     qrels, run = _toy_problem()
     _per_q, mean_recall = recall_at_k(qrels, run, k=10)

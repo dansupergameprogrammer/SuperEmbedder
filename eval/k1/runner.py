@@ -24,6 +24,7 @@ from eval.k1.embed_runner import embed_corpus, embed_queries
 from eval.k1.gate import GateVerdict, evaluate_gate
 from eval.k1.guards import K1GuardError, validate_qrels_join
 from eval.k1.rank_score import (
+    SELF_EXCLUSION_NOTE,
     achieved_resolving_power,
     cosine_topk,
     executed_chance_level,
@@ -76,6 +77,7 @@ def run_gate(
 
     packet: dict = {
         "quarantine_notice": QUARANTINE_NOTICE,
+        "self_exclusion_convention": SELF_EXCLUSION_NOTE,
         "run_id": run_spec.run_id,
         "is_gate_reading": run_spec.is_gate_reading,
         "date": datetime.now().isoformat(timespec="seconds"),
@@ -216,7 +218,14 @@ def run_gate(
 
 
 def render_human_table(packet: dict) -> str:
-    lines = [packet["quarantine_notice"], "", f"Run: {packet['run_id']}  ({packet['date']})", ""]
+    lines = [
+        packet["quarantine_notice"],
+        "",
+        packet.get("self_exclusion_convention", SELF_EXCLUSION_NOTE),
+        "",
+        f"Run: {packet['run_id']}  ({packet['date']})",
+        "",
+    ]
     for set_name, set_result in packet["sets"].items():
         lines.append(f"== {set_name} ==  corpus={set_result['corpus_docs_used']} "
                      f"test_queries={set_result['test_queries_used']}")
