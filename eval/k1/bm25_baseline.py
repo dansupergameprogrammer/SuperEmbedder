@@ -7,6 +7,14 @@ CPU-only. Uses ``rank_bm25``'s ``BM25Okapi`` with BEIR's standard ``(k1, b)`` pa
 their disposition; the build brief explicitly permits the standard-default resolution used
 here). Refuses (``guards.K1GuardError``, ``K1_BM25_PARAMS_MISSING``) if a set's lock entry
 carries no ``(k1, b)`` pair.
+
+**Self-exclusion (U-K1 fix round 2b, 2026-08-25, class fix for D-SLM4699).** ``bm25_topk``
+carries the same self-match hazard ``rank_score.cosine_topk`` had before fix round 2: a
+document's own text scores at least as high against itself under BM25's lexical overlap as
+any other candidate can, so an ArguAna query whose own text is also indexed as a corpus
+document under the identical id would self-match at or near rank 1 unless excluded. This
+module delegates the exclusion to ``eval.k1.self_exclusion.exclude_self_and_truncate`` -- the
+same function ``cosine_topk`` calls -- rather than reimplementing the filter inline.
 """
 from __future__ import annotations
 
@@ -14,6 +22,7 @@ import re
 from typing import Dict, List, Sequence, Tuple
 
 from eval.k1.guards import check_bm25_params_present
+from eval.k1.self_exclusion import exclude_self_and_truncate
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9]+")
 
@@ -43,7 +52,13 @@ def bm25_topk(
 ) -> Dict[str, List[Tuple[str, float]]]:
     """Ranks the BM25 index against every query. Ties are broken by ascending corpus id,
     matching the dense ranker's tie-break rule (design Section 11 dimension 6) so the two
-    legs of the gate are compared under the same convention."""
+    legs of the gate are compared under the same convention.
+
+    Self-exclusion is delegated to ``eval.k1.self_exclusion.exclude_self_and_truncate``: the
+    full corpus-length ranked order is computed first (its own deterministic tie-break
+    already resolved), then handed to the shared helper along with the query's own id and
+    ``k`` -- the identical call the dense ranker makes, so the convention lives in one place
+    for both."""
     run: Dict[str, List[Tuple[str, float]]] = {}
     kk = min(k, len(corpus_ids))
     order_by_id = sorted(range(len(corpus_ids)), key=lambda i: corpus_ids[i])
@@ -51,7 +66,10 @@ def bm25_topk(
         qid = row["_id"]
         tokens = _tokenize(row["text"])
         scores = bm25.get_scores(tokens)
-        # Deterministic tie-break: sort by (-score, corpus_id).
-        ranked = sorted(order_by_id, key=lambda i: (-scores[i], corpus_ids[i]))[:kk]
-        run[qid] = [(corpus_ids[i], float(scores[i])) for i in ranked]
+        # Deterministic tie-break: sort by (-score, corpus_id) -- the FULL corpus-length
+        # order, not yet truncated to kk (truncation happens inside the shared helper, after
+        # self-exclusion, so the exclusion is never applied to an already-shortened list).
+        full_ranked_order = sorted(order_by_id, key=lambda i: (-scores[i], corpus_ids[i]))
+        full_ranked = [(corpus_ids[i], float(scores[i])) for i in full_ranked_order]
+        run[qid] = exclude_self_and_truncate(full_ranked, qid, kk)
     return run

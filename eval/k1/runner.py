@@ -24,7 +24,6 @@ from eval.k1.embed_runner import embed_corpus, embed_queries
 from eval.k1.gate import GateVerdict, evaluate_gate
 from eval.k1.guards import K1GuardError, validate_qrels_join
 from eval.k1.rank_score import (
-    SELF_EXCLUSION_NOTE,
     achieved_resolving_power,
     cosine_topk,
     executed_chance_level,
@@ -33,6 +32,7 @@ from eval.k1.rank_score import (
     recall_at_k,
     write_trec_run,
 )
+from eval.k1.self_exclusion import SELF_EXCLUSION_NOTE
 from eval.k1.run_spec import RunSpec
 from eval.k1.sets_lock import SetLockEntry, load_set, read_sets_lock
 
