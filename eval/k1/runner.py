@@ -29,6 +29,7 @@ from eval.k1.rank_score import (
     mrr_at_k,
     ndcg_at_k_own,
     recall_at_k,
+    write_trec_run,
 )
 from eval.k1.run_spec import RunSpec
 from eval.k1.sets_lock import SetLockEntry, load_set, read_sets_lock
@@ -131,6 +132,10 @@ def run_gate(
                 corpus, lock_entry.bm25_k1, lock_entry.bm25_b, set_name=set_name
             )
             bm25_run = bm25_topk(bm25_index, bm25_corpus_ids, queries_used, k=TOP_K_POOL)
+            if output_dir is not None:
+                run_files_dir = output_dir / "run_files" / run_spec.run_id / set_name
+                run_files_dir.mkdir(parents=True, exist_ok=True)
+                write_trec_run(bm25_run, run_files_dir / "bm25.trec", run_name="u-k1-bm25")
             per_q_ndcg, mean_ndcg = ndcg_at_k_own(qrels_by_query, bm25_run, k=run_spec.k)
             _per_q_recall, mean_recall = recall_at_k(qrels_by_query, bm25_run, k=run_spec.k)
             _per_q_mrr, mean_mrr = mrr_at_k(qrels_by_query, bm25_run, k=run_spec.k)
@@ -152,6 +157,11 @@ def run_gate(
                 model_spec, queries_used, device=run_spec.device
             )
             run = cosine_topk(query_vecs, query_vec_ids, corpus_vecs, corpus_vec_ids, k=TOP_K_POOL)
+
+            if output_dir is not None:
+                run_files_dir = output_dir / "run_files" / run_spec.run_id / set_name
+                run_files_dir.mkdir(parents=True, exist_ok=True)
+                write_trec_run(run, run_files_dir / f"{model_spec.name}.trec", run_name=f"u-k1-{model_spec.name}")
 
             per_q_ndcg, mean_ndcg = ndcg_at_k_own(qrels_by_query, run, k=run_spec.k)
             _per_q_recall, mean_recall = recall_at_k(qrels_by_query, run, k=run_spec.k)

@@ -50,25 +50,35 @@ def validate_qrels_join(
 ) -> QrelsJoinReport:
     """The zero-qrels guard.
 
-    Refuses (raises ``K1GuardError`` code ``K1_QRELS_EMPTY``) when either:
+    Refuses (raises ``K1GuardError`` code ``K1_QRELS_EMPTY``) on either of two DISTINCT
+    trigger shapes, per the independent commissioning spec's Section 4 probes
+    (``Claude/Mendeleev/u-k1-commissioning-2026-08-25.md``, Probe A and Probe B -- the
+    Wizard project's records tree):
 
-    1. Any test query has no qrels row at all -- a query joining zero qrels rows must abort
-       the run, never score as zero (TE-12 Section 2.4's failure mode, transplanted).
-    2. Across the whole set, zero qrels rows resolve to a document actually present in the
-       corpus pool being ranked -- the join matched nothing, which a naive scorer would
-       report as a clean low (or silently-averaged) number rather than as "the join is
-       broken."
+    1. **Probe A -- an unjudged test query.** Any test query has no qrels row at all -- a
+       query joining zero qrels rows must abort the run, never score as zero (TE-12
+       Section 2.4's failure mode, transplanted).
+    2. **Probe B -- a judged query whose qrels resolve to zero documents inside the ranked
+       pool.** A test query DOES have qrels rows, but none of its judged corpus ids are
+       present in ``corpus_ids`` -- the join between the run file's ranked candidates and
+       the qrels rows fails for that one query, without the query itself being unjudged.
+       This is checked PER QUERY, not only in aggregate: a set where nine queries score
+       cleanly and a tenth's judgments silently fail to join would pass an aggregate-only
+       check (nonzero total relevant-in-pool) while still producing a flattering, wrong
+       number for that tenth query -- exactly the averaging-over-the-wrong-population
+       failure this guard exists to prevent. (An earlier version of this function checked
+       only the whole-set aggregate; the commissioning spec's Probe B is stricter and this
+       version implements it. The aggregate condition is now a corollary: if every query's
+       relevant-in-pool count is zero, this per-query check already catches it.)
 
     Both conditions are checked at the harness's real join code path -- this function takes
     the same ``qrels_by_query`` and ``corpus_ids`` structures the ranker and scorer consume,
     not a hand-built fixture -- so the guard's vitality can be demonstrated by mutating the
     real inputs (see ``eval/k1/tests/test_guards.py``).
 
-    Returns a ``QrelsJoinReport`` on success. Never returns partial success: a mix of some
-    queries with qrels and some without does NOT raise (per-query zero-qrels is legitimate
-    in some BEIR-style sets only if genuinely no test query is affected); this function is
-    strict per Section 6.2's row 4 -- ANY zero-qrels test query aborts the whole run, because
-    a partial abort would silently drop exactly the query most likely to expose a join bug.
+    Returns a ``QrelsJoinReport`` on success. Never returns partial success: aborts the
+    WHOLE run on any single triggering query, because a partial abort would silently drop
+    exactly the query most likely to expose a join bug.
     """
     if not test_query_ids:
         raise K1GuardError(
@@ -101,13 +111,18 @@ def validate_qrels_join(
         if relevant_in_pool == 0:
             queries_with_zero_relevant_in_pool.append(qid)
 
-    if total_relevant_in_pool == 0:
+    # Probe B: PER-QUERY check. A query with real qrels rows whose judged documents do not
+    # appear in the corpus pool is a join failure for that query specifically, and is
+    # refused even when other queries in the same set score fine.
+    if queries_with_zero_relevant_in_pool:
         raise K1GuardError(
             "K1_QRELS_EMPTY",
-            f"[{set_name}] {total_qrels_rows} qrels rows exist across "
-            f"{len(test_query_ids)} test queries, but ZERO resolve to a document present "
-            f"in the corpus pool being ranked -- the qrels/corpus join matched nothing",
-            total_qrels_rows=total_qrels_rows,
+            f"[{set_name}] {len(queries_with_zero_relevant_in_pool)} of "
+            f"{len(test_query_ids)} test quer(y/ies) have qrels rows but NONE resolve to a "
+            f"document present in the corpus pool being ranked -- the qrels/corpus join "
+            f"failed for {queries_with_zero_relevant_in_pool[:10]}"
+            f"{'...' if len(queries_with_zero_relevant_in_pool) > 10 else ''}",
+            queries=queries_with_zero_relevant_in_pool,
         )
 
     return QrelsJoinReport(

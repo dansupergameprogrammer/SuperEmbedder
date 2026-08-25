@@ -1,9 +1,9 @@
 U-K1 INSTRUMENT -- READINGS QUARANTINED. Commissioning (must-accept + two must-reject constructions, design Section 6.4) has not been executed by an independent seat. No reading emitted below is a gate verdict until that commissioning fires correctly.
 
-Run: smoke-scifact-50  (2026-08-25T11:29:37)
+Run: smoke-scifact-50  (2026-08-25T11:36:33)
 
 == scifact ==  corpus=50 test_queries=3
-  executed chance nDCG@10: 0.0815 (std 0.0995, 200 trials)
+  executed chance nDCG@10: 0.0947 (std 0.1207, 200 trials)
   model                              nDCG@10   recall@10    MRR@10    ach.RP
   bm25                                1.0000      1.0000    1.0000    0.0000
   qwen2.5-0.5b-instruct-ps1           1.0000      1.0000    1.0000    0.0000

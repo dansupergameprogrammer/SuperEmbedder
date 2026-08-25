@@ -78,6 +78,39 @@ def cosine_topk(
 # --------------------------------------------------------------------------------------
 
 
+def write_trec_run(run: Mapping[str, Sequence[Tuple[str, float]]], path, run_name: str = "u-k1") -> None:
+    """Writes ``run`` (as produced by ``cosine_topk`` or ``bm25_baseline.bm25_topk``) to a
+    standard TREC run file: ``qid Q0 docid rank score run_name``, one line per (query,
+    document) pair, rank 1-based.
+
+    This exists so a commissioning executor can reuse an already-computed ranking file
+    (the independent commissioning spec's construction 3.3, must-reject 2: "Take
+    construction 3.1's already-computed reference-encoder TREC run file for each of the
+    four sets (no re-embedding)") without re-running the embedder.
+    """
+    lines = []
+    for qid, ranked in run.items():
+        for rank, (docid, score) in enumerate(ranked, start=1):
+            lines.append(f"{qid} Q0 {docid} {rank} {score:.6f} {run_name}")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + ("\n" if lines else ""))
+
+
+def read_trec_run(path) -> Dict[str, List[Tuple[str, float]]]:
+    """Reads a TREC run file back into the ``{qid: [(docid, score), ...]}`` shape every
+    scoring function in this module consumes. Rows are grouped by query id and returned in
+    file order (already rank-sorted by ``write_trec_run``)."""
+    run: Dict[str, List[Tuple[str, float]]] = {}
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            qid, _q0, docid, _rank, score, _run_name = line.split()
+            run.setdefault(qid, []).append((docid, float(score)))
+    return run
+
+
 def _dcg(gains: Sequence[float]) -> float:
     return sum(g / math.log2(i + 2) for i, g in enumerate(gains))
 

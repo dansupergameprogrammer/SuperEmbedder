@@ -53,7 +53,22 @@ def test_set_level_join_emptied_by_a_real_join_error_aborts():
     with pytest.raises(K1GuardError) as exc:
         validate_qrels_join("unit", test_query_ids, qrels_by_query, emptied_corpus_ids)
     assert exc.value.code == "K1_QRELS_EMPTY"
-    assert "matched nothing" in str(exc.value)
+    assert "join failed" in str(exc.value)
+
+
+def test_one_query_with_zero_relevant_in_pool_aborts_even_when_others_are_healthy():
+    """Probe B (Mendeleev's commissioning spec, Section 4): a query WITH real qrels rows
+    whose judged documents do not appear in the corpus pool is refused per-query, even when
+    every other query in the same set scores fine -- an aggregate-only check (nonzero total
+    relevant-in-pool across the set) would miss this."""
+    test_query_ids, qrels_by_query, corpus_ids = _healthy_inputs()
+    qrels_by_query = dict(qrels_by_query)
+    qrels_by_query["q2"] = {"synthetic-missing-doc": 1.0}  # q2 IS judged, but its only
+                                                            # relevant doc is absent from corpus_ids
+    with pytest.raises(K1GuardError) as exc:
+        validate_qrels_join("unit", test_query_ids, qrels_by_query, corpus_ids)
+    assert exc.value.code == "K1_QRELS_EMPTY"
+    assert "q2" in str(exc.value)
 
 
 def test_empty_test_query_list_aborts():

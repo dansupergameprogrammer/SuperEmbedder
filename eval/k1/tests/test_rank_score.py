@@ -14,7 +14,9 @@ from eval.k1.rank_score import (
     mrr_at_k,
     ndcg_at_k_own,
     ndcg_at_k_pytrec,
+    read_trec_run,
     recall_at_k,
+    write_trec_run,
 )
 
 
@@ -139,6 +141,21 @@ def test_unscoped_qrels_dilutes_the_mean_over_the_wrong_population():
     scoped_qrels = {"q0": full_qrels["q0"]}
     _per_q_scoped, mean_scoped = ndcg_at_k_own(scoped_qrels, run, k=10)
     assert mean_scoped == pytest.approx(1.0, abs=1e-9)  # correct once scoped
+
+
+def test_trec_run_file_round_trips(tmp_path):
+    """The commissioning spec's must-reject 2 (Mendeleev's construction 3.3) reuses
+    construction 3.1's already-computed TREC run file rather than re-embedding -- this
+    round-trip is what makes that reuse possible."""
+    _qrels, run = _toy_problem()
+    path = tmp_path / "run.trec"
+    write_trec_run(run, path, run_name="unit-test")
+    loaded = read_trec_run(path)
+    assert set(loaded.keys()) == set(run.keys())
+    for qid in run:
+        assert [docid for docid, _s in loaded[qid]] == [docid for docid, _s in run[qid]]
+        for (_, orig_score), (_, loaded_score) in zip(run[qid], loaded[qid]):
+            assert loaded_score == pytest.approx(orig_score, abs=1e-6)
 
 
 def test_executed_chance_level_is_near_zero_for_sparse_relevance():
