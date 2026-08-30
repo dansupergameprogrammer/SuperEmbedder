@@ -49,6 +49,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from eval.k1 import COMMISSIONED_SETS
 from eval.k1 import run_spec as run_spec_mod
 from eval.k1.run_spec import RunSpec
 from eval.k1.runner import render_human_table, run_gate
@@ -159,10 +160,31 @@ def run_r3() -> dict:
     return report
 
 
+def compose_public_row(public_sets: "tuple[str, ...]", commissioned_sets: "tuple[str, ...]") -> "tuple[tuple[str, ...], tuple[str, ...]]":
+    """Splits ``public_sets`` (design Section 16's full public-row roster) against
+    ``commissioned_sets`` (``eval.k1.COMMISSIONED_SETS``) into the subset safe to headline and
+    the subset withheld because it has not been independently commissioned yet.
+
+    **TE-44 review, G-1 (Significant).** Before this function existed, the caller composed
+    the headline from ``public_sets`` alone, with no intersection against the commissioned
+    cell -- the same class of gap TE-40's F-1 (Critical) found and fixed everywhere except
+    this one publishing surface: a set becomes load-bearing on a surface without its
+    commissioning being checked. Order-preserving over ``public_sets``."""
+    commissioned_set = set(commissioned_sets)
+    commissioned = tuple(s for s in public_sets if s in commissioned_set)
+    withheld = tuple(s for s in public_sets if s not in commissioned_set)
+    return commissioned, withheld
+
+
 def run_full_gate(r3_report: dict) -> Path:
     """Runs Run 1's full five-set sweep and augments its packet, in place, with the
     public/internal-diagnostic set split (design Section 16) and the R3 report -- so a reader
-    of ``run1-full.json`` sees both without cross-referencing a second artifact."""
+    of ``run1-full.json`` sees both without cross-referencing a second artifact.
+
+    The public row is composed against ``eval.k1.COMMISSIONED_SETS`` (TE-44 review, G-1): a
+    design-specified public set that has not itself been independently commissioned is
+    withheld from the headline by construction, and named on its own labelled line, rather
+    than being published under the same commissioning notice that forbids exactly that."""
     spec = run_spec_mod.run1_full()
     _log(f"Run 1: sets={spec.set_names} models={[m.name for m in spec.models]} "
          f"include_bm25={spec.include_bm25}")
@@ -170,14 +192,25 @@ def run_full_gate(r3_report: dict) -> Path:
 
     json_path = OUTPUT_ROOT / f"{spec.run_id}.json"
     packet = json.loads(json_path.read_text(encoding="utf-8"))
-    packet["public_sets"] = list(run_spec_mod.PUBLIC_SETS)
+    public_commissioned, public_withheld = compose_public_row(run_spec_mod.PUBLIC_SETS, COMMISSIONED_SETS)
+    packet["public_sets"] = list(public_commissioned)
+    packet["public_sets_withheld_uncommissioned"] = list(public_withheld)
     packet["internal_diagnostic_sets"] = list(run_spec_mod.INTERNAL_DIAGNOSTIC_SETS)
     packet["r3_replication"] = r3_report
     json_path.write_text(json.dumps(packet, indent=2, sort_keys=True), encoding="utf-8")
 
     table = render_human_table(packet)
     table += (
-        f"\npublic row (design Section 16): {', '.join(packet['public_sets'])}\n"
+        f"\npublic row (design Section 16): "
+        f"{', '.join(packet['public_sets']) or '(none commissioned yet)'}\n"
+    )
+    if packet["public_sets_withheld_uncommissioned"]:
+        table += (
+            f"withheld from public row (design Section 16 roster, not yet independently "
+            f"commissioned -- see eval.k1.COMMISSIONED_SETS): "
+            f"{', '.join(packet['public_sets_withheld_uncommissioned'])}\n"
+        )
+    table += (
         f"internal diagnostics (still gate F1/F2 internally, not surfaced publicly): "
         f"{', '.join(packet['internal_diagnostic_sets'])}\n"
         f"\nR3 (design Section 5) -- composed by this launcher, not the instrument itself:\n"
