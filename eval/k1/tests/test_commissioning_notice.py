@@ -14,8 +14,12 @@ SCIDOCS specifically, since the notice's own author does not get to assert SCIDO
 commissioning verdict -- that is executed and logged independently)."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from eval.k1 import COMMISSIONED_SETS, COMMISSIONING_NOTICE
 from eval.k1.set_roster import ALL_LOCKED_SETS
+
+README_PATH = Path(__file__).resolve().parents[1] / "README.md"
 
 
 def test_notice_restores_the_configuration_half_of_the_disposition_rule():
@@ -62,3 +66,17 @@ def test_commissioned_sets_does_not_yet_include_scidocs():
     dispatch -- not silently left asserting a stale gap."""
     assert "scidocs" not in COMMISSIONED_SETS
     assert set(ALL_LOCKED_SETS) - set(COMMISSIONED_SETS) == {"scidocs"}
+
+
+def test_readme_carries_the_notices_configuration_scoping_clause():
+    """F-15 (Observation, TE-40 review, `Claude/Poirot/41424b0-te40-k1-instrument-review.md`):
+    ``eval/k1/README.md``'s Commissioning section restates the same disposition rule
+    ``COMMISSIONING_NOTICE`` asserts, and no test in this suite referenced the README, so the
+    two could drift silently. TE-44 review, G-6: F-15 was still unclosed at the confirmation
+    pass, and the README's restatement had grown (one paragraph to two, plus a second
+    expanded restatement further down) in the same round that left it unpinned. Pins the one
+    clause distinguishing the fix this notice carries -- a construction firing does not
+    retroactively validate a different, unexecuted configuration -- present in both."""
+    assert "unexecuted configuration" in COMMISSIONING_NOTICE
+    readme_text = README_PATH.read_text(encoding="utf-8")
+    assert "unexecuted configuration" in readme_text
