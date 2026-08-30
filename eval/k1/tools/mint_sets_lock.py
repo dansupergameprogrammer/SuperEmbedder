@@ -10,12 +10,15 @@ With no arguments, mints every set in ``eval.k1.sets_lock.SET_REGISTRY`` (design
 four sets plus Section 16's SCIDOCS amendment). Merges into the existing sets.lock.json
 rather than overwriting sets not named.
 
-Note: a re-mint re-fetches from source and does not preserve a set's already-derived license
-(``_fetch_one_set`` always returns ``license=None, license_derived=False`` -- the fetch has no
-license step, design Section 2.4 routes that to the deriver). Re-running this tool with no
-arguments after a license has been landed by hand (as TE-39 did) will silently blank every
-named set's license fields back out; pass the specific set name(s) actually needing a refresh,
-or re-land the license fields afterward.
+``_fetch_one_set`` always returns ``license=None, license_derived=False`` -- the fetch has no
+license step, design Section 2.4 routes that to the deriver. **TE-40 review, F-9:** before
+this fix, ``main()`` merged a fresh fetch's ``license=None`` straight over an existing entry's
+already-derived license, so a bare re-mint silently blanked every named set's license back
+out -- taking every real gate path (``sets_lock.load_set``'s ``check_license_present`` guard)
+from *runs* to *refuses*. ``main()`` now carries a set's ``license``/``license_source``/
+``license_derived`` forward from the existing entry whenever the fresh fetch cannot supply
+them (which is always, for license -- the fetch has no license step at all), so a re-mint can
+never regress a license a prior derivation already landed.
 """
 import sys
 from pathlib import Path
@@ -31,6 +34,15 @@ def main() -> None:
     names = sys.argv[1:] or None
     existing = read_sets_lock(LOCK_PATH) if LOCK_PATH.exists() else {}
     fresh = mint_sets_lock(names)
+    for name, entry in fresh.items():
+        old = existing.get(name)
+        if old is not None and old.license_derived and not entry.license_derived:
+            # The fetch has no license step (design Section 2.4 routes that to the deriver)
+            # -- it always returns license=None, license_derived=False. Never let a re-mint
+            # regress a license a prior derivation already landed (TE-40 review, F-9).
+            entry.license = old.license
+            entry.license_source = old.license_source
+            entry.license_derived = old.license_derived
     existing.update(fresh)
     write_sets_lock(existing, LOCK_PATH)
     for name, entry in existing.items():
