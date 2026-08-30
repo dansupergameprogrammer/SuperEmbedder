@@ -6,8 +6,16 @@ derived by Linnaeus and needs writing into the lock).
 Usage:
     py -3.13 eval/k1/tools/mint_sets_lock.py [set_name ...]
 
-With no arguments, mints all four sets (design Section 2). Merges into the existing
-sets.lock.json rather than overwriting sets not named.
+With no arguments, mints every set in ``eval.k1.sets_lock.SET_REGISTRY`` (design Section 2's
+four sets plus Section 16's SCIDOCS amendment). Merges into the existing sets.lock.json
+rather than overwriting sets not named.
+
+Note: a re-mint re-fetches from source and does not preserve a set's already-derived license
+(``_fetch_one_set`` always returns ``license=None, license_derived=False`` -- the fetch has no
+license step, design Section 2.4 routes that to the deriver). Re-running this tool with no
+arguments after a license has been landed by hand (as TE-39 did) will silently blank every
+named set's license fields back out; pass the specific set name(s) actually needing a refresh,
+or re-land the license fields afterward.
 """
 import sys
 from pathlib import Path

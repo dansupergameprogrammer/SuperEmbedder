@@ -6,13 +6,19 @@ SCIDOCS as the publishable-set substitute for NFCorpus and FiQA-2018 on Run 1's 
 ruled D-SLM4705/D-SLM4686). SCIDOCS is not pinned and has no anchor before this script runs.
 
 Reuses the same fetch code paths ``mint_sets_lock.py`` and ``mint_anchors.py`` use for the
-other four sets (``eval.k1.sets_lock._fetch_one_set``, ``eval.k1.anchors.mint_anchors``) --
-this script adds the one repo id those tools' registries do not carry, rather than
-duplicating the fetch logic. License is not fetched (neither existing tool fetches license
-for any set -- Section 2.4 routes that to the deriver): SCIDOCS's CC BY 4.0 was already
-derived at primary source and filed in the design's own Section 16, so it is written in
-directly, the same way TE-39 stage (a) wrote the other four sets' Linnaeus-derived license
-strings into ``sets.lock.json`` by hand rather than by a fetch.
+other four sets (``eval.k1.sets_lock._fetch_one_set``, ``eval.k1.anchors.mint_anchors``)
+rather than duplicating the fetch logic. At the time this script was written (TE-39 stage
+(b)), ``eval.k1.sets_lock.SET_REGISTRY`` did not yet carry SCIDOCS's repo id, so this script
+supplied it directly (``SCIDOCS_REPO`` below); TE-40 has since added SCIDOCS to
+``SET_REGISTRY`` itself, so this script's own hardcoded ``SCIDOCS_REPO`` is now redundant with
+the registry rather than filling a gap in it -- both name the same repo id
+(``mteb/scidocs``), and this script's real remaining purpose is the design-figure cross-check
+below (Section 16's stated counts and anchor, checked rather than trusted) and the
+license/anchor write that ``mint_sets_lock.py`` alone does not perform for any set. License is
+not fetched by either existing tool for any set (Section 2.4 routes that to the deriver):
+SCIDOCS's CC BY 4.0 was already derived at primary source and filed in the design's own
+Section 16, so it is written in directly, the same way TE-39 stage (a) wrote the other four
+sets' Linnaeus-derived license strings into ``sets.lock.json`` by hand rather than by a fetch.
 
 Design Section 16's own stated figures are the check, not the input: 25,657 corpus documents,
 1,000 test queries, 29,928 qrels rows, published bge-small-en-v1.5 nDCG@10 of 0.20518. If the

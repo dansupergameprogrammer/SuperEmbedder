@@ -11,10 +11,14 @@ scoring); this module generalizes that guard to LOAD time, for every locked set,
 standing pin rather than something only discovered when a real gate run happens to reach the
 affected set.
 
-This test loads the real, locally-cached data for all four sets (per
+This test loads the real, locally-cached data for every set in ``SET_REGISTRY`` (per
 StandardsDocument.md 5.4's real-workload rule -- a mocked corpus cannot exercise the
 upstream-versioning defect class Finding A actually was) and is skipped, not mocked, when a
-set's cache entry is unavailable in this environment.
+set's cache entry is unavailable in this environment. Parametrized off ``SET_REGISTRY``
+rather than a written-out list (TE-40) so a set added to the registry is covered by this pin
+the moment it is added, with no second edit here -- before TE-40, ``SET_REGISTRY`` held only
+the original four sets and SCIDOCS's join integrity was never exercised by this permanent
+pin even though it had been a real locked set since TE-39.
 """
 from __future__ import annotations
 

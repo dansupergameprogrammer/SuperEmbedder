@@ -33,12 +33,17 @@ from eval.k1.guards import (
 
 LOCK_SCHEMA_VERSION = 1
 
-# The four sets chosen (design Section 2). Each maps to its MTEB mirror repo id.
+# The full locked-set registry: the four sets Section 2 originally chose, plus SCIDOCS
+# (Section 16's amendment, D-SLM4705/D-SLM4686). Each maps to its MTEB mirror repo id. This
+# is the registry every locked set is read from (`mint_sets_lock`'s default, and
+# `tests/test_sets_lock_join_integrity.py`'s `ALL_SET_NAMES`, TE-40) -- a set added to
+# `sets.lock.json` belongs here too, or nothing that iterates "every locked set" will see it.
 SET_REGISTRY = {
     "scifact": "mteb/scifact",
     "nfcorpus": "mteb/nfcorpus",
     "fiqa": "mteb/fiqa",
     "arguana": "mteb/arguana",
+    "scidocs": "mteb/scidocs",
 }
 
 # BEIR's published BM25 parameters (design Section 4.2's [U], resolved per the build brief's
@@ -187,9 +192,9 @@ def mint_sets_lock(
     set_names: Optional[List[str]] = None,
     hf_home: Optional[str] = None,
 ) -> Dict[str, SetLockEntry]:
-    """Executes the fetch for every requested set (default: all four) and returns the lock
-    entries. Does not write the file -- call ``write_sets_lock`` with the result, so a
-    caller can inspect before committing a new pin."""
+    """Executes the fetch for every requested set (default: every set in ``SET_REGISTRY``)
+    and returns the lock entries. Does not write the file -- call ``write_sets_lock`` with
+    the result, so a caller can inspect before committing a new pin."""
     hf_home = hf_home or os.environ.get("HF_HOME", str(Path.home() / ".cache" / "huggingface"))
     names = set_names or list(SET_REGISTRY.keys())
     entries = {}
