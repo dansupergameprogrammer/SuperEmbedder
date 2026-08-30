@@ -88,3 +88,83 @@ def test_a_remint_of_a_never_derived_set_carries_forward_the_missing_license_hon
     entry = written["sets"]["scifact"]
     assert entry["license"] is None
     assert entry["license_derived"] is False
+
+
+# --------------------------------------------------------------------------------------
+# G-4 (Minor, TE-44 review) -- F-9's carry-forward covered license only; bm25_params_derived
+# is the identically-shaped sibling group that was left unprotected.
+# --------------------------------------------------------------------------------------
+
+
+def test_a_bare_remint_no_longer_blanks_already_derived_bm25_parameters(tmp_path, monkeypatch):
+    """Mirrors the license test above for the sibling ``*_derived`` group. Before the fix,
+    ``_fetch_one_set``'s identically-unsupplied ``bm25_k1=0.9, bm25_b=0.4,
+    bm25_params_derived=False`` would silently overwrite a real derived pair -- and unlike a
+    blanked license (which flips the gate loudly, refuses -> runs), a blanked BM25 parameter
+    is replaced by a plausible non-None default, so the guard that only tests for None stays
+    green while the gate quietly scores against BEIR defaults instead of the derived values."""
+    lock_path = tmp_path / "sets.lock.json"
+    existing_payload = {
+        "schema_version": 1,
+        "sets": {
+            "scifact": {
+                "hf_repo": "mteb/scifact", "revision": "oldsha", "license": "CC BY 4.0",
+                "license_source": "https://example.invalid/license", "license_derived": True,
+                "corpus_docs": 5183, "queries_all": 1109, "queries_test": 300,
+                "qrels_test_rows": 339,
+                "file_digests": {"corpus": "x", "queries": "y", "qrels_test": "z"},
+                "bm25_k1": 1.23, "bm25_b": 0.77, "bm25_params_derived": True,
+                "fetch_date": "2026-08-25", "qrels_reconciled_dropped": 0,
+            },
+        },
+    }
+    lock_path.write_text(json.dumps(existing_payload), encoding="utf-8")
+    monkeypatch.setattr(mod, "LOCK_PATH", lock_path)
+    monkeypatch.setattr(mod, "mint_sets_lock", lambda names: {"scifact": _fresh_entry("refetch")})
+    monkeypatch.setattr("sys.argv", ["mint_sets_lock.py"])
+
+    mod.main()
+
+    written = json.loads(lock_path.read_text(encoding="utf-8"))
+    entry = written["sets"]["scifact"]
+    assert entry["bm25_k1"] == 1.23, "the already-derived BM25 k1 must survive a bare re-mint"
+    assert entry["bm25_b"] == 0.77
+    assert entry["bm25_params_derived"] is True
+    # the license group (also already derived) must be unaffected by this group's handling
+    assert entry["license"] == "CC BY 4.0"
+    assert entry["license_derived"] is True
+    # what the fetch DOES supply still refreshes
+    assert entry["revision"] == "freshsha"
+
+
+def test_a_remint_of_never_derived_bm25_parameters_carries_forward_the_default_honestly(tmp_path, monkeypatch):
+    """A set whose BM25 parameters have never been independently derived
+    (bm25_params_derived already False, carrying only the stated BEIR default) is not a
+    regression case."""
+    lock_path = tmp_path / "sets.lock.json"
+    existing_payload = {
+        "schema_version": 1,
+        "sets": {
+            "scifact": {
+                "hf_repo": "mteb/scifact", "revision": "oldsha", "license": None,
+                "license_source": None, "license_derived": False,
+                "corpus_docs": 5183, "queries_all": 1109, "queries_test": 300,
+                "qrels_test_rows": 339,
+                "file_digests": {"corpus": "x", "queries": "y", "qrels_test": "z"},
+                "bm25_k1": 0.9, "bm25_b": 0.4, "bm25_params_derived": False,
+                "fetch_date": "2026-08-25", "qrels_reconciled_dropped": 0,
+            },
+        },
+    }
+    lock_path.write_text(json.dumps(existing_payload), encoding="utf-8")
+    monkeypatch.setattr(mod, "LOCK_PATH", lock_path)
+    monkeypatch.setattr(mod, "mint_sets_lock", lambda names: {"scifact": _fresh_entry("refetch")})
+    monkeypatch.setattr("sys.argv", ["mint_sets_lock.py"])
+
+    mod.main()
+
+    written = json.loads(lock_path.read_text(encoding="utf-8"))
+    entry = written["sets"]["scifact"]
+    assert entry["bm25_params_derived"] is False
+    assert entry["bm25_k1"] == 0.9
+    assert entry["bm25_b"] == 0.4
