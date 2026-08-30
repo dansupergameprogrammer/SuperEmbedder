@@ -64,6 +64,27 @@
       "queries_test": 323,
       "revision": "52ac3f19d3449632d9f00aab0ad34a110fc03816"
     },
+    "scidocs": {
+      "bm25_b": 0.4,
+      "bm25_k1": 0.9,
+      "bm25_params_derived": false,
+      "corpus_docs": 25657,
+      "fetch_date": "2026-08-30",
+      "file_digests": {
+        "corpus": "dccb82e0fd4ffc81def2722296e5a09d60a4401bd365944c0044c730198f17e7",
+        "qrels_test": "e8878a329875307efcf5c25acfdda9428c41331f8095777817a010f4de512dd8",
+        "queries": "8d2d187ae4baecf254d0d223a3542f73c01b4aba6101b0248d91ec355ff57e03"
+      },
+      "hf_repo": "mteb/scidocs",
+      "license": "CC BY 4.0",
+      "license_derived": true,
+      "license_source": "https://github.com/allenai/scidocs/blob/main/LICENSE (fetched at current HEAD; supersedes the BEIR paper's stale GPLv3 citation -- design Section 16, D-SLM4705)",
+      "qrels_reconciled_dropped": 0,
+      "qrels_test_rows": 29928,
+      "queries_all": 1000,
+      "queries_test": 1000,
+      "revision": "490848228d0a9ca7a7244f5e77d8fe33e6df6974"
+    },
     "scifact": {
       "bm25_b": 0.4,
       "bm25_k1": 0.9,
