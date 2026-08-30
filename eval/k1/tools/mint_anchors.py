@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """Re-runs the fetch that produces ``eval/k1/anchors.json``. Executed 2026-08-25; all four
 fetched values reproduced te33-k1-gate-design-2026-08-25.md Section 4.1's published table
-exactly (delta 0.0 on every set) -- see the build log for the run's console output.
+exactly (delta 0.0 on every set) -- see the build log for the run's console output. SCIDOCS
+added to ``eval.k1.anchors.TASKS`` (TE-40 review, F-6): with no argument this now fetches
+all five of the design's locked-set anchors, including SCIDOCS, in one run.
+
+Merges the freshly-fetched anchors into the existing file rather than overwriting it whole
+(TE-40 review, F-6, mirroring ``mint_sets_lock.py``'s ``existing.update(fresh)``): before
+this fix, a bare re-run wrote only ``TASKS``' four-task default, silently dropping any
+anchor (SCIDOCS's, minted separately by ``mint_scidocs.py``) the existing file carried that
+this run did not re-fetch.
 
 Usage:
     py -3.13 eval/k1/tools/mint_anchors.py
@@ -11,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from eval.k1.anchors import DESIGN_EXPECTED_NDCG10, mint_anchors, write_anchors
+from eval.k1.anchors import DESIGN_EXPECTED_NDCG10, mint_anchors, read_anchors, write_anchors
 
 ANCHORS_PATH = Path(__file__).resolve().parents[1] / "anchors.json"
 
@@ -32,15 +40,20 @@ def main() -> None:
             print(f"  {key}: fetched={fetched} design={expected} delta={delta}")
         print("Per the build brief: stop and file the discrepancy rather than proceed.")
         sys.exit(1)
+
+    existing = read_anchors(ANCHORS_PATH)["reference"] if ANCHORS_PATH.exists() else {}
+    merged: dict = dict(existing)
+    merged.update(anchors)  # freshly-fetched entries (AnchorEntry) override; the rest carry forward as-is
     write_anchors(
-        anchors, ANCHORS_PATH,
+        merged, ANCHORS_PATH,
         bm25_note=(
             "Published per-task BM25 nDCG@10 not fetched -- no stable BM25 model entry "
             "exists in mteb/results (spec gap G-4, build log). F2 uses the local BM25 run "
             "directly."
         ),
     )
-    print(f"ALL {len(anchors)} ANCHORS REPRODUCED THE DESIGN TABLE. written {ANCHORS_PATH}")
+    print(f"ALL {len(anchors)} ANCHORS REPRODUCED THE DESIGN TABLE. written {ANCHORS_PATH} "
+          f"({len(merged)} anchor(s) total, merged with existing).")
 
 
 if __name__ == "__main__":

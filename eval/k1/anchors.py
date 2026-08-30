@@ -31,9 +31,9 @@ from __future__ import annotations
 
 import datetime
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 MTEB_RESULTS_DATASET = "mteb/results"
 MTEB_RESULTS_DATASET_SHA = "fbfca6f624278ab416ede77e17cd91466113178c"
@@ -41,18 +41,25 @@ REFERENCE_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 REFERENCE_MODEL_REVISION = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
 
 # task id -> (mteb task name as stored in mteb/results, expected published value from the
-# design's Section 4.1 table, used only to cross-check the fetch reproduces it).
+# design's Section 4.1 table, used only to cross-check the fetch reproduces it). "scidocs"
+# added TE-40 review, F-6: the design's Section 16 amendment names SCIDOCS's published
+# anchor (0.20518) explicitly; before this fix, mint_anchors.py's default run fetched only
+# these four, so re-running it against the five-entry anchors.json committed by
+# tools/mint_scidocs.py silently dropped SCIDOCS's anchor on write (`write_anchors`
+# overwrites the file whole, no merge).
 TASKS = {
     "scifact": "SciFact",
     "nfcorpus": "NFCorpus",
     "fiqa": "FiQA2018",
     "arguana": "ArguAna",
+    "scidocs": "SCIDOCS",
 }
 DESIGN_EXPECTED_NDCG10 = {
     "scifact": 0.71273,
     "nfcorpus": 0.34264,
     "fiqa": 0.40343,
     "arguana": 0.60348,
+    "scidocs": 0.20518,
 }
 
 
@@ -128,10 +135,15 @@ def mint_anchors(tasks: Optional[Dict[str, str]] = None) -> Dict[str, AnchorEntr
     return anchors
 
 
-def write_anchors(anchors: Dict[str, AnchorEntry], path: Path, bm25_note: str) -> None:
+def write_anchors(anchors: Dict[str, Union[AnchorEntry, dict]], path: Path, bm25_note: str) -> None:
+    """Writes ``anchors.json`` whole. ``anchors`` maps a set name to either a freshly-minted
+    ``AnchorEntry`` or a plain dict (an existing entry read back from a prior write, carried
+    forward unchanged) -- ``mint_anchors.py``'s tool merges a fresh fetch into the existing
+    file the same way ``mint_sets_lock.py`` does (TE-40 review, F-6), so re-running this tool
+    over a subset of ``TASKS`` never silently drops the anchors it was not asked to refresh."""
     payload = {
         "schema_version": 1,
-        "reference": {key: asdict(a) for key, a in anchors.items()},
+        "reference": {key: (asdict(a) if is_dataclass(a) else a) for key, a in anchors.items()},
         "bm25": {"note": bm25_note},
     }
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")

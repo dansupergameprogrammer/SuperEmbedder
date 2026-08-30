@@ -7,18 +7,16 @@ ruled D-SLM4705/D-SLM4686). SCIDOCS is not pinned and has no anchor before this 
 
 Reuses the same fetch code paths ``mint_sets_lock.py`` and ``mint_anchors.py`` use for the
 other four sets (``eval.k1.sets_lock._fetch_one_set``, ``eval.k1.anchors.mint_anchors``)
-rather than duplicating the fetch logic. At the time this script was written (TE-39 stage
-(b)), ``eval.k1.sets_lock.SET_REGISTRY`` did not yet carry SCIDOCS's repo id, so this script
-supplied it directly (``SCIDOCS_REPO`` below); TE-40 has since added SCIDOCS to
-``SET_REGISTRY`` itself, so this script's own hardcoded ``SCIDOCS_REPO`` is now redundant with
-the registry rather than filling a gap in it -- both name the same repo id
-(``mteb/scidocs``), and this script's real remaining purpose is the design-figure cross-check
-below (Section 16's stated counts and anchor, checked rather than trusted) and the
-license/anchor write that ``mint_sets_lock.py`` alone does not perform for any set. License is
-not fetched by either existing tool for any set (Section 2.4 routes that to the deriver):
-SCIDOCS's CC BY 4.0 was already derived at primary source and filed in the design's own
-Section 16, so it is written in directly, the same way TE-39 stage (a) wrote the other four
-sets' Linnaeus-derived license strings into ``sets.lock.json`` by hand rather than by a fetch.
+rather than duplicating the fetch logic, and reads the repo id from
+``eval.k1.sets_lock.SET_REGISTRY`` (TE-40 added SCIDOCS there; TE-40 review Finding F-14
+removed this script's own now-redundant hardcoded copy of the same id). This script's real
+remaining purpose is the design-figure cross-check below (Section 16's stated counts and
+anchor, checked rather than trusted) and the license/anchor write that ``mint_sets_lock.py``
+alone does not perform for any set. License is not fetched by either existing tool for any
+set (Section 2.4 routes that to the deriver): SCIDOCS's CC BY 4.0 was already derived at
+primary source and filed in the design's own Section 16, so it is written in directly, the
+same way TE-39 stage (a) wrote the other four sets' Linnaeus-derived license strings into
+``sets.lock.json`` by hand rather than by a fetch.
 
 Design Section 16's own stated figures are the check, not the input: 25,657 corpus documents,
 1,000 test queries, 29,928 qrels rows, published bge-small-en-v1.5 nDCG@10 of 0.20518. If the
@@ -39,9 +37,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from eval.k1.anchors import mint_anchors
-from eval.k1.sets_lock import _fetch_one_set, read_sets_lock, write_sets_lock
+from eval.k1.sets_lock import SET_REGISTRY, _fetch_one_set, read_sets_lock, write_sets_lock
 
-SCIDOCS_REPO = "mteb/scidocs"
 LOCK_PATH = Path(__file__).resolve().parents[1] / "sets.lock.json"
 ANCHORS_PATH = Path(__file__).resolve().parents[1] / "anchors.json"
 
@@ -65,7 +62,7 @@ def main() -> None:
     hf_home = os.environ.get("HF_HOME", str(Path.home() / ".cache" / "huggingface"))
 
     print("Fetching SCIDOCS sets.lock entry (corpus, queries, test qrels)...")
-    entry = _fetch_one_set("scidocs", SCIDOCS_REPO, hf_home)
+    entry = _fetch_one_set("scidocs", SET_REGISTRY["scidocs"], hf_home)
     entry.license = SCIDOCS_LICENSE
     entry.license_source = SCIDOCS_LICENSE_SOURCE
     entry.license_derived = True
