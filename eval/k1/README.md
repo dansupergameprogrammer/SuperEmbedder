@@ -11,13 +11,19 @@ Per `StandardsDocument.md` 5.4 ("An instrument is commissioned before its verdic
 load-bearing -- and never by its own maker"): the commissioning constructions -- a
 must-accept and two must-reject constructions, design Section 6.4 -- are authored by a seat
 independent of this instrument's builder, not by this package. **Until those three
-constructions are executed and fire correctly, every reading this instrument produces is
-quarantined: recorded, never acted on, never headlined, and not read into any gate
-verdict.** As of 2026-08-25 (D-SLM4707, see **Commissioning status** below) all three fire
-correctly and the instrument's readings are load-bearing, subject to the design's own
-re-commissioning rule (any subsequent change to the loader, ranker, scorer, or guard
-requires the affected constructions to be re-fired before a new reading from the changed
-code is trusted). Every entry point prints the current status
+constructions are executed and fire correctly for a given set, every reading this instrument
+produces on that set is quarantined: recorded, never acted on, never headlined, and not read
+into any gate verdict as load-bearing.** As of 2026-08-25 (D-SLM4707, see **Commissioning
+status** below) all three fire correctly on the four sets in `eval.k1.COMMISSIONED_SETS`
+(SciFact, NFCorpus, FiQA-2018, ArguAna), and the instrument's readings on those four sets are
+load-bearing. A construction that fires does not retroactively validate a different,
+unexecuted configuration (commissioning spec Section 5): any other set the design locks --
+today, SCIDOCS -- carries no commissioning of its own until an independent seat runs the
+constructions against it and logs the verdict, whatever the gate's own required-set roster
+says. This is a separate condition from, and additional to, the design's own component
+re-commissioning rule: any subsequent change to the loader, ranker, scorer, or guard
+requires the affected constructions to be re-fired, on every set they touch, before a new
+reading from the changed code is trusted. Every entry point prints the current status
 (`eval.k1.COMMISSIONING_NOTICE`) before emitting a result -- that constant is this
 package's one standing statement of status; this section restates it for a reader who has
 not opened the code, and is not itself the source of truth.
@@ -78,12 +84,21 @@ build round answered successive findings:
   re-executed all three constructions end to end: **all three fire correctly on all four
   sets** (SciFact, NFCorpus, FiQA-2018, ArguAna). **Overall verdict: COMMISSIONED.**
 
-**Readings this instrument produces from commit `3426bee` forward are load-bearing**, subject
-to the design's own re-commissioning rule stated in the commissioning spec itself: any
-subsequent change to the loader, ranker, scorer, or guard requires the constructions it
-touches to be re-fired before a new reading from the changed code is trusted. This section and
-`eval.k1.COMMISSIONING_NOTICE` (the code) must read the same status; if they ever disagree,
-the code's notice governs and this section is stale.
+**Readings this instrument produces on `eval.k1.COMMISSIONED_SETS`, from commit `3426bee`
+forward, are load-bearing.** This is scoped to that four-set cell, not to the instrument as a
+whole: SCIDOCS was added to the design's locked-set roster five days after this execution
+(TE-39, D-SLM4705/D-SLM4686) and has never itself been commissioned -- adding a set changes
+no loader, ranker, scorer, or guard, so the component re-commissioning rule below does not
+cover it, and the commissioning spec's own disposition rule states a construction firing does
+not retroactively validate a different, unexecuted configuration. SCIDOCS's own commissioning
+is executed and logged as a follow-on decision-log entry independently of this section
+(TE-41), and this section is updated alongside `eval.k1.COMMISSIONED_SETS` when that lands.
+Readings are also subject to the design's own component re-commissioning rule, a separate
+condition: any subsequent change to the loader, ranker, scorer, or guard requires the
+constructions it touches to be re-fired, on every set they touch, before a new reading from
+the changed code is trusted. This section and `eval.k1.COMMISSIONING_NOTICE` (the code) must
+read the same status; if they ever disagree, the code's notice governs and this section is
+stale.
 
 ## Running it
 
