@@ -361,6 +361,33 @@ def test_rescore_refuses_when_out_equals_the_input_packet_path(smoke_copy):
 
 
 # --------------------------------------------------------------------------------------
+# G-5 (Minor, TE-44 review) -- F-13's guard covers --out == the input packet path only; the
+# derived table path (output_path.with_suffix(".txt")) can still collide with --out itself.
+# --------------------------------------------------------------------------------------
+
+
+def test_rescore_refuses_when_out_has_a_non_json_suffix(smoke_copy, tmp_path):
+    """The exact repro from the TE-44 casebook: --out collide.txt makes the derived table
+    path (collide.txt.with_suffix('.txt') == collide.txt) equal --out itself, so the table
+    write silently overwrote the packet write and the file named as the corrected packet was
+    not valid JSON."""
+    out = tmp_path / "collide.txt"
+    with pytest.raises(RescoreRefusalError) as exc:
+        rescore_packet(smoke_copy, output_path=out)
+    assert "must end in .json" in str(exc.value)
+    assert not out.exists(), "a refused rescore must not write anything"
+
+
+def test_rescore_accepts_a_json_suffixed_out_without_collision(smoke_copy, tmp_path):
+    out = tmp_path / "corrected.json"
+    rescore_packet(smoke_copy, output_path=out)
+    assert out.exists()
+    assert out.with_suffix(".txt").exists()
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert "run_id" in written  # the packet write was not clobbered by the table write
+
+
+# --------------------------------------------------------------------------------------
 # F-1 propagation -- the rescored gate_verdict carries the uncommissioned-set fact.
 # --------------------------------------------------------------------------------------
 

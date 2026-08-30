@@ -154,7 +154,28 @@ def rescore_packet(
                 f"packet is never overwritten (StandardsDocument.md 6.6). Choose a different "
                 f"output path."
             )
+        if output_path.suffix != ".json":
+            # TE-44 review, G-5: F-13's guard above covers only --out == the input packet
+            # path. The corrected packet is always written as JSON, and its table path is
+            # derived from it by replacing the suffix with .txt -- a non-.json --out (e.g.
+            # "collide.txt") makes that derived table path equal --out itself, so the table
+            # write silently overwrites the packet write. Executed: --out collide.txt wrote a
+            # single file, not valid JSON, that the diff report still named as the packet.
+            raise RescoreRefusalError(
+                f"--out ({output_path}) must end in .json -- the corrected packet is always "
+                f"written as JSON, and the human-readable table's path is derived from it by "
+                f"replacing the suffix with .txt; a non-.json --out collides that derived "
+                f"table path with the packet write. Choose a different --out."
+            )
     table_path = output_path.with_suffix(".txt")
+    if table_path.resolve() in (packet_path.resolve(), output_path.resolve()):
+        # Belt-and-suspenders on the same guard: the suffix check above already prevents this
+        # for every caller that reaches it, but this covers the default (output_path is None)
+        # path too, and any future change to how table_path is derived.
+        raise RescoreRefusalError(
+            f"the derived table path ({table_path}) would overwrite the input packet or the "
+            f"corrected packet being written -- choose a different --out."
+        )
 
     packet = json.loads(packet_path.read_text(encoding="utf-8"))
     run_id = packet["run_id"]
