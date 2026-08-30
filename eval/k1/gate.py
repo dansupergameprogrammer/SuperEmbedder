@@ -5,12 +5,12 @@ this arithmetic as text but, before this module, no code computed it -- `rank_sc
 `runner.py` report readings only. This module is the verdict stage that reads an executed
 run packet (`runner.run_gate`'s return value) and computes the gate's pass/fail decision.
 
-**Quarantine is unaffected.** This module answers "what would the gate say about this
-packet's readings," nothing more. Per `eval.k1.QUARANTINE_NOTICE` and the design's own
-Section 6.3, a verdict this module computes is not load-bearing until the instrument
-commissions (`StandardsDocument.md` Section 5.4) -- computing the arithmetic does not lift
-that quarantine, and every caller of `evaluate_gate` is expected to treat its output exactly
-as quarantined as the packet it was computed from.
+**This module never asserts the instrument's status.** It answers "what would the gate say
+about this packet's readings," nothing more -- the verdict it computes carries exactly the
+standing of the instrument that produced the readings it was computed from, per the design's
+own Section 6.3. That standing is asserted in exactly one place, `eval.k1.COMMISSIONING_NOTICE`,
+and every caller of `evaluate_gate` reads it there rather than assuming a status from this
+module's silence about it (`StandardsDocument.md` Section 5.4).
 
 **The two floors, quoted from the design:**
 

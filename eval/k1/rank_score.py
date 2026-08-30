@@ -18,7 +18,8 @@ Design reference: te33-k1-gate-design-2026-08-25.md Section 6.2 row 3, Section 3
   than assuming chance analytically.
 
 Nothing in this module computes a gate verdict (pass/fail against F1/F2). It reports
-readings; per the package's quarantine notice, those readings are not load-bearing.
+readings; their standing (load-bearing or quarantined) is asserted in exactly one place,
+``eval.k1.COMMISSIONING_NOTICE`` -- see that module for the instrument's current status.
 """
 from __future__ import annotations
 

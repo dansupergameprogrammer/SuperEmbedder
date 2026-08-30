@@ -8,7 +8,7 @@ single-machine single-pass run; R4 (cross-machine) and the full commissioning co
 are explicitly out of this module's scope (see module docstring in ``eval/k1/__init__.py``
 and the build log).
 
-Every entry point prints ``eval.k1.QUARANTINE_NOTICE`` before returning a packet.
+Every entry point prints ``eval.k1.COMMISSIONING_NOTICE`` before returning a packet.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from eval.k1 import QUARANTINE_NOTICE
+from eval.k1 import COMMISSIONING_NOTICE
 from eval.k1.bm25_baseline import bm25_topk, build_bm25_index
 from eval.k1.embed_runner import embed_corpus, embed_queries
 from eval.k1.gate import GateVerdict, evaluate_gate
@@ -71,12 +71,12 @@ def run_gate(
     anchors_path: Optional[Path] = None,
     output_dir: Optional[Path] = None,
 ) -> dict:
-    print(QUARANTINE_NOTICE)
+    print(COMMISSIONING_NOTICE)
     lock = read_sets_lock(sets_lock_path)
     anchors = json.loads(anchors_path.read_text(encoding="utf-8")) if anchors_path and anchors_path.exists() else None
 
     packet: dict = {
-        "quarantine_notice": QUARANTINE_NOTICE,
+        "commissioning_notice": COMMISSIONING_NOTICE,
         "self_exclusion_convention": SELF_EXCLUSION_NOTE,
         "run_id": run_spec.run_id,
         "is_gate_reading": run_spec.is_gate_reading,
@@ -200,10 +200,10 @@ def run_gate(
         packet["sets"][set_name] = set_result
 
     # The verdict stage (design Section 4, U-K1 fix round Finding C). Computes the F1/F2
-    # floor-gate arithmetic over this packet's own readings. This does NOT lift quarantine:
-    # per QUARANTINE_NOTICE and the design's Section 6.3, the verdict below is not
-    # load-bearing until the instrument commissions -- it is reported so a reader does not
-    # have to re-derive the design's own arithmetic by hand, nothing more.
+    # floor-gate arithmetic over this packet's own readings. Its standing is exactly the
+    # standing of the instrument that produced the readings it was computed from -- see
+    # eval.k1.COMMISSIONING_NOTICE for the current status, the ONE place that status is
+    # asserted (design Section 6.3).
     gate_verdict: GateVerdict = evaluate_gate(packet)
     packet["gate_verdict"] = asdict(gate_verdict)
 
@@ -219,7 +219,7 @@ def run_gate(
 
 def render_human_table(packet: dict) -> str:
     lines = [
-        packet["quarantine_notice"],
+        packet.get("commissioning_notice", packet.get("quarantine_notice", COMMISSIONING_NOTICE)),
         "",
         packet.get("self_exclusion_convention", SELF_EXCLUSION_NOTE),
         "",
@@ -243,7 +243,10 @@ def render_human_table(packet: dict) -> str:
 
     gate_verdict = packet.get("gate_verdict")
     if gate_verdict is not None:
-        lines.append("== gate verdict (F1/F2, design Section 4 -- quarantined, not load-bearing) ==")
+        # No status claim is restated here -- the notice printed at the top of this table
+        # (eval.k1.COMMISSIONING_NOTICE) is this packet's one standing statement of the
+        # instrument's status, and this verdict's own standing is exactly that status's.
+        lines.append("== gate verdict (F1/F2, design Section 4) ==")
         lines.append(f"  overall: {'PASS' if gate_verdict['passed'] else 'FAIL/INCOMPLETE'} -- {gate_verdict['reason']}")
         for set_name, by_model in gate_verdict["per_set"].items():
             for model_name, verdict in by_model.items():
