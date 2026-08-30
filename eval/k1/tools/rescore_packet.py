@@ -161,7 +161,7 @@ def rescore_packet(
 
     diff: dict = {
         "run_id": run_id, "packet_path": str(packet_path), "notice_only": notice_only,
-        "reading_deltas": [], "trec_files_missing": [],
+        "reading_deltas": [], "trec_files_missing": [], "r1_deletions": [],
     }
 
     qrels_cache: Dict[str, Dict[str, Dict[str, float]]] = {}
@@ -199,21 +199,42 @@ def rescore_packet(
                 model_result["achieved_resolving_power"] = rp
                 model_result["rescored_by"] = RESCORE_TOOL_ID
 
-                # R1, the independent scorer -- only for a model_result that already carried
-                # it (mirrors runner.run_gate's own per-run r1_independent_scorer choice,
-                # rather than adding a field the original run never computed for this model).
-                if "ndcg_at_10_r1_independent" in model_result:
+                # R1, the independent scorer -- for a model_result that already carries EITHER
+                # of the producing path's two mutually-exclusive R1 outcomes
+                # (runner.run_gate writes exactly one of the three fields below, never a
+                # subset that omits the third: runner.py:186-191 -- success writes
+                # "ndcg_at_10_r1_independent" + "r1_agreement_delta"; failure writes
+                # "r1_independent_scorer_error"). TE-40 review Finding F-2's remedy keyed this
+                # branch on the two success fields alone, so a packet carrying only the error
+                # field skipped it -- a stale "scorer unavailable" string could survive a
+                # rescore run on a machine where the scorer works (TE-44 review, G-2,
+                # direction one). Keying on the union of all three closes that.
+                if {"ndcg_at_10_r1_independent", "r1_independent_scorer_error"} & model_result.keys():
                     try:
                         from eval.k1.rank_score import ndcg_at_k_pytrec
 
                         _per_q_r1, mean_r1 = ndcg_at_k_pytrec(qrels_by_query, run, k=10)
                         model_result["ndcg_at_10_r1_independent"] = mean_r1
                         model_result["r1_agreement_delta"] = abs(mean_ndcg - mean_r1)
-                    except ImportError:
-                        # genuinely cannot be recomputed in this environment -- delete rather
-                        # than carry a now-stale value forward (TE-40 review Finding F-2).
-                        model_result.pop("ndcg_at_10_r1_independent", None)
-                        model_result.pop("r1_agreement_delta", None)
+                        model_result.pop("r1_independent_scorer_error", None)
+                    except ImportError as e:
+                        # genuinely cannot be recomputed in this environment. Recorded the
+                        # same way the producing path records this exact condition
+                        # (runner.py:191, "r1_independent_scorer_error") rather than deleted
+                        # with no trace -- and any R1 reading this deletes is appended to the
+                        # diff report, so rescore_report (F-12: the record of what a rescore
+                        # changed) shows the mutation instead of going silent on R1 entirely
+                        # (TE-44 review, G-2, direction two).
+                        removed = {
+                            field: model_result.pop(field)
+                            for field in ("ndcg_at_10_r1_independent", "r1_agreement_delta")
+                            if field in model_result
+                        }
+                        model_result["r1_independent_scorer_error"] = str(e)
+                        if removed:
+                            diff["r1_deletions"].append({
+                                "set": set_name, "model": model_name, "removed_fields": removed,
+                            })
 
                 # R2, the published-anchor comparison -- against the anchor value the packet
                 # already stored (the anchor itself is not re-fetched by a rescore), only for

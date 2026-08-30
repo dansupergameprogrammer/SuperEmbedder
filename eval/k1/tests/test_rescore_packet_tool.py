@@ -147,8 +147,12 @@ def test_rescore_refreshes_r1_and_r2_delta_fields_not_only_the_headline_ndcg(smo
 
 
 def test_rescore_deletes_r1_fields_when_the_independent_scorer_cannot_be_recomputed(smoke_copy, tmp_path, monkeypatch):
-    """F-2's stated fallback: a field that genuinely cannot be recomputed is deleted, not
-    carried forward stale."""
+    """F-2's stated fallback: the two R1 success fields are removed, not carried forward
+    stale, when R1 genuinely cannot be recomputed. TE-44 review G-2, direction two: the
+    removal is no longer silent -- the producing path's own convention for this exact
+    condition (``r1_independent_scorer_error``, runner.py:191) is written in their place, and
+    the deletion is recorded into ``rescore_report`` (via the returned diff), the artifact
+    F-12 exists specifically so a reader can see what a rescore changed."""
     import eval.k1.tools.rescore_packet as mod
 
     def _raise(*a, **kw):
@@ -156,12 +160,58 @@ def test_rescore_deletes_r1_fields_when_the_independent_scorer_cannot_be_recompu
 
     monkeypatch.setattr("eval.k1.rank_score.ndcg_at_k_pytrec", _raise)
     out = tmp_path / "out.json"
-    rescore_packet(smoke_copy, output_path=out)
+    diff = rescore_packet(smoke_copy, output_path=out)
     written = json.loads(out.read_text(encoding="utf-8"))
-    for set_result in written["sets"].values():
-        for model_result in set_result["models"].values():
+
+    deletions_seen = 0
+    for set_name, set_result in written["sets"].items():
+        for model_name, model_result in set_result["models"].items():
             assert "ndcg_at_10_r1_independent" not in model_result
             assert "r1_agreement_delta" not in model_result
+            if "bm25" in model_name:
+                continue  # bm25 never carries R1 -- nothing to delete or record
+            assert model_result["r1_independent_scorer_error"] == "pytrec_eval not installed (simulated)"
+            deletions_seen += 1
+
+    assert deletions_seen > 0, "the fixture must exercise at least one model that carried R1"
+    assert len(diff["r1_deletions"]) == deletions_seen
+    for entry in diff["r1_deletions"]:
+        assert "ndcg_at_10_r1_independent" in entry["removed_fields"]
+        assert "r1_agreement_delta" in entry["removed_fields"]
+    assert written["rescore_report"]["r1_deletions"] == diff["r1_deletions"]
+
+
+def test_rescore_corrects_a_stale_r1_scorer_error_when_the_scorer_is_actually_available(smoke_copy, tmp_path):
+    """TE-44 review G-2, direction one: a packet produced where ``pytrec_eval`` was
+    unavailable carries ``r1_independent_scorer_error`` and neither success field. Before the
+    fix, the rescore's R1 branch was keyed on the success fields alone, so this packet never
+    entered it -- the stale error string survived a rescore run on a machine (this one, per
+    the TE-44 casebook's own verification log) where the scorer is actually importable. After
+    the fix, the branch is entered on either field, the scorer runs, and the stale error is
+    replaced by a real reading."""
+    data = json.loads(smoke_copy.read_text(encoding="utf-8"))
+    mutated = False
+    for set_result in data["sets"].values():
+        for model_result in set_result["models"].values():
+            if "ndcg_at_10_r1_independent" in model_result:
+                del model_result["ndcg_at_10_r1_independent"]
+                del model_result["r1_agreement_delta"]
+                model_result["r1_independent_scorer_error"] = "No module named 'pytrec_eval'"
+                mutated = True
+    assert mutated, "the fixture must carry at least one model with R1 fields to mutate"
+    smoke_copy.write_text(json.dumps(data), encoding="utf-8")
+
+    out = tmp_path / "out.json"
+    rescore_packet(smoke_copy, output_path=out)
+    written = json.loads(out.read_text(encoding="utf-8"))
+    corrected = 0
+    for set_result in written["sets"].values():
+        for model_result in set_result["models"].values():
+            if "ndcg_at_10_r1_independent" in model_result:
+                assert "r1_independent_scorer_error" not in model_result
+                assert isinstance(model_result["r1_agreement_delta"], float)
+                corrected += 1
+    assert corrected > 0, "at least one stale-error model must be corrected to a real reading"
 
 
 # --------------------------------------------------------------------------------------
