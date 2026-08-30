@@ -247,6 +247,45 @@ def test_rescore_notice_only_mode_succeeds_without_run_files_and_says_so(tmp_pat
 
 
 # --------------------------------------------------------------------------------------
+# G-3 (Minor, TE-44 review) -- --notice-only is recorded everywhere except the human table.
+# --------------------------------------------------------------------------------------
+
+
+def test_notice_only_is_visible_on_the_top_level_packet(smoke_copy, tmp_path):
+    out = tmp_path / "out.json"
+    rescore_packet(smoke_copy, output_path=out, notice_only=True)
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["rescore_notice_only"] is True
+
+
+def test_notice_only_is_visible_on_the_human_table(tmp_path):
+    """Before the fix, a --notice-only rescore's .txt contained no occurrence of
+    'notice_only', of 'rescor', or of any statement that readings were carried over
+    unchanged -- the flag survived only nested inside rescore_report.notice_only in the JSON.
+    The table is the surface this package deliberately prints its commissioning notice on for
+    a reader who does not open the code; a mode whose whole purpose is to mark readings
+    untouched must mark them there."""
+    packet_only = tmp_path / SMOKE_PACKET_NAME
+    _skip_unless_cached()
+    packet_only.write_text((SMOKE_OUTPUT / SMOKE_PACKET_NAME).read_text(encoding="utf-8"), encoding="utf-8")
+
+    out = tmp_path / "out.json"
+    rescore_packet(packet_only, output_path=out, notice_only=True)
+    table = out.with_suffix(".txt").read_text(encoding="utf-8")
+    assert "NOTICE-ONLY" in table
+    assert "were NOT recomputed" in table
+
+
+def test_a_normal_non_notice_only_rescore_does_not_carry_the_notice_only_banner(smoke_copy, tmp_path):
+    out = tmp_path / "out.json"
+    rescore_packet(smoke_copy, output_path=out)
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["rescore_notice_only"] is False
+    table = out.with_suffix(".txt").read_text(encoding="utf-8")
+    assert "NOTICE-ONLY" not in table
+
+
+# --------------------------------------------------------------------------------------
 # F-4 (Significant) -- the license guard is disabled on a gate path.
 # --------------------------------------------------------------------------------------
 

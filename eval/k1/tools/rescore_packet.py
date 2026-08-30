@@ -266,6 +266,9 @@ def rescore_packet(
     packet["self_exclusion_convention"] = SELF_EXCLUSION_NOTE
     packet["rescored_from"] = str(packet_path)
     packet["rescore_tool"] = RESCORE_TOOL_ID
+    packet["rescore_notice_only"] = notice_only  # TE-44 review, G-3: readable at a glance on
+                                                  # the packet, not only nested inside
+                                                  # rescore_report.notice_only
 
     diff["gate_verdict_passed"] = {"old": old_passed, "new": new_gate_verdict.passed}
     diff["notice"] = {"changed": old_notice != COMMISSIONING_NOTICE, "old": old_notice, "new": COMMISSIONING_NOTICE}
@@ -273,7 +276,18 @@ def rescore_packet(
     packet["rescore_report"] = diff  # TE-40 review Finding F-12: persisted, not only printed
 
     output_path.write_text(json.dumps(packet, indent=2, sort_keys=True), encoding="utf-8")
-    table_path.write_text(render_human_table(packet), encoding="utf-8")
+
+    # TE-44 review, G-3: notice_only's whole purpose is to mark a packet's readings as
+    # deliberately untouched, and before this the mark existed only nested inside the JSON
+    # (rescore_report.notice_only) -- invisible on the human table, the surface this package
+    # deliberately prints its commissioning notice on for a reader who does not open the code.
+    table = render_human_table(packet)
+    if notice_only:
+        table += (
+            "\nNOTICE-ONLY RESCORE -- readings were NOT recomputed; only the gate verdict and "
+            "status notice were refreshed from this packet's own already-stored readings.\n"
+        )
+    table_path.write_text(table, encoding="utf-8")
 
     return diff
 
