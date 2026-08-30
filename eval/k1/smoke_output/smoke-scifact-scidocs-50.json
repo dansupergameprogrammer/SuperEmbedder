@@ -1,0 +1,298 @@
+{
+  "date": "2026-08-30T08:28:19",
+  "gate_verdict": {
+    "four_set_complete": false,
+    "passed": false,
+    "per_model_passed": {
+      "qwen3-embedding-0.6b": false
+    },
+    "per_set": {
+      "scidocs": {
+        "qwen3-embedding-0.6b": {
+          "f1": {
+            "achieved_rp": 0.045406620004197894,
+            "candidate_value": 0.24844927476892092,
+            "fires": false,
+            "floor": "F1",
+            "floor_label": "reference",
+            "floor_value": 0.22604272954544544,
+            "note": "F1 passes: candidate (0.24845) meets or exceeds the reference floor (0.22604).",
+            "passed": true,
+            "shortfall": -0.022406545223475488
+          },
+          "f2": {
+            "achieved_rp": 0.045406620004197894,
+            "candidate_value": 0.24844927476892092,
+            "fires": false,
+            "floor": "F2",
+            "floor_label": "bm25",
+            "floor_value": 0.18054000497993375,
+            "note": "F2 passes: candidate (0.24845) meets or exceeds the bm25 floor (0.18054).",
+            "passed": true,
+            "shortfall": -0.06790926978898718
+          },
+          "model_name": "qwen3-embedding-0.6b",
+          "passed": true,
+          "set_name": "scidocs"
+        }
+      },
+      "scifact": {
+        "qwen3-embedding-0.6b": {
+          "f1": {
+            "achieved_rp": 0.0,
+            "candidate_value": 1.0,
+            "fires": false,
+            "floor": "F1",
+            "floor_label": "reference",
+            "floor_value": 1.0,
+            "note": "F1 passes: candidate (1.00000) meets or exceeds the reference floor (1.00000).",
+            "passed": true,
+            "shortfall": 0.0
+          },
+          "f2": {
+            "achieved_rp": 0.0,
+            "candidate_value": 1.0,
+            "fires": false,
+            "floor": "F2",
+            "floor_label": "bm25",
+            "floor_value": 1.0,
+            "note": "F2 passes: candidate (1.00000) meets or exceeds the bm25 floor (1.00000).",
+            "passed": true,
+            "shortfall": 0.0
+          },
+          "model_name": "qwen3-embedding-0.6b",
+          "passed": true,
+          "set_name": "scifact"
+        }
+      }
+    },
+    "reason": "qwen3-embedding-0.6b: gated on ['scidocs', 'scifact'], missing ['arguana', 'fiqa', 'nfcorpus']",
+    "sets_present": [
+      "scidocs",
+      "scifact"
+    ],
+    "skips": []
+  },
+  "is_gate_reading": false,
+  "quarantine_notice": "U-K1 INSTRUMENT -- READINGS QUARANTINED. Commissioning was executed once and returned NOT COMMISSIONED (build findings D-SLM4688/D-SLM4689, since fixed); the fix has not yet been verified by re-running the must-accept and both must-reject constructions (design Section 6.4) against an independent seat. No reading emitted below is a gate verdict until that re-run fires correctly.",
+  "run_id": "smoke-scifact-scidocs-50",
+  "self_exclusion_convention": "Self-exclusion convention: a candidate document whose id equals the ranking query's own id is dropped from the ranked list before truncation to k (BEIR's ignore_identical_ids=True, on by default in beir/retrieval/evaluation.py, which is the convention every published anchor read against this instrument was itself produced under). This fires only on sets where a query id can also name a corpus document (ArguAna today); it is a no-op everywhere else, verified by executed check. Implemented once, in eval.k1.self_exclusion.exclude_self_and_truncate, and applied uniformly by every ranker in this package (the dense ranker and the BM25 baseline) -- U-K1 fix round 2 (D-SLM4699) fixed the dense ranker; fix round 2b (D-SLM4699 class fix) extracted the shared helper so the BM25 baseline, which carried the identical defect, is fixed by the same code rather than a second, independently-written copy.",
+  "sets": {
+    "scidocs": {
+      "corpus_docs_used": 50,
+      "executed_chance": {
+        "mean": 0.08854824822931595,
+        "std": 0.035640194610808716,
+        "trials": 200
+      },
+      "guard": {
+        "queries_with_zero_qrels": [],
+        "queries_with_zero_relevant_in_pool": [],
+        "set_name": "scidocs",
+        "test_query_count": 29,
+        "total_qrels_rows": 870,
+        "total_relevant_in_pool": 32
+      },
+      "hf_repo": "mteb/scidocs",
+      "models": {
+        "bge-small-en-v1.5-reference": {
+          "achieved_resolving_power": 0.0525542400519072,
+          "corpus_manifest": {
+            "batch_size": 64,
+            "dtype": "bfloat16",
+            "gpu_name": "NVIDIA GeForce RTX 2080 SUPER",
+            "hf_repo": "BAAI/bge-small-en-v1.5",
+            "max_length": 512,
+            "model_name": "bge-small-en-v1.5-reference",
+            "n_items": 50,
+            "pooling": "native:cls",
+            "revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
+            "torch_version": "2.6.0+cu124",
+            "transformers_version": "5.13.1",
+            "vector_dim": 384,
+            "vectors_sha256": "66630b725340940517a8ca5a8d5b71f0ea8e444e8af7dc2d033b4459559adac7"
+          },
+          "mrr_at_10": 0.5391215106732348,
+          "ndcg_at_10": 0.22604272954544544,
+          "ndcg_at_10_r1_independent": 0.2260427295454454,
+          "published_anchor_ndcg_at_10": 0.20518,
+          "query_manifest": {
+            "batch_size": 64,
+            "dtype": "bfloat16",
+            "gpu_name": "NVIDIA GeForce RTX 2080 SUPER",
+            "hf_repo": "BAAI/bge-small-en-v1.5",
+            "max_length": 512,
+            "model_name": "bge-small-en-v1.5-reference",
+            "n_items": 29,
+            "pooling": "native:cls",
+            "revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
+            "torch_version": "2.6.0+cu124",
+            "transformers_version": "5.13.1",
+            "vector_dim": 384,
+            "vectors_sha256": "a2af7836a304f75c3fe9dae5b329c10d5780c00e74f2d3a50a3b3c0ca8e99f25"
+          },
+          "r1_agreement_delta": 2.7755575615628914e-17,
+          "r2_delta_vs_anchor": 0.020862729545445435,
+          "recall_at_10": 0.19310344827586212
+        },
+        "bm25": {
+          "achieved_resolving_power": 0.0612052501979355,
+          "bm25_b": 0.4,
+          "bm25_k1": 0.9,
+          "bm25_params_derived": false,
+          "mrr_at_10": 0.43021346469622324,
+          "ndcg_at_10": 0.18054000497993375,
+          "recall_at_10": 0.15172413793103454
+        },
+        "qwen3-embedding-0.6b": {
+          "achieved_resolving_power": 0.045406620004197894,
+          "corpus_manifest": {
+            "batch_size": 8,
+            "dtype": "bfloat16",
+            "gpu_name": "NVIDIA GeForce RTX 2080 SUPER",
+            "hf_repo": "Qwen/Qwen3-Embedding-0.6B",
+            "max_length": 512,
+            "model_name": "qwen3-embedding-0.6b",
+            "n_items": 50,
+            "pooling": "native:last_token",
+            "revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+            "torch_version": "2.6.0+cu124",
+            "transformers_version": "5.13.1",
+            "vector_dim": 1024,
+            "vectors_sha256": "82bb8436221d63e9091a1422a6a39334d9341ecc58459c7efddd5364768e3be5"
+          },
+          "mrr_at_10": 0.6167487684729063,
+          "ndcg_at_10": 0.24844927476892092,
+          "ndcg_at_10_r1_independent": 0.24844927476892084,
+          "query_manifest": {
+            "batch_size": 8,
+            "dtype": "bfloat16",
+            "gpu_name": "NVIDIA GeForce RTX 2080 SUPER",
+            "hf_repo": "Qwen/Qwen3-Embedding-0.6B",
+            "max_length": 512,
+            "model_name": "qwen3-embedding-0.6b",
+            "n_items": 29,
+            "pooling": "native:last_token",
+            "revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+            "torch_version": "2.6.0+cu124",
+            "transformers_version": "5.13.1",
+            "vector_dim": 1024,
+            "vectors_sha256": "04e298e1636e40eaaa42d5860cb41f007c5c80c5d06fdbed4f8143b1faed1b1c"
+          },
+          "r1_agreement_delta": 8.326672684688674e-17,
+          "recall_at_10": 0.2
+        }
+      },
+      "revision": "490848228d0a9ca7a7244f5e77d8fe33e6df6974",
+      "test_queries_used": 29
+    },
+    "scifact": {
+      "corpus_docs_used": 50,
+      "executed_chance": {
+        "mean": 0.09249824487749594,
+        "std": 0.11110574079179941,
+        "trials": 200
+      },
+      "guard": {
+        "queries_with_zero_qrels": [],
+        "queries_with_zero_relevant_in_pool": [],
+        "set_name": "scifact",
+        "test_query_count": 3,
+        "total_qrels_rows": 3,
+        "total_relevant_in_pool": 3
+      },
+      "hf_repo": "mteb/scifact",
+      "models": {
+        "bge-small-en-v1.5-reference": {
+          "achieved_resolving_power": 0.0,
+          "corpus_manifest": {
+            "batch_size": 64,
+            "dtype": "bfloat16",
+            "gpu_name": "NVIDIA GeForce RTX 2080 SUPER",
+            "hf_repo": "BAAI/bge-small-en-v1.5",
+            "max_length": 512,
+            "model_name": "bge-small-en-v1.5-reference",
+            "n_items": 50,
+            "pooling": "native:cls",
+            "revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
+            "torch_version": "2.6.0+cu124",
+            "transformers_version": "5.13.1",
+            "vector_dim": 384,
+            "vectors_sha256": "b4639c8ba5c1d80dbe963a04d7b3140c892129bec92b8bf0dd4a1b1b288ee743"
+          },
+          "mrr_at_10": 1.0,
+          "ndcg_at_10": 1.0,
+          "ndcg_at_10_r1_independent": 1.0,
+          "published_anchor_ndcg_at_10": 0.71273,
+          "query_manifest": {
+            "batch_size": 64,
+            "dtype": "bfloat16",
+            "gpu_name": "NVIDIA GeForce RTX 2080 SUPER",
+            "hf_repo": "BAAI/bge-small-en-v1.5",
+            "max_length": 512,
+            "model_name": "bge-small-en-v1.5-reference",
+            "n_items": 3,
+            "pooling": "native:cls",
+            "revision": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a",
+            "torch_version": "2.6.0+cu124",
+            "transformers_version": "5.13.1",
+            "vector_dim": 384,
+            "vectors_sha256": "b25eda520e34da9c67cfe4d7effd6c36935dd69ed91a0df5008a726851a8a506"
+          },
+          "r1_agreement_delta": 0.0,
+          "r2_delta_vs_anchor": 0.28727,
+          "recall_at_10": 1.0
+        },
+        "bm25": {
+          "achieved_resolving_power": 0.0,
+          "bm25_b": 0.4,
+          "bm25_k1": 0.9,
+          "bm25_params_derived": false,
+          "mrr_at_10": 1.0,
+          "ndcg_at_10": 1.0,
+          "recall_at_10": 1.0
+        },
+        "qwen3-embedding-0.6b": {
+          "achieved_resolving_power": 0.0,
+          "corpus_manifest": {
+            "batch_size": 8,
+            "dtype": "bfloat16",
+            "gpu_name": "NVIDIA GeForce RTX 2080 SUPER",
+            "hf_repo": "Qwen/Qwen3-Embedding-0.6B",
+            "max_length": 512,
+            "model_name": "qwen3-embedding-0.6b",
+            "n_items": 50,
+            "pooling": "native:last_token",
+            "revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+            "torch_version": "2.6.0+cu124",
+            "transformers_version": "5.13.1",
+            "vector_dim": 1024,
+            "vectors_sha256": "20add793394a1ca3d59a013f74c791d59f952fb8585ceb487793296b6cc5710d"
+          },
+          "mrr_at_10": 1.0,
+          "ndcg_at_10": 1.0,
+          "ndcg_at_10_r1_independent": 1.0,
+          "query_manifest": {
+            "batch_size": 8,
+            "dtype": "bfloat16",
+            "gpu_name": "NVIDIA GeForce RTX 2080 SUPER",
+            "hf_repo": "Qwen/Qwen3-Embedding-0.6B",
+            "max_length": 512,
+            "model_name": "qwen3-embedding-0.6b",
+            "n_items": 3,
+            "pooling": "native:last_token",
+            "revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+            "torch_version": "2.6.0+cu124",
+            "transformers_version": "5.13.1",
+            "vector_dim": 1024,
+            "vectors_sha256": "36f15dd9af0e3a90d8b9d0c8022e6db9931579125688c23f90bf1314ffe746a7"
+          },
+          "r1_agreement_delta": 0.0,
+          "recall_at_10": 1.0
+        }
+      },
+      "revision": "cf10ab6856b15b0e670ef8ae5dae4e266c12d035",
+      "test_queries_used": 3
+    }
+  }
+}
