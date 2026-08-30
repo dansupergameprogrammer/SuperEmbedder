@@ -105,17 +105,22 @@ def _stub_r3_report() -> dict:
     }
 
 
-def test_run_full_gate_withholds_scidocs_from_the_written_packet_and_table(tmp_path, monkeypatch):
+def test_run_full_gate_withholds_a_manually_uncommissioned_set_from_the_written_packet_and_table(
+    tmp_path, monkeypatch
+):
+    """TE-47 added SCIDOCS to eval.k1.COMMISSIONED_SETS (D-SLM5363): today's real commissioning
+    cell no longer leaves a gap against run_spec.PUBLIC_SETS, so this test can no longer use
+    SCIDOCS as a naturally-occurring withheld example -- as the pre-fix version of this test's
+    own comment anticipated ("this test's premise changes with it and is not this fix's to
+    defend"). It demonstrates the same withholding mechanism generically instead, via
+    monkeypatch, matching test_gate.py's sibling fix for the same drift."""
     monkeypatch.setattr(mod, "OUTPUT_ROOT", tmp_path)
     monkeypatch.setattr(mod, "run_gate", _fake_run_gate)
+    monkeypatch.setattr(mod, "COMMISSIONED_SETS", ("scifact", "nfcorpus", "fiqa", "arguana"))
 
     json_path = mod.run_full_gate(_stub_r3_report())
     packet = json.loads(json_path.read_text(encoding="utf-8"))
 
-    # today's actual commissioning cell (eval.k1.COMMISSIONED_SETS) excludes scidocs --
-    # confirmed independently by test_commissioning_notice.py's own pin. If that changes,
-    # this test's premise changes with it and is not this fix's to defend; the structural
-    # tests above are what proves the mechanism generalizes.
     assert "scidocs" not in packet["public_sets"]
     assert packet["public_sets_withheld_uncommissioned"] == ["scidocs"]
 
@@ -124,3 +129,23 @@ def test_run_full_gate_withholds_scidocs_from_the_written_packet_and_table(tmp_p
     assert "scidocs" not in public_row_line
     withheld_line = next(line for line in table.splitlines() if line.startswith("withheld from public row"))
     assert "scidocs" in withheld_line
+
+
+def test_run_full_gate_headlines_every_public_set_once_all_are_commissioned(tmp_path, monkeypatch):
+    """Today's real commissioning cell (eval.k1.COMMISSIONED_SETS, post-TE-47): every set in
+    run_spec.PUBLIC_SETS is commissioned, so the public row headlines all of them and nothing
+    is withheld. This is the mechanism's other side, now the real-world default -- the sibling
+    test above exercises the withheld side by monkeypatching a narrower cell."""
+    monkeypatch.setattr(mod, "OUTPUT_ROOT", tmp_path)
+    monkeypatch.setattr(mod, "run_gate", _fake_run_gate)
+
+    json_path = mod.run_full_gate(_stub_r3_report())
+    packet = json.loads(json_path.read_text(encoding="utf-8"))
+
+    assert set(packet["public_sets"]) == set(mod.run_spec_mod.PUBLIC_SETS)
+    assert packet["public_sets_withheld_uncommissioned"] == []
+
+    table = json_path.with_suffix(".txt").read_text(encoding="utf-8")
+    public_row_line = next(line for line in table.splitlines() if line.startswith("public row"))
+    assert "scidocs" in public_row_line
+    assert not any(line.startswith("withheld from public row") for line in table.splitlines())

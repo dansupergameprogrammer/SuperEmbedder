@@ -392,8 +392,27 @@ def test_rescore_accepts_a_json_suffixed_out_without_collision(smoke_copy, tmp_p
 # --------------------------------------------------------------------------------------
 
 
-def test_rescored_gate_verdict_names_scidocs_as_uncommissioned(smoke_copy, tmp_path):
+def test_rescored_gate_verdict_names_an_uncommissioned_required_set(smoke_copy, tmp_path, monkeypatch):
+    """TE-47 added SCIDOCS to eval.k1.COMMISSIONED_SETS (D-SLM5363), so it is no longer a
+    real-world example of an uncommissioned required set -- as test_gate.py's and
+    test_launch_run1_public_row.py's sibling fixes for the same drift do, this demonstrates
+    the propagation mechanism (`gate.evaluate_gate` -> the rescored packet's `gate_verdict`)
+    generically, via monkeypatch, rather than depending on which set happens to be
+    uncommissioned today."""
+    import eval.k1.gate as gate_mod
+
+    monkeypatch.setattr(gate_mod, "COMMISSIONED_SETS", ("scifact", "nfcorpus", "fiqa", "arguana"))
     out = tmp_path / "out.json"
     rescore_packet(smoke_copy, output_path=out)
     written = json.loads(out.read_text(encoding="utf-8"))
     assert written["gate_verdict"]["uncommissioned_required_sets"] == ["scidocs"]
+
+
+def test_rescored_gate_verdict_names_no_uncommissioned_set_once_all_are_commissioned(smoke_copy, tmp_path):
+    """Today's real commissioning cell (eval.k1.COMMISSIONED_SETS, post-TE-47) leaves no gap
+    against GATE_REQUIRED_SETS, so a rescored packet's gate_verdict names none -- the other
+    side of the mechanism the sibling test above exercises by narrowing the cell."""
+    out = tmp_path / "out.json"
+    rescore_packet(smoke_copy, output_path=out)
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert written["gate_verdict"]["uncommissioned_required_sets"] == []

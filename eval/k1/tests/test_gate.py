@@ -231,24 +231,30 @@ def test_gate_note_states_the_minimum_effect_size_rule():
 # --------------------------------------------------------------------------------------
 
 
-def test_gate_verdict_names_scidocs_as_the_uncommissioned_required_set():
-    """eval.k1.COMMISSIONED_SETS is the four-set cell D-SLM4707's execution actually fired
-    the commissioning constructions against; GATE_REQUIRED_SETS is the five-set roster
-    (Section 16). A passing, fully-evaluated verdict must still name the gap between them --
-    a reader of the verdict alone, not only the notice text, must be able to see that this
+def test_gate_verdict_names_an_uncommissioned_required_set(monkeypatch):
+    """GATE_REQUIRED_SETS is the design's full locked-set roster (Section 16). A passing,
+    fully-evaluated verdict must still name any gap against eval.k1.COMMISSIONED_SETS -- a
+    reader of the verdict alone, not only the notice text, must be able to see that this
     aggregation includes at least one set whose readings are quarantined pending its own
-    commissioning."""
-    from eval.k1 import COMMISSIONED_SETS
+    commissioning.
 
+    TE-41/TE-46/TE-47: SCIDOCS was that real-world gap (D-SLM5338, NOT COMMISSIONED) until
+    an independent seat built and executed a remedy construction and re-verdicted COMMISSIONED
+    (D-SLM5363), which this repository's own eval.k1.COMMISSIONED_SETS now reflects -- so this
+    pin no longer has a real-world uncommissioned required set to point at. It demonstrates the
+    same mechanism generically instead, via monkeypatch, exactly as the sibling test below
+    demonstrates the gap closing: this test demonstrates the gap opening."""
+    import eval.k1.gate as gate_mod
+
+    monkeypatch.setattr(
+        gate_mod, "COMMISSIONED_SETS", tuple(s for s in GATE_REQUIRED_SETS if s != "scidocs")
+    )
     packet = _packet_for_sets(GATE_REQUIRED_SETS, {name: 0.90 for name in GATE_REQUIRED_SETS})
     verdict = evaluate_gate(packet)
     assert verdict.passed
-    expected = sorted(set(GATE_REQUIRED_SETS) - set(COMMISSIONED_SETS))
-    assert expected, "this pin requires at least one required set to be outside COMMISSIONED_SETS"
-    assert verdict.uncommissioned_required_sets == expected
+    assert verdict.uncommissioned_required_sets == ["scidocs"]
     assert "not yet commissioned" in verdict.reason
-    for name in expected:
-        assert name in verdict.reason
+    assert "scidocs" in verdict.reason
 
 
 def test_gate_verdict_uncommissioned_required_sets_is_empty_once_a_set_is_added_to_the_cell(monkeypatch):

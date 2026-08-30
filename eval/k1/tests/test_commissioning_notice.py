@@ -50,8 +50,9 @@ def test_notice_does_not_claim_load_bearing_across_every_locked_set():
     as a blanket statement across every set the roster locks."""
     assert "load-bearing" in COMMISSIONING_NOTICE
     # The blanket pre-fix phrasing asserted load-bearing status unconditionally; the fixed
-    # text must qualify it to the four commissioned sets, named explicitly in the notice.
-    for name in ("SciFact", "NFCorpus", "FiQA-2018", "ArguAna"):
+    # text must qualify it to the commissioned sets, named explicitly in the notice. TE-47
+    # added SCIDOCS (D-SLM5363) to eval.k1.COMMISSIONED_SETS, so it is named here too.
+    for name in ("SciFact", "NFCorpus", "FiQA-2018", "ArguAna", "SCIDOCS"):
         assert name in COMMISSIONING_NOTICE
 
 
@@ -59,13 +60,16 @@ def test_commissioned_sets_is_a_subset_of_the_locked_set_roster():
     assert set(COMMISSIONED_SETS).issubset(set(ALL_LOCKED_SETS))
 
 
-def test_commissioned_sets_does_not_yet_include_scidocs():
-    """Pins today's actual commissioning state (D-SLM4707 execution3 Section 7: "four sets").
-    SCIDOCS's own commissioning is executed and logged independently (TE-41); when that
-    lands, this test is updated alongside eval.k1.COMMISSIONED_SETS as part of that
-    dispatch -- not silently left asserting a stale gap."""
-    assert "scidocs" not in COMMISSIONED_SETS
-    assert set(ALL_LOCKED_SETS) - set(COMMISSIONED_SETS) == {"scidocs"}
+def test_commissioned_sets_now_includes_scidocs():
+    """Pins today's actual commissioning state. TE-41 (D-SLM5338) first returned NOT
+    COMMISSIONED for SCIDOCS -- this test, at that time, pinned the resulting gap
+    (`set(ALL_LOCKED_SETS) - set(COMMISSIONED_SETS) == {"scidocs"}`). TE-46 built and
+    executed a remedy construction and re-verdicted COMMISSIONED (D-SLM5363); TE-47 landed
+    that verdict here. The gap this test pinned before is now closed -- updated alongside
+    eval.k1.COMMISSIONED_SETS as part of that landing, not silently left asserting a stale
+    state."""
+    assert "scidocs" in COMMISSIONED_SETS
+    assert set(ALL_LOCKED_SETS) - set(COMMISSIONED_SETS) == set()
 
 
 def test_readme_carries_the_notices_configuration_scoping_clause():

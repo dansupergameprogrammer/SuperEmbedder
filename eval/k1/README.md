@@ -13,20 +13,35 @@ must-accept and two must-reject constructions, design Section 6.4 -- are authore
 independent of this instrument's builder, not by this package. **Until those three
 constructions are executed and fire correctly for a given set, every reading this instrument
 produces on that set is quarantined: recorded, never acted on, never headlined, and not read
-into any gate verdict as load-bearing.** As of 2026-08-25 (D-SLM4707, see **Commissioning
-status** below) all three fire correctly on the four sets in `eval.k1.COMMISSIONED_SETS`
-(SciFact, NFCorpus, FiQA-2018, ArguAna), and the instrument's readings on those four sets are
-load-bearing. A construction that fires does not retroactively validate a different,
-unexecuted configuration (commissioning spec Section 5): any other set the design locks --
-today, SCIDOCS -- carries no commissioning of its own until an independent seat runs the
-constructions against it and logs the verdict, whatever the gate's own required-set roster
-says. This is a separate condition from, and additional to, the design's own component
-re-commissioning rule: any subsequent change to the loader, ranker, scorer, or guard
-requires the affected constructions to be re-fired, on every set they touch, before a new
-reading from the changed code is trusted. Every entry point prints the current status
+into any gate verdict as load-bearing.** As of 2026-08-30 (see **Commissioning status** below)
+all three fire correctly on all five sets in `eval.k1.COMMISSIONED_SETS` (SciFact, NFCorpus,
+FiQA-2018, ArguAna, SCIDOCS), and the instrument's readings on those five sets are
+load-bearing -- currently every set `eval.k1.set_roster.ALL_LOCKED_SETS` locks.
+`eval.k1.COMMISSIONING_DECISIONS` cites the exact decision ID that commissioned each set.
+
+**SCIDOCS carries a Note that survives its COMMISSIONED status: its must-reject-1 construction
+fires by a narrow margin** -- exceeds its own executed resolving power by roughly 3e-05, a
+genuine boundary case independently measured twice, corroborated across three seeds,
+non-replicating at two alternate embedding dimensions, and independently backed by an F2
+(local BM25 floor) rejection of the same construction at roughly 11x its own resolving power
+regardless of how the boundary itself resolves. This is stated here, not only in the code's
+own `eval.k1.COMMISSIONING_NOTICE`, so a reader of "SCIDOCS: COMMISSIONED" alone still learns
+it.
+
+A construction that fires does not retroactively validate a different, unexecuted
+configuration (commissioning spec Section 5): a set the design locks in the future, before an
+independent seat runs the constructions against it and logs the verdict, carries no
+commissioning of its own, whatever the gate's own required-set roster says. This is a
+separate condition from, and additional to, the design's own component re-commissioning rule:
+any subsequent change to the loader, ranker, scorer, or guard requires the affected
+constructions to be re-fired, on every set they touch, before a new reading from the changed
+code is trusted. Every entry point prints the current status
 (`eval.k1.COMMISSIONING_NOTICE`) before emitting a result -- that constant is this
 package's one standing statement of status; this section restates it for a reader who has
 not opened the code, and is not itself the source of truth.
+`eval/k1/tests/test_commissioned_sets_pin.py` pins `eval.k1.COMMISSIONED_SETS` against
+`eval.k1.COMMISSIONING_DECISIONS` and, where the sibling Wizard records repository is
+reachable, against the cited decision-log entries themselves.
 
 ## The six components (design Section 6.2)
 
@@ -84,21 +99,52 @@ build round answered successive findings:
   re-executed all three constructions end to end: **all three fire correctly on all four
   sets** (SciFact, NFCorpus, FiQA-2018, ArguAna). **Overall verdict: COMMISSIONED.**
 
-**Readings this instrument produces on `eval.k1.COMMISSIONED_SETS`, from commit `3426bee`
-forward, are load-bearing.** This is scoped to that four-set cell, not to the instrument as a
-whole: SCIDOCS was added to the design's locked-set roster five days after this execution
-(TE-39, D-SLM4705/D-SLM4686) and has never itself been commissioned -- adding a set changes
-no loader, ranker, scorer, or guard, so the component re-commissioning rule below does not
-cover it, and the commissioning spec's own disposition rule states a construction firing does
-not retroactively validate a different, unexecuted configuration. SCIDOCS's own commissioning
-is executed and logged as a follow-on decision-log entry independently of this section
-(TE-41), and this section is updated alongside `eval.k1.COMMISSIONED_SETS` when that lands.
-Readings are also subject to the design's own component re-commissioning rule, a separate
-condition: any subsequent change to the loader, ranker, scorer, or guard requires the
-constructions it touches to be re-fired, on every set they touch, before a new reading from
-the changed code is trusted. This section and `eval.k1.COMMISSIONING_NOTICE` (the code) must
-read the same status; if they ever disagree, the code's notice governs and this section is
-stale.
+**SCIDOCS was added to the design's locked-set roster five days later** (TE-39,
+D-SLM4705/D-SLM4686) and required its own commissioning pass, executed independently of the
+four-set pass above and in two rounds:
+
+- **TE-41** (`Claude/Mendeleev/te41-scidocs-commissioning-2026-08-30.md`, D-SLM5338,
+  2026-08-30) ran all three constructions against SCIDOCS. Must-accept fired; must-reject 1
+  fired, with a Note carried forward (see below); must-reject 2 -- the qrels-permutation join
+  attack -- did **not** fire, mechanistically traced to SCIDOCS's own query list carrying
+  topical clustering that the construction's fixed half-length positional shift does not
+  escape on this specific set, not to a code-level join defect. **Overall verdict: NOT
+  COMMISSIONED.** TE-41 named the remedy (a permutation guaranteeing topical, not merely
+  positional, separation) but did not build it.
+- **TE-46** (`Claude/Mendeleev/te46-scidocs-mustreject2-remedy-2026-08-30.md`, D-SLM5363,
+  2026-08-30), independent of TE-41's own authoring seat, independently re-verified all of
+  TE-41's readings from source, then built and executed the remedy: a content-distance-aware
+  derangement, assigning each query the least topically similar donor query available under a
+  global optimal (Hungarian) assignment, computed under two independent lexical-distance
+  definitions (word and character TF-IDF). Both fire: the broken-join reading collapses to
+  within resolving power of chance under both definitions, while the correct-join reading
+  reproduces the published anchor exactly. **Overall verdict: COMMISSIONED**, superseding
+  TE-41's NOT COMMISSIONED.
+
+**A Note that survives SCIDOCS's COMMISSIONED status, carried forward across both passes
+rather than dropped now that the status is favorable: SCIDOCS's must-reject-1 construction
+fires by a narrow margin.** Its reading exceeds its own executed resolving power by roughly
+3e-05 -- independently measured twice (TE-41, TE-46), both times a genuine boundary case:
+corroborated across three seeds' percentile placement within the chance distribution,
+non-replicating at two alternate embedding dimensions, and independently backed by an F2
+(local BM25 floor) rejection of the same construction at roughly 11x its own resolving power
+regardless of how the boundary itself resolves.
+
+**Readings this instrument produces on `eval.k1.COMMISSIONED_SETS`, from the commit each
+set's own verdict was filed at forward, are load-bearing.** `eval.k1.COMMISSIONING_DECISIONS`
+cites the exact decision ID per set. This currently covers all five sets
+`eval.k1.set_roster.ALL_LOCKED_SETS` locks -- a future set the design locks carries no
+commissioning of its own until an independent seat runs the constructions against it and logs
+the verdict; the commissioning spec's own disposition rule states a construction firing does
+not retroactively validate a different, unexecuted configuration. Readings are also subject
+to the design's own component re-commissioning rule, a separate condition: any subsequent
+change to the loader, ranker, scorer, or guard requires the constructions it touches to be
+re-fired, on every set they touch, before a new reading from the changed code is trusted.
+This section and `eval.k1.COMMISSIONING_NOTICE` (the code) must read the same status; if they
+ever disagree, the code's notice governs and this section is stale.
+`eval/k1/tests/test_commissioned_sets_pin.py` checks `eval.k1.COMMISSIONED_SETS` against
+`eval.k1.COMMISSIONING_DECISIONS` and, where reachable, against the filed decision-log
+entries themselves.
 
 ## Running it
 
@@ -142,6 +188,10 @@ repository) carries the original build narrative, every spec gap as first filed,
 executed smoke run's output. It does not carry what changed after it landed; read forward
 through `u-k1-fix1-2026-08-25.md`, `u-k1-fix2-2026-08-25.md`, `u-k1-fix2b-2026-08-25.md`
 (the commissioning fix rounds), `te39-k1-run1-launch-2026-08-30.md` (SCIDOCS minted, the
-roster reduced post-scout, Run 1 launched), and `te40-k1-stale-truth-sweep-2026-08-30.md`
-(this file's own status text corrected to match the third commissioning execution) for the
-current state.
+roster reduced post-scout, Run 1 launched), `te40-k1-stale-truth-sweep-2026-08-30.md` (this
+file's own status text corrected to match the third commissioning execution),
+`Claude/Mendeleev/te41-scidocs-commissioning-2026-08-30.md` (SCIDOCS's first commissioning
+pass, NOT COMMISSIONED), `Claude/Mendeleev/te46-scidocs-mustreject2-remedy-2026-08-30.md`
+(SCIDOCS's remedy construction, built and executed, re-verdicted COMMISSIONED), and
+`te47-land-scidocs-commissioned-2026-08-30.md` (SCIDOCS landed into
+`eval.k1.COMMISSIONED_SETS`) for the current state.
