@@ -47,6 +47,13 @@ QWEN3_EMB_QUERY_PROMPT = (
 PUBLIC_SETS = ("scifact", "arguana", "scidocs")
 INTERNAL_DIAGNOSTIC_SETS = ("nfcorpus", "fiqa")
 
+# The full locked-set roster this design's aggregation rule (Section 4.3) requires F1 and F2
+# to hold on -- both groups above gate identically, so this is their union, not a third list
+# maintained by hand. `gate.py::GATE_REQUIRED_SETS` is this tuple, not a retyped copy of it
+# (TE-40): a set added to either group above by a future amendment is required by the gate the
+# moment it is added here, with no second edit.
+ALL_LOCKED_SETS = PUBLIC_SETS + INTERNAL_DIAGNOSTIC_SETS
+
 MAX_LENGTH = 512  # design Section 7.1: the decided setting
 
 # Batch sizes at the 512-token cell (design Section 7.1's measured table); Qwen3-Embedding

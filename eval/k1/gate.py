@@ -20,7 +20,14 @@ module's silence about it (`StandardsDocument.md` Section 5.4).
 - **F2 (Section 4.2), the lexical floor:** "on every set, the candidate's nDCG@10 must exceed
   a locally executed BM25 baseline on that set by more than the achieved resolving power."
 - **The aggregation rule (Section 4.3):** "The gate passes a candidate if and only if F1 and
-  F2 both hold on all four sets. No best-of-N, no averaging, no waiver."
+  F2 both hold on all four sets. No best-of-N, no averaging, no waiver." **Section 16's
+  amendment extends "all four sets" to every set the design locks, without reopening the
+  conjunction rule itself**: "Section 4.3's aggregation rule is unchanged and applies to
+  SCIDOCS identically once it is added to the locked-set roster... F1 ∧ F2, all sets, no
+  waiver." `GATE_REQUIRED_SETS` below is therefore read from the roster
+  (`run_spec.ALL_LOCKED_SETS`) rather than hardcoded at the four-set count Section 4.3 was
+  written against, so a future amendment that grows the roster again needs no second edit
+  here (TE-40).
 - **The minimum-effect-size rule (Section 4.4):** "The gate acts only on a shortfall larger
   than the set's achieved resolving power. A candidate below a floor by less than RP is
   recorded as 'no shortfall detected at this resolution' and passes." This rule is stated
@@ -42,6 +49,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from eval.k1.run_spec import ALL_LOCKED_SETS
+
 MINIMUM_EFFECT_SIZE_RULE = (
     "The gate acts only on a shortfall larger than the achieved resolving power (RP). A "
     "shortfall <= RP is recorded as 'no shortfall detected at this resolution' and the floor "
@@ -50,7 +59,11 @@ MINIMUM_EFFECT_SIZE_RULE = (
 
 REFERENCE_SUFFIX = "reference"
 BM25_MODEL_NAME = "bm25"
-GATE_REQUIRED_SETS = ("scifact", "nfcorpus", "fiqa", "arguana")  # design Section 4.3
+
+# design Section 4.3, amended by Section 16 (D-SLM4705/D-SLM4686): every set the design locks,
+# not a count fixed at four. Read from run_spec's own roster rather than retyped here (TE-40)
+# so the two can never state a different set of "required" sets.
+GATE_REQUIRED_SETS = ALL_LOCKED_SETS
 
 
 @dataclass
@@ -138,14 +151,15 @@ def evaluate_candidate_on_set(set_name: str, model_name: str, candidate_ndcg: fl
 class GateVerdict:
     """The full gate decision over an executed run packet: every gated (candidate, set) pair,
     the skips (missing reference or bm25 reading), and the overall pass/fail per the
-    aggregation rule (design Section 4.3: F1 and F2 both hold, on all four sets, for a given
-    candidate model -- no best-of-N, no averaging, no waiver)."""
+    aggregation rule (design Section 4.3, amended by Section 16: F1 and F2 both hold, on
+    every required set (`GATE_REQUIRED_SETS`), for a given candidate model -- no best-of-N,
+    no averaging, no waiver)."""
 
     per_set: Dict[str, Dict[str, SetGateVerdict]] = field(default_factory=dict)  # set -> model -> verdict
     per_model_passed: Dict[str, bool] = field(default_factory=dict)  # model -> passed all evaluated sets
     skips: List[str] = field(default_factory=list)
     sets_present: List[str] = field(default_factory=list)
-    four_set_complete: bool = False
+    required_sets_complete: bool = False  # every set in GATE_REQUIRED_SETS is present in this packet
     passed: bool = False
     reason: str = ""
 
@@ -160,9 +174,10 @@ def evaluate_gate(packet: dict) -> GateVerdict:
     Never invents a reference or bm25 reading: a (set, model) pair missing either is recorded
     in `skips` and excluded from that model's aggregate rather than silently passed or
     failed. The overall `passed` field applies the design's own aggregation rule (Section
-    4.3) per model: a model passes the gate only if F1 and F2 both held on every one of the
-    four required sets (`GATE_REQUIRED_SETS`) that this packet evaluated for it; a model
-    evaluated on fewer than all four sets cannot pass, and `reason` states why.
+    4.3, amended by Section 16) per model: a model passes the gate only if F1 and F2 both
+    held on every one of the required sets (`GATE_REQUIRED_SETS`, the full locked-set roster
+    -- five sets today, never a count retyped here) that this packet evaluated for it; a
+    model evaluated on fewer than every required set cannot pass, and `reason` states why.
     """
     per_set: Dict[str, Dict[str, SetGateVerdict]] = {}
     skips: List[str] = []
@@ -192,16 +207,16 @@ def evaluate_gate(packet: dict) -> GateVerdict:
             model_set_results.setdefault(model_name, {})[set_name] = verdict
 
     sets_present = sorted(sets.keys())
-    four_set_complete = set(GATE_REQUIRED_SETS).issubset(set(sets_present))
+    required_sets_complete = set(GATE_REQUIRED_SETS).issubset(set(sets_present))
 
     per_model_passed: Dict[str, bool] = {}
     reasons: List[str] = []
     for model_name, by_set in model_set_results.items():
         model_sets_evaluated = set(by_set.keys())
-        model_four_set_complete = set(GATE_REQUIRED_SETS).issubset(model_sets_evaluated)
+        model_required_sets_complete = set(GATE_REQUIRED_SETS).issubset(model_sets_evaluated)
         model_all_pass = all(v.passed for v in by_set.values())
-        per_model_passed[model_name] = model_four_set_complete and model_all_pass
-        if not model_four_set_complete:
+        per_model_passed[model_name] = model_required_sets_complete and model_all_pass
+        if not model_required_sets_complete:
             missing_sets = sorted(set(GATE_REQUIRED_SETS) - model_sets_evaluated)
             reasons.append(f"{model_name}: gated on {sorted(model_sets_evaluated)}, missing {missing_sets}")
         elif not model_all_pass:
@@ -214,14 +229,14 @@ def evaluate_gate(packet: dict) -> GateVerdict:
         reasons.append(f"{len(skips)} (set, model) pair(s) skipped for a missing reference/bm25 reading")
 
     overall_passed = bool(model_set_results) and all(per_model_passed.values())
-    reason = "; ".join(reasons) if reasons else "F1 and F2 both pass on all four sets for every gated model"
+    reason = "; ".join(reasons) if reasons else "F1 and F2 both pass on every required set for every gated model"
 
     return GateVerdict(
         per_set=per_set,
         per_model_passed=per_model_passed,
         skips=skips,
         sets_present=sets_present,
-        four_set_complete=four_set_complete,
+        required_sets_complete=required_sets_complete,
         passed=overall_passed,
         reason=reason,
     )

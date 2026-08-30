@@ -103,7 +103,7 @@ def test_f2_does_not_fire_when_candidate_beats_bm25():
 
 
 # --------------------------------------------------------------------------------------
-# evaluate_gate -- the aggregation rule (Section 4.3), skip handling, quarantine label
+# evaluate_gate -- the aggregation rule (Section 4.3, amended by Section 16), skip handling
 # --------------------------------------------------------------------------------------
 
 
@@ -120,7 +120,7 @@ def _packet_for_sets(set_names, candidate_ndcg_by_set, ref_ndcg=0.70, bm25_ndcg=
     return {"sets": sets}
 
 
-def test_gate_passes_a_candidate_that_clears_both_floors_on_all_four_sets():
+def test_gate_passes_a_candidate_that_clears_both_floors_on_every_required_set():
     packet = _packet_for_sets(
         GATE_REQUIRED_SETS,
         {name: 0.72 for name in GATE_REQUIRED_SETS},  # beats ref (0.70) and bm25 (0.50)
@@ -128,10 +128,10 @@ def test_gate_passes_a_candidate_that_clears_both_floors_on_all_four_sets():
     verdict = evaluate_gate(packet)
     assert verdict.passed
     assert verdict.per_model_passed["candidate"] is True
-    assert verdict.four_set_complete
+    assert verdict.required_sets_complete
 
 
-def test_gate_fails_a_candidate_that_fails_f1_on_one_of_four_sets():
+def test_gate_fails_a_candidate_that_fails_f1_on_one_required_set():
     ndcg = {name: 0.72 for name in GATE_REQUIRED_SETS}
     ndcg["nfcorpus"] = 0.30  # resolvably below the 0.70 reference floor
     packet = _packet_for_sets(GATE_REQUIRED_SETS, ndcg)
@@ -142,7 +142,7 @@ def test_gate_fails_a_candidate_that_fails_f1_on_one_of_four_sets():
     assert verdict.per_set["scifact"]["candidate"].passed  # other sets unaffected
 
 
-def test_gate_fails_a_candidate_that_fails_f2_on_one_of_four_sets():
+def test_gate_fails_a_candidate_that_fails_f2_on_one_required_set():
     ndcg = {name: 0.72 for name in GATE_REQUIRED_SETS}
     ndcg["fiqa"] = 0.40  # below the 0.50 bm25 floor by more than RP, but well within F1
     packet = _packet_for_sets(GATE_REQUIRED_SETS, ndcg, ref_ndcg=0.10)  # keep F1 slack irrelevant
@@ -151,15 +151,37 @@ def test_gate_fails_a_candidate_that_fails_f2_on_one_of_four_sets():
     assert not verdict.passed
 
 
-def test_gate_never_passes_on_fewer_than_all_four_sets_no_best_of_n():
-    """Design Section 4.3: 'No best-of-N, no averaging, no waiver.' A run over 3 of the 4
-    required sets, even a run where the candidate clears both floors on all 3, cannot pass."""
-    three_sets = list(GATE_REQUIRED_SETS)[:3]
-    packet = _packet_for_sets(three_sets, {name: 0.90 for name in three_sets})
+def test_gate_never_passes_on_fewer_than_every_required_set_no_best_of_n():
+    """Design Section 4.3: 'No best-of-N, no averaging, no waiver.' A run over all but one of
+    the required sets, even a run where the candidate clears both floors on every set it WAS
+    evaluated on, cannot pass."""
+    missing_one = list(GATE_REQUIRED_SETS)[:-1]
+    packet = _packet_for_sets(missing_one, {name: 0.90 for name in missing_one})
     verdict = evaluate_gate(packet)
     assert not verdict.passed
-    assert not verdict.four_set_complete
+    assert not verdict.required_sets_complete
     assert verdict.per_model_passed["candidate"] is False
+
+
+def test_gate_requires_scidocs_specifically_not_only_the_original_four():
+    """TE-40 (D-SLM5302's fix): GATE_REQUIRED_SETS is the design's Section 16 roster (five
+    sets, SCIDOCS included), not the four sets Section 4.3 was originally written against.
+    A candidate that clears both floors on the original four but FAILS F1 on SCIDOCS must not
+    pass the gate -- before this fix, GATE_REQUIRED_SETS omitted 'scidocs' entirely, so
+    `required_sets_complete` (then named `four_set_complete`) was already True without it and
+    the aggregate `passed` never looked at SCIDOCS's own verdict at all."""
+    assert "scidocs" in GATE_REQUIRED_SETS, "the fix this test pins has regressed"
+    original_four = [s for s in GATE_REQUIRED_SETS if s != "scidocs"]
+    ndcg = {name: 0.72 for name in original_four}  # clears both floors on all four
+    ndcg["scidocs"] = 0.10  # resolvably below the 0.70 reference floor -- F1 fails
+    packet = _packet_for_sets(GATE_REQUIRED_SETS, ndcg)
+    verdict = evaluate_gate(packet)
+    assert verdict.required_sets_complete  # all five sets ARE present in this packet
+    assert not verdict.per_set["scidocs"]["candidate"].f1.passed  # SCIDOCS itself fails F1
+    for name in original_four:
+        assert verdict.per_set[name]["candidate"].passed  # every other set is clean
+    assert verdict.per_model_passed["candidate"] is False  # SCIDOCS's failure must veto
+    assert not verdict.passed
 
 
 def test_gate_skips_a_set_missing_a_reference_reading_rather_than_inventing_one():
