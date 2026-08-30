@@ -223,3 +223,42 @@ def test_gate_note_states_the_minimum_effect_size_rule():
     verdict = evaluate_gate(packet)
     note = verdict.per_set["scifact"]["candidate"].f1.note
     assert "resolving power" in note.lower()
+
+
+# --------------------------------------------------------------------------------------
+# uncommissioned_required_sets (TE-40 review, F-1: SCIDOCS became gate-deciding while
+# uncommissioned, and nothing in the verdict said so).
+# --------------------------------------------------------------------------------------
+
+
+def test_gate_verdict_names_scidocs_as_the_uncommissioned_required_set():
+    """eval.k1.COMMISSIONED_SETS is the four-set cell D-SLM4707's execution actually fired
+    the commissioning constructions against; GATE_REQUIRED_SETS is the five-set roster
+    (Section 16). A passing, fully-evaluated verdict must still name the gap between them --
+    a reader of the verdict alone, not only the notice text, must be able to see that this
+    aggregation includes at least one set whose readings are quarantined pending its own
+    commissioning."""
+    from eval.k1 import COMMISSIONED_SETS
+
+    packet = _packet_for_sets(GATE_REQUIRED_SETS, {name: 0.90 for name in GATE_REQUIRED_SETS})
+    verdict = evaluate_gate(packet)
+    assert verdict.passed
+    expected = sorted(set(GATE_REQUIRED_SETS) - set(COMMISSIONED_SETS))
+    assert expected, "this pin requires at least one required set to be outside COMMISSIONED_SETS"
+    assert verdict.uncommissioned_required_sets == expected
+    assert "not yet commissioned" in verdict.reason
+    for name in expected:
+        assert name in verdict.reason
+
+
+def test_gate_verdict_uncommissioned_required_sets_is_empty_once_a_set_is_added_to_the_cell(monkeypatch):
+    """Demonstrates the field tracks eval.k1.COMMISSIONED_SETS rather than being pinned to
+    'scidocs' by name: once a set is added to the commissioned cell, the gap it named closes
+    without any edit to gate.py."""
+    import eval.k1.gate as gate_mod
+
+    monkeypatch.setattr(gate_mod, "COMMISSIONED_SETS", tuple(GATE_REQUIRED_SETS))
+    packet = _packet_for_sets(GATE_REQUIRED_SETS, {name: 0.90 for name in GATE_REQUIRED_SETS})
+    verdict = evaluate_gate(packet)
+    assert verdict.uncommissioned_required_sets == []
+    assert "not yet commissioned" not in verdict.reason

@@ -10,7 +10,13 @@ about this packet's readings," nothing more -- the verdict it computes carries e
 standing of the instrument that produced the readings it was computed from, per the design's
 own Section 6.3. That standing is asserted in exactly one place, `eval.k1.COMMISSIONING_NOTICE`,
 and every caller of `evaluate_gate` reads it there rather than assuming a status from this
-module's silence about it (`StandardsDocument.md` Section 5.4).
+module's silence about it (`StandardsDocument.md` Section 5.4). One exception, added by the
+TE-40 review (Finding F-1): `GateVerdict.uncommissioned_required_sets` names which of
+`GATE_REQUIRED_SETS` fall outside `eval.k1.COMMISSIONED_SETS`. This is not a status
+assertion -- it is the same kind of fact `required_sets_complete` already states about data
+presence, now stated about commissioning presence -- and it takes no position on whether an
+uncommissioned set's own reading is good or bad; the notice remains the one place that says
+what "uncommissioned" means for the packet as a whole.
 
 **The two floors, quoted from the design:**
 
@@ -25,9 +31,10 @@ module's silence about it (`StandardsDocument.md` Section 5.4).
   conjunction rule itself**: "Section 4.3's aggregation rule is unchanged and applies to
   SCIDOCS identically once it is added to the locked-set roster... F1 ∧ F2, all sets, no
   waiver." `GATE_REQUIRED_SETS` below is therefore read from the roster
-  (`run_spec.ALL_LOCKED_SETS`) rather than hardcoded at the four-set count Section 4.3 was
-  written against, so a future amendment that grows the roster again needs no second edit
-  here (TE-40).
+  (`eval.k1.set_roster.ALL_LOCKED_SETS`) rather than hardcoded at the four-set count Section
+  4.3 was written against, so a future amendment that grows the roster again needs no second
+  edit here (TE-40; the roster's own leaf-module location is TE-40 review Finding F-1's
+  sibling fix, F-7, below).
 - **The minimum-effect-size rule (Section 4.4):** "The gate acts only on a shortfall larger
   than the set's achieved resolving power. A candidate below a floor by less than RP is
   recorded as 'no shortfall detected at this resolution' and passes." This rule is stated
@@ -49,7 +56,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from eval.k1.run_spec import ALL_LOCKED_SETS
+from eval.k1 import COMMISSIONED_SETS
+from eval.k1.set_roster import ALL_LOCKED_SETS
 
 MINIMUM_EFFECT_SIZE_RULE = (
     "The gate acts only on a shortfall larger than the achieved resolving power (RP). A "
@@ -61,8 +69,11 @@ REFERENCE_SUFFIX = "reference"
 BM25_MODEL_NAME = "bm25"
 
 # design Section 4.3, amended by Section 16 (D-SLM4705/D-SLM4686): every set the design locks,
-# not a count fixed at four. Read from run_spec's own roster rather than retyped here (TE-40)
-# so the two can never state a different set of "required" sets.
+# not a count fixed at four. Read from the roster's own leaf module (`eval.k1.set_roster`,
+# TE-40 review Finding F-7 -- moved out of `run_spec.py` so importing this module, whose job
+# is reading a JSON packet and computing pass/fail, does not also pull `run_spec.py`'s
+# embedding-stack dependencies) rather than retyped here, so the two can never state a
+# different set of "required" sets.
 GATE_REQUIRED_SETS = ALL_LOCKED_SETS
 
 
@@ -153,13 +164,20 @@ class GateVerdict:
     the skips (missing reference or bm25 reading), and the overall pass/fail per the
     aggregation rule (design Section 4.3, amended by Section 16: F1 and F2 both hold, on
     every required set (`GATE_REQUIRED_SETS`), for a given candidate model -- no best-of-N,
-    no averaging, no waiver)."""
+    no averaging, no waiver). `uncommissioned_required_sets` (TE-40 review, F-1) names which
+    of those required sets fall outside `eval.k1.COMMISSIONED_SETS` -- independent of
+    `passed`, which this module never conditions on commissioning standing."""
 
     per_set: Dict[str, Dict[str, SetGateVerdict]] = field(default_factory=dict)  # set -> model -> verdict
     per_model_passed: Dict[str, bool] = field(default_factory=dict)  # model -> passed all evaluated sets
     skips: List[str] = field(default_factory=list)
     sets_present: List[str] = field(default_factory=list)
     required_sets_complete: bool = False  # every set in GATE_REQUIRED_SETS is present in this packet
+    # TE-40 review, F-1: every set in GATE_REQUIRED_SETS that is outside eval.k1.COMMISSIONED_SETS
+    # -- a fact about the instrument's commissioning coverage, independent of whether this
+    # packet's own run happened to include that set. Non-empty on every verdict until an
+    # independent seat commissions the remaining set(s); see eval.k1.COMMISSIONING_NOTICE.
+    uncommissioned_required_sets: List[str] = field(default_factory=list)
     passed: bool = False
     reason: str = ""
 
@@ -231,12 +249,26 @@ def evaluate_gate(packet: dict) -> GateVerdict:
     overall_passed = bool(model_set_results) and all(per_model_passed.values())
     reason = "; ".join(reasons) if reasons else "F1 and F2 both pass on every required set for every gated model"
 
+    # TE-40 review, F-1: name which required sets the notice's commissioned cell does not
+    # cover, so a reader of the verdict alone -- not only the notice text -- sees that this
+    # aggregation includes at least one set whose readings are quarantined pending its own
+    # commissioning. Does not change `passed`: this module states facts, it does not decide
+    # standing (module docstring, above).
+    uncommissioned_required_sets = sorted(set(GATE_REQUIRED_SETS) - set(COMMISSIONED_SETS))
+    if uncommissioned_required_sets:
+        reason = (
+            f"{len(uncommissioned_required_sets)} required set(s) not yet commissioned "
+            f"({', '.join(uncommissioned_required_sets)}), quarantined per the commissioning "
+            f"disposition rule independent of this verdict's pass/fail; {reason}"
+        )
+
     return GateVerdict(
         per_set=per_set,
         per_model_passed=per_model_passed,
         skips=skips,
         sets_present=sets_present,
         required_sets_complete=required_sets_complete,
+        uncommissioned_required_sets=uncommissioned_required_sets,
         passed=overall_passed,
         reason=reason,
     )

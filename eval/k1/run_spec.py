@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from eval.k1.embed_runner import ModelSpec, POOLING_NATIVE, POOLING_PS1_PRE_NORM, POOLING_PS2_POST_NORM
+from eval.k1.set_roster import ALL_LOCKED_SETS, INTERNAL_DIAGNOSTIC_SETS, PUBLIC_SETS
 
 # Pinned revisions (HfApi.model_info().sha, resolved 2026-08-25).
 QWEN25_1_5B_REVISION = "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
@@ -44,15 +45,15 @@ QWEN3_EMB_QUERY_PROMPT = (
 # which are retained as internal diagnostics (still run, still gating F1/F2 internally, but
 # never surfaced as a public product claim -- their license is ambiguous on publication, not
 # on local evaluation). Both groups gate; this split is legibility only.
-PUBLIC_SETS = ("scifact", "arguana", "scidocs")
-INTERNAL_DIAGNOSTIC_SETS = ("nfcorpus", "fiqa")
-
-# The full locked-set roster this design's aggregation rule (Section 4.3) requires F1 and F2
-# to hold on -- both groups above gate identically, so this is their union, not a third list
-# maintained by hand. `gate.py::GATE_REQUIRED_SETS` is this tuple, not a retyped copy of it
-# (TE-40): a set added to either group above by a future amendment is required by the gate the
-# moment it is added here, with no second edit.
-ALL_LOCKED_SETS = PUBLIC_SETS + INTERNAL_DIAGNOSTIC_SETS
+#
+# TE-40 review, F-7: these three names -- and their single source of truth -- now live in
+# `eval.k1.set_roster`, a leaf module with no imports, so reading them never pulls in the
+# embedding stack this module (`run_spec.py`) needs for its own `ModelSpec` roster. Imported
+# here (not redefined) so every existing `run_spec.PUBLIC_SETS` /
+# `run_spec.ALL_LOCKED_SETS` reference keeps working unchanged. `gate.py::GATE_REQUIRED_SETS`
+# reads `set_roster.ALL_LOCKED_SETS` directly rather than through this re-export: a set added
+# to either group in `set_roster.py` by a future amendment is required by the gate the moment
+# it is added there, with no second edit.
 
 MAX_LENGTH = 512  # design Section 7.1: the decided setting
 
@@ -97,7 +98,11 @@ class RunSpec:
     set_names: List[str]
     models: List[ModelSpec]
     is_gate_reading: bool  # False for Run 0 (design Section 1: "never a gate reading");
-                            # True for Run 1 -- and still quarantined pending commissioning
+                            # True for Run 1. Standing is per-set, per eval.k1.COMMISSIONED_SETS
+                            # and eval.k1.COMMISSIONING_NOTICE -- not restated here (TE-40
+                            # review, F-8: this comment previously asserted a superseded
+                            # blanket "still quarantined," which was already false for the
+                            # four commissioned sets when it was written).
     include_bm25: bool = True
     r1_independent_scorer: bool = True
     max_corpus_docs: Optional[int] = None  # smoke-only; never set on Run 0 or Run 1
