@@ -74,6 +74,30 @@ def test_rescore_reproduces_the_real_fixtures_stored_readings_exactly(smoke_copy
             assert model_result["recall_at_10"] == pytest.approx(model_result.get("recall_at_10", 0.0))
 
 
+def test_rescore_computes_the_paired_resolving_powers(smoke_copy, tmp_path):
+    """TE-50 (design Section 4.4, TE-49 amendment, D-SLM5385): a rescore must recompute
+    ``f1_paired_resolving_power`` and ``f2_paired_resolving_power`` for every candidate
+    model, not only the marginal ``achieved_resolving_power`` -- otherwise ``gate.evaluate_gate``
+    (which now reads the paired fields, not the marginal one, to grade F1/F2) skips every
+    candidate for "no paired resolving power computed" on any packet this tool rescores,
+    silently emptying the verdict it was asked to refresh."""
+    out = tmp_path / "out.json"
+    rescore_packet(smoke_copy, output_path=out)
+    written = json.loads(out.read_text(encoding="utf-8"))
+    candidate_seen = False
+    for set_result in written["sets"].values():
+        for model_name, model_result in set_result["models"].items():
+            if model_name == "bm25" or model_name.endswith("reference"):
+                continue
+            candidate_seen = True
+            assert "f1_paired_resolving_power" in model_result
+            assert "f2_paired_resolving_power" in model_result
+    assert candidate_seen
+    assert not any(
+        "no paired resolving power" in s for s in written["gate_verdict"]["skips"]
+    )
+
+
 def test_rescore_drops_the_legacy_quarantine_notice_key(smoke_copy, tmp_path):
     """The module's own behavior (unchanged by F-10's fix -- see the docstring pin below for
     what F-10 actually changed): a packet carrying the legacy `quarantine_notice` key has it

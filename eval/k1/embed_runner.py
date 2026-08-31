@@ -1,16 +1,25 @@
 """Component 2 -- the embedding runner.
 
-Design reference: te33-k1-gate-design-2026-08-25.md Section 6.2 row 2, Section 7.1.
+Design reference: te33-k1-gate-design-2026-08-25.md Section 6.2 row 2, Section 7.1, Section
+4.5 (query convention, TE-49 amendment).
 
 Batched bf16 forward, ``local_files_only=True`` (design: candidates and the reference are
 already resident in ``D:\\hf_cache``, no download is required for a real run). BEIR document
 text is ``title + " " + text`` (the standard convention); query text is the query's own
-text, optionally prefixed by a model-native instruction prompt (Qwen3-Embedding-0.6B's
-declared ``config_sentence_transformers.json`` query prompt).
+text, optionally prefixed by a model-native instruction prompt.
+
+**Query convention (design Section 4.5, TE-49 amendment, D-SLM5389).** Every model is queried
+under its own documented query-side instruction, when one exists; a model with none is
+queried bare. ``ModelSpec.query_prompt`` carries that instruction (``None`` means bare, by
+that model's own documentation -- not a default applied uniformly regardless of what each
+model documents). The convention actually used is recorded on the emitted manifest as
+``query_convention`` (the prompt text, or the literal string ``"bare"``) -- refused
+(``guards.check_query_convention_recorded``) if left unrecorded, per Section 6.2 row 2's
+refusal condition.
 
 Emits vectors plus a run manifest carrying model revision, dtype, batch size, max_length,
-torch/transformers versions, GPU name, and a SHA-256 over the emitted vectors -- the fields
-design Section 6.2 row 2 names.
+torch/transformers versions, GPU name, a SHA-256 over the emitted vectors, and
+``query_convention`` -- the fields design Section 6.2 row 2 names.
 """
 from __future__ import annotations
 
@@ -22,7 +31,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from eval.k1.guards import check_unpinned_revision
+from eval.k1.guards import check_query_convention_recorded, check_unpinned_revision
 from eval.k1.pooling import (
     NATIVE_POOLING_FUNCS,
     mean_pool_excluding_position_zero,
@@ -32,6 +41,8 @@ from eval.k1.pooling import (
 POOLING_PS1_PRE_NORM = "ps1_pre_norm_mean"
 POOLING_PS2_POST_NORM = "ps2_post_norm_mean"
 POOLING_NATIVE = "native"
+
+BARE_QUERY_CONVENTION = "bare"  # recorded when a model has no documented query-side instruction
 
 
 @dataclass
@@ -44,6 +55,13 @@ class ModelSpec:
     max_length: int = 512
     batch_size: int = 4
     query_prompt: Optional[str] = None  # model-native instruction, prepended to queries only
+    # TE-50 (D-SLM5390's re-run): a directory laid out like a run's own
+    # `run_files/<run_id>/<set_name>/<model_name>.trec` -- when set, `runner.run_gate` reads
+    # this model's ranking for a given set from `<dir>/<set_name>/<name>.trec` instead of
+    # embedding and ranking it. Reuses an already-computed, already-costed candidate ranking
+    # (the ticket brief's explicit instruction: "reuse Run 1's persisted candidate rankings;
+    # do not re-embed the candidate") without adding a second orchestration code path.
+    reuse_trec_run_dir: Optional[str] = None
 
 
 @dataclass
@@ -61,6 +79,7 @@ class EmbedManifest:
     n_items: int
     vector_dim: int
     vectors_sha256: str
+    query_convention: Optional[str] = None  # design Section 4.5; None for a document (non-query) embedding
 
 
 def _beir_doc_text(row: dict) -> str:
@@ -92,8 +111,12 @@ def embed_texts(
 
     check_unpinned_revision(model_spec.hf_repo, model_spec.revision)
 
-    if is_query and model_spec.query_prompt:
-        texts = [f"{model_spec.query_prompt}{t}" for t in texts]
+    query_convention: Optional[str] = None
+    if is_query:
+        query_convention = model_spec.query_prompt if model_spec.query_prompt else BARE_QUERY_CONVENTION
+        check_query_convention_recorded(model_spec.name, query_convention)
+        if model_spec.query_prompt:
+            texts = [f"{model_spec.query_prompt}{t}" for t in texts]
 
     tokenizer = AutoTokenizer.from_pretrained(
         model_spec.hf_repo, revision=model_spec.revision, local_files_only=True,
@@ -191,6 +214,7 @@ def embed_texts(
         n_items=len(texts),
         vector_dim=int(vectors.shape[1]) if vectors.size else 0,
         vectors_sha256=_vectors_sha256(vectors),
+        query_convention=query_convention,
     )
     del model
     if device == "cuda":

@@ -4,7 +4,37 @@ from __future__ import annotations
 import pytest
 
 from eval.k1.guards import K1GuardError
-from eval.k1.bm25_baseline import _tokenize, bm25_topk, build_bm25_index
+from eval.k1.bm25_baseline import BM25_ANALYZER, _tokenize, bm25_topk, build_bm25_index
+
+
+# --------------------------------------------------------------------------------------
+# The standard analyzer (design Section 4.2, TE-49 amendment, D-SLM5387): stopword removal
+# + Porter stemming, replacing the prior bare [A-Za-z0-9]+ tokenizer.
+# --------------------------------------------------------------------------------------
+
+
+def test_tokenize_removes_stopwords():
+    """"the", "of" and "to" are in scikit-learn's ENGLISH_STOP_WORDS; content words survive."""
+    tokens = _tokenize("The relevance of documents to the query")
+    assert "the" not in tokens
+    assert "of" not in tokens
+    assert "to" not in tokens
+
+
+def test_tokenize_stems_surviving_tokens():
+    """"documents" and "document" must collapse to the same stemmed token, and "relevance"
+    must not survive unstemmed -- Porter's own step 4 strips "-ence"."""
+    assert _tokenize("documents") == _tokenize("document")
+    assert "relevance" not in _tokenize("relevance")
+
+
+def test_tokenize_is_the_analyzer_bm25_analyzer_names():
+    """BM25_ANALYZER is the packet-facing description of what _tokenize does -- pinned so a
+    reader of a result packet's ``bm25_analyzer`` field can trust the string names the code
+    that actually ran."""
+    assert "stop_words" in BM25_ANALYZER.lower()
+    assert "porter" in BM25_ANALYZER.lower()
+    assert "1980" in BM25_ANALYZER
 
 
 def _toy_corpus():
@@ -31,13 +61,17 @@ def test_bm25_refuses_missing_params():
 
 
 def test_bm25_ties_break_by_ascending_corpus_id():
+    """Uses "identical" rather than "same" as the repeated term: "same" is in scikit-learn's
+    ENGLISH_STOP_WORDS (the standard analyzer's stopword list, design Section 4.2, TE-49
+    amendment), and a corpus where every document tokenizes to nothing after stopword
+    removal leaves ``BM25Okapi`` with an empty vocabulary."""
     corpus = [
-        {"_id": "c", "title": "", "text": "same same same"},
-        {"_id": "a", "title": "", "text": "same same same"},
-        {"_id": "b", "title": "", "text": "same same same"},
+        {"_id": "c", "title": "", "text": "identical identical identical"},
+        {"_id": "a", "title": "", "text": "identical identical identical"},
+        {"_id": "b", "title": "", "text": "identical identical identical"},
     ]
     bm25, corpus_ids = build_bm25_index(corpus, k1=0.9, b=0.4, set_name="unit")
-    queries = [{"_id": "q1", "text": "same"}]
+    queries = [{"_id": "q1", "text": "identical"}]
     run = bm25_topk(bm25, corpus_ids, queries, k=3)
     assert [docid for docid, _s in run["q1"]] == ["a", "b", "c"]
 

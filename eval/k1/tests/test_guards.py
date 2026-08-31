@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from eval.k1.guards import K1GuardError, validate_qrels_join
+from eval.k1.guards import K1GuardError, check_query_convention_recorded, validate_qrels_join
 
 
 def _healthy_inputs():
@@ -81,3 +81,29 @@ def test_empty_test_query_list_aborts():
 # must turn a red run green" -- is demonstrated in
 # eval/k1/tests/test_rank_score.py::test_guard_removed_turns_the_emptied_join_green,
 # because it exercises the scorer this guard sits in front of and lands with that module.
+
+
+# --------------------------------------------------------------------------------------
+# check_query_convention_recorded (design Section 6.2 row 2's refusal condition, TE-49
+# amendment, D-SLM5389): "a query embedded with no recorded convention" is refused.
+# --------------------------------------------------------------------------------------
+
+
+def test_query_convention_refuses_when_none():
+    with pytest.raises(K1GuardError) as exc:
+        check_query_convention_recorded("some-model", None)
+    assert exc.value.code == "K1_QUERY_CONVENTION_UNRECORDED"
+
+
+def test_query_convention_refuses_when_empty_string():
+    with pytest.raises(K1GuardError) as exc:
+        check_query_convention_recorded("some-model", "")
+    assert exc.value.code == "K1_QUERY_CONVENTION_UNRECORDED"
+
+
+def test_query_convention_passes_when_bare_is_recorded():
+    check_query_convention_recorded("some-model", "bare")  # does not raise
+
+
+def test_query_convention_passes_when_an_instruction_is_recorded():
+    check_query_convention_recorded("some-model", "Represent this sentence for searching relevant passages: ")

@@ -1,12 +1,26 @@
 """The top-level orchestrator: loader -> embed -> score -> report, one code path for the
-smoke run, Run 0 (scout) and Run 1 (full protocol) -- run identity is entirely determined
-by the ``RunSpec`` passed in (``run_spec.py``).
+smoke run, Run 0 (scout), Run 1 (full protocol) and TE-50's amended re-run -- run identity is
+entirely determined by the ``RunSpec`` passed in (``run_spec.py``).
 
-Design reference: te33-k1-gate-design-2026-08-25.md Section 10.1 (packet fields). This
-module assembles the packet's readings, guards and replication fields it can produce from a
-single-machine single-pass run; R4 (cross-machine) and the full commissioning constructions
-are explicitly out of this module's scope (see module docstring in ``eval/k1/__init__.py``
-and the build log).
+Design reference: te33-k1-gate-design-2026-08-25.md Section 10.1 (packet fields), Section 4.4
+(paired resolving power, TE-49 amendment). This module assembles the packet's readings,
+guards and replication fields it can produce from a single-machine single-pass run; R4
+(cross-machine) and the full commissioning constructions are explicitly out of this module's
+scope (see module docstring in ``eval/k1/__init__.py`` and the build log).
+
+**Candidate reuse (TE-50, D-SLM5390's re-run).** A ``ModelSpec`` whose
+``reuse_trec_run_dir`` is set is not embedded or ranked -- its TREC run is read back from
+``<reuse_trec_run_dir>/<set_name>/<model_name>.trec`` instead, so an already-computed,
+already-costed ranking (Run 1's candidate) can be scored under this module's current scoring
+and gate logic without paying to re-embed it. See ``embed_runner.ModelSpec`` and
+``run_spec.run1_amended_rerun``.
+
+**Paired resolving power (design Section 4.4, TE-49 amendment, D-SLM5385).** For every
+candidate model (a model that is neither the reference nor bm25), this module computes and
+records ``f1_paired_resolving_power`` (``rank_score.paired_resolving_power(cand, ref)``) and
+``f2_paired_resolving_power`` (``rank_score.paired_resolving_power(cand, bm25)``) alongside
+its marginal ``achieved_resolving_power`` -- the two paired figures are what ``gate.py``'s
+F1/F2 rules act on; the marginal figure remains diagnostic and R2's own tolerance quantity.
 
 Every entry point prints ``eval.k1.COMMISSIONING_NOTICE`` before returning a packet.
 """
@@ -19,7 +33,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from eval.k1 import COMMISSIONING_NOTICE
-from eval.k1.bm25_baseline import bm25_topk, build_bm25_index
+from eval.k1.bm25_baseline import BM25_ANALYZER, bm25_topk, build_bm25_index
 from eval.k1.embed_runner import embed_corpus, embed_queries
 from eval.k1.gate import GateVerdict, evaluate_gate
 from eval.k1.guards import K1GuardError, validate_qrels_join
@@ -29,6 +43,8 @@ from eval.k1.rank_score import (
     executed_chance_level,
     mrr_at_k,
     ndcg_at_k_own,
+    paired_resolving_power,
+    read_trec_run,
     recall_at_k,
     write_trec_run,
 )
@@ -130,6 +146,13 @@ def run_gate(
         )
         set_result["executed_chance"] = {"mean": chance.mean, "std": chance.std, "trials": chance.trials}
 
+        # Per-query nDCG, by model name, for THIS set only -- populated below as each model
+        # (including bm25) is scored, then consumed after the model loop to compute the
+        # paired resolving powers (design Section 4.4, TE-49 amendment): F1 pairs a
+        # candidate against the reference's per-query dict, F2 against bm25's.
+        per_query_ndcg_by_model: Dict[str, Dict[str, float]] = {}
+        reference_model_name: Optional[str] = None
+
         if run_spec.include_bm25:
             bm25_index, bm25_corpus_ids = build_bm25_index(
                 corpus, lock_entry.bm25_k1, lock_entry.bm25_b, set_name=set_name
@@ -142,6 +165,7 @@ def run_gate(
             per_q_ndcg, mean_ndcg = ndcg_at_k_own(qrels_by_query, bm25_run, k=run_spec.k)
             _per_q_recall, mean_recall = recall_at_k(qrels_by_query, bm25_run, k=run_spec.k)
             _per_q_mrr, mean_mrr = mrr_at_k(qrels_by_query, bm25_run, k=run_spec.k)
+            per_query_ndcg_by_model["bm25"] = per_q_ndcg
             set_result["models"]["bm25"] = {
                 "ndcg_at_10": mean_ndcg,
                 "recall_at_10": mean_recall,
@@ -150,34 +174,57 @@ def run_gate(
                 "bm25_k1": lock_entry.bm25_k1,
                 "bm25_b": lock_entry.bm25_b,
                 "bm25_params_derived": lock_entry.bm25_params_derived,
+                "bm25_analyzer": BM25_ANALYZER,
             }
 
         for model_spec in run_spec.models:
-            corpus_vecs, corpus_vec_ids, corpus_manifest = embed_corpus(
-                model_spec, corpus, device=run_spec.device
-            )
-            query_vecs, query_vec_ids, query_manifest = embed_queries(
-                model_spec, queries_used, device=run_spec.device
-            )
-            run = cosine_topk(query_vecs, query_vec_ids, corpus_vecs, corpus_vec_ids, k=TOP_K_POOL)
+            reuse_dir = getattr(model_spec, "reuse_trec_run_dir", None)
+            if reuse_dir:
+                # TE-50 (D-SLM5390's re-run): this model's ranking is read back rather than
+                # re-embedded -- see runner.py's module docstring and
+                # run_spec.run1_amended_rerun.
+                reuse_path = Path(reuse_dir) / set_name / f"{model_spec.name}.trec"
+                run = read_trec_run(reuse_path)
+                corpus_manifest_dict = {
+                    "reused_from": str(reuse_path),
+                    "note": "TE-50: ranking reused from a prior run per the ticket brief; not re-embedded",
+                }
+                query_manifest_dict = dict(corpus_manifest_dict)
+                if output_dir is not None:
+                    run_files_dir = output_dir / "run_files" / run_spec.run_id / set_name
+                    run_files_dir.mkdir(parents=True, exist_ok=True)
+                    write_trec_run(run, run_files_dir / f"{model_spec.name}.trec", run_name=f"u-k1-{model_spec.name}")
+            else:
+                corpus_vecs, corpus_vec_ids, corpus_manifest = embed_corpus(
+                    model_spec, corpus, device=run_spec.device
+                )
+                query_vecs, query_vec_ids, query_manifest = embed_queries(
+                    model_spec, queries_used, device=run_spec.device
+                )
+                run = cosine_topk(query_vecs, query_vec_ids, corpus_vecs, corpus_vec_ids, k=TOP_K_POOL)
+                corpus_manifest_dict = asdict(corpus_manifest)
+                query_manifest_dict = asdict(query_manifest)
 
-            if output_dir is not None:
-                run_files_dir = output_dir / "run_files" / run_spec.run_id / set_name
-                run_files_dir.mkdir(parents=True, exist_ok=True)
-                write_trec_run(run, run_files_dir / f"{model_spec.name}.trec", run_name=f"u-k1-{model_spec.name}")
+                if output_dir is not None:
+                    run_files_dir = output_dir / "run_files" / run_spec.run_id / set_name
+                    run_files_dir.mkdir(parents=True, exist_ok=True)
+                    write_trec_run(run, run_files_dir / f"{model_spec.name}.trec", run_name=f"u-k1-{model_spec.name}")
 
             per_q_ndcg, mean_ndcg = ndcg_at_k_own(qrels_by_query, run, k=run_spec.k)
             _per_q_recall, mean_recall = recall_at_k(qrels_by_query, run, k=run_spec.k)
             _per_q_mrr, mean_mrr = mrr_at_k(qrels_by_query, run, k=run_spec.k)
             rp = achieved_resolving_power(per_q_ndcg)
+            per_query_ndcg_by_model[model_spec.name] = per_q_ndcg
+            if model_spec.name.endswith("reference"):
+                reference_model_name = model_spec.name
 
             model_result = {
                 "ndcg_at_10": mean_ndcg,
                 "recall_at_10": mean_recall,
                 "mrr_at_10": mean_mrr,
                 "achieved_resolving_power": rp,
-                "corpus_manifest": asdict(corpus_manifest),
-                "query_manifest": asdict(query_manifest),
+                "corpus_manifest": corpus_manifest_dict,
+                "query_manifest": query_manifest_dict,
             }
 
             if run_spec.r1_independent_scorer:
@@ -196,6 +243,27 @@ def run_gate(
                 model_result["r2_delta_vs_anchor"] = abs(mean_ndcg - anchor["ndcg_at_10"])
 
             set_result["models"][model_spec.name] = model_result
+
+        # Paired resolving power (design Section 4.4, TE-49 amendment, D-SLM5385): computed
+        # per candidate model, against the reference's and bm25's per-query nDCG@10 dicts
+        # from THIS SAME set -- never a different run, never a stored constant. A model with
+        # no reference or no bm25 reading in this set (see gate.py's own skip handling) is
+        # left without one of the two fields, which evaluate_gate treats as a skip rather
+        # than a guess.
+        for model_name, model_result in set_result["models"].items():
+            if model_name == "bm25" or model_name.endswith("reference"):
+                continue
+            cand_per_q = per_query_ndcg_by_model.get(model_name)
+            if cand_per_q is None:
+                continue
+            if reference_model_name is not None:
+                model_result["f1_paired_resolving_power"] = paired_resolving_power(
+                    cand_per_q, per_query_ndcg_by_model[reference_model_name]
+                )
+            if "bm25" in per_query_ndcg_by_model:
+                model_result["f2_paired_resolving_power"] = paired_resolving_power(
+                    cand_per_q, per_query_ndcg_by_model["bm25"]
+                )
 
         packet["sets"][set_name] = set_result
 

@@ -52,7 +52,7 @@ reachable, against the cited decision-log entries themselves.
 | 3 | Ranker + dual scorer | `rank_score.py` |
 | 4 | The zero-qrels guard | `guards.py` |
 | 5 | `anchors.json` + its fetch step | `anchors.py`, `anchors.json`, `tools/mint_anchors.py` |
-| 6 | BM25 baseline | `bm25_baseline.py` |
+| 6 | BM25 baseline | `bm25_baseline.py`, `porter_stemmer.py` |
 
 Orchestration (not itself one of the six, but required to run any of them together):
 `run_spec.py` (Run 0 / Run 1 / smoke rosters) and `runner.py` (`run_gate()`, one code path
@@ -175,8 +175,13 @@ separately, after commissioning -- see the build log.
   independently-authored implementation) are not built.
 - **G-3 -- BM25 parameters.** `k1=0.9, b=0.4` is BEIR's own standard default, not yet
   confirmed as Linnaeus-derived.
-- **G-4 -- BM25 anchor.** No stable BM25 "model" entry exists in `mteb/results`; F2
-  compares against the local BM25 run directly rather than a published anchor.
+- **G-4 -- BM25 anchor -- CLOSED, TE-49 (2026-08-30), D-SLM5387.** No stable BM25 "model"
+  entry exists in `mteb/results`, confirmed unfetchable at primary source
+  (`Claude/Popper/te48-k1-run1-result-debunk-2026-08-30.md` A8). The design's own text no
+  longer routes this as an owed fetch: F2's floor is stated as this project's own
+  standard-analyzer BM25 construction (`bm25_baseline.py`, stopword removal + Porter
+  stemming, `porter_stemmer.py`), never a published anchor. This is a design decision, not a
+  remaining gap.
 - **G-5 -- anchor fetch transport.** The datasets-server `/filter` endpoint 422s on
   `mteb/results`; the fetch downloads the dataset's parquet files directly and filters with
   `pyarrow`, same pinned revision, different transport.

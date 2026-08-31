@@ -41,6 +41,15 @@ QWEN3_EMB_QUERY_PROMPT = (
     "Query:"
 )
 
+# Design Section 4.5 (TE-49 amendment, D-SLM5389): the reference is queried under ITS OWN
+# documented convention, not bare. bge-small-en-v1.5's snapshot ships no `prompts` block (no
+# machine-readable query prompt the way Qwen3-Embedding's config_sentence_transformers.json
+# carries one), but its model card documents this exact retrieval query instruction --
+# verified 334x-388x closer to the model's own published MTEB anchor than the bare reading
+# on four of five sets (`Claude/Popper/te48-k1-run1-result-debunk-2026-08-30.md` A9, Wizard
+# project records tree).
+BGE_SMALL_QUERY_PROMPT = "Represent this sentence for searching relevant passages: "
+
 # Design Section 16 / D-SLM4686: which of Run 1's five sets carry the public-facing row and
 # which are retained as internal diagnostics (still run, still gating F1/F2 internally, but
 # never surfaced as a public product claim -- their license is ambiguous on publication, not
@@ -89,6 +98,7 @@ QWEN3_EMB_0_6B = ModelSpec(
 BGE_SMALL_REFERENCE = ModelSpec(
     name="bge-small-en-v1.5-reference", hf_repo="BAAI/bge-small-en-v1.5", revision=BGE_SMALL_REVISION,
     pooling=POOLING_NATIVE, batch_size=BATCH_BGE_SMALL, max_length=MAX_LENGTH,
+    query_prompt=BGE_SMALL_QUERY_PROMPT,
 )
 
 
@@ -153,6 +163,32 @@ def run1_full(models: Optional[List[ModelSpec]] = None) -> RunSpec:
         run_id="run1-full",
         set_names=["scifact", "nfcorpus", "fiqa", "arguana", "scidocs"],
         models=models,
+        is_gate_reading=True,
+    )
+
+
+def run1_amended_rerun(candidate_reuse_dir: str) -> RunSpec:
+    """TE-50, 2026-08-30: the design-of-record's amended re-run (Section 17, TE-49) over
+    Run 1's own five sets. Per the ticket brief: reuse Run 1's already-computed candidate
+    ranking (``QWEN3_EMB_0_6B`` with ``reuse_trec_run_dir`` set, so `runner.run_gate` reads
+    its TREC file from ``candidate_reuse_dir`` instead of re-embedding -- five hours of GPU
+    time already spent and not worth re-spending); re-embed the reference under its now-
+    corrected query convention (`BGE_SMALL_REFERENCE`, Section 4.5); rebuild BM25 under the
+    now-corrected standard analyzer (`bm25_baseline._tokenize`, Section 4.2). Same five sets,
+    same aggregation rule, same instrument otherwise -- only what the amendment actually
+    changed is re-executed.
+
+    ``candidate_reuse_dir`` must contain ``<set_name>/qwen3-embedding-0.6b.trec`` for every
+    set in Run 1's roster (SciFact, NFCorpus, FiQA-2018, ArguAna, SCIDOCS) -- copied out of
+    Run 1's own output directory by the caller (the ticket brief: write only into the
+    caller's own output directory, never back into Run 1's)."""
+    import dataclasses
+
+    reused_candidate = dataclasses.replace(QWEN3_EMB_0_6B, reuse_trec_run_dir=candidate_reuse_dir)
+    return RunSpec(
+        run_id="run1-full-te50-amended",
+        set_names=["scifact", "nfcorpus", "fiqa", "arguana", "scidocs"],
+        models=[reused_candidate, BGE_SMALL_REFERENCE],
         is_gate_reading=True,
     )
 

@@ -80,7 +80,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from eval.k1 import COMMISSIONING_NOTICE
 from eval.k1.gate import evaluate_gate
-from eval.k1.rank_score import achieved_resolving_power, mrr_at_k, ndcg_at_k_own, read_trec_run, recall_at_k
+from eval.k1.rank_score import (
+    achieved_resolving_power,
+    mrr_at_k,
+    ndcg_at_k_own,
+    paired_resolving_power,
+    read_trec_run,
+    recall_at_k,
+)
 from eval.k1.runner import render_human_table
 from eval.k1.self_exclusion import SELF_EXCLUSION_NOTE
 from eval.k1.sets_lock import load_set, read_sets_lock
@@ -186,6 +193,10 @@ def rescore_packet(
     }
 
     qrels_cache: Dict[str, Dict[str, Dict[str, float]]] = {}
+    # design Section 4.4 (TE-49 amendment, D-SLM5385): per-query nDCG, by set then by model,
+    # accumulated across this loop and consumed in a second pass below to recompute the two
+    # paired resolving powers -- mirrors runner.run_gate's own bookkeeping (runner.py).
+    per_query_ndcg_by_set: Dict[str, Dict[str, Dict[str, float]]] = {}
     if not notice_only:
         for set_name, set_result in packet.get("sets", {}).items():
             for model_name, model_result in set_result.get("models", {}).items():
@@ -204,6 +215,7 @@ def rescore_packet(
                 rp = achieved_resolving_power(per_query_ndcg)
                 _per_q_recall, mean_recall = recall_at_k(qrels_by_query, run, k=10)
                 _per_q_mrr, mean_mrr = mrr_at_k(qrels_by_query, run, k=10)
+                per_query_ndcg_by_set.setdefault(set_name, {})[model_name] = per_query_ndcg
 
                 old_ndcg = model_result.get("ndcg_at_10")
                 delta = abs(mean_ndcg - old_ndcg) if old_ndcg is not None else None
@@ -263,6 +275,31 @@ def rescore_packet(
                 if "published_anchor_ndcg_at_10" in model_result:
                     model_result["r2_delta_vs_anchor"] = abs(
                         mean_ndcg - model_result["published_anchor_ndcg_at_10"]
+                    )
+
+        # Second pass, design Section 4.4 (TE-49 amendment): the paired resolving powers,
+        # computed per candidate model against that SAME set's reference and bm25 per-query
+        # dicts just recomputed above. Deferred to its own pass (rather than computed inline
+        # per model) because a candidate needs its set-mates' per-query dicts, which are not
+        # necessarily built yet at the point a given model is reached in the flat loop above.
+        for set_name, set_result in packet.get("sets", {}).items():
+            per_query_by_model = per_query_ndcg_by_set.get(set_name, {})
+            reference_model_name = next(
+                (name for name in per_query_by_model if name.endswith("reference")), None
+            )
+            for model_name, model_result in set_result.get("models", {}).items():
+                if model_name == "bm25" or model_name.endswith("reference"):
+                    continue
+                cand_per_q = per_query_by_model.get(model_name)
+                if cand_per_q is None:
+                    continue  # this pair's TREC file was missing -- already in trec_files_missing
+                if reference_model_name is not None:
+                    model_result["f1_paired_resolving_power"] = paired_resolving_power(
+                        cand_per_q, per_query_by_model[reference_model_name]
+                    )
+                if "bm25" in per_query_by_model:
+                    model_result["f2_paired_resolving_power"] = paired_resolving_power(
+                        cand_per_q, per_query_by_model["bm25"]
                     )
 
     if diff["trec_files_missing"] and not notice_only:

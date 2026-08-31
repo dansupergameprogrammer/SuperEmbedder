@@ -13,7 +13,11 @@ Design reference: te33-k1-gate-design-2026-08-25.md Section 6.2 row 3, Section 3
 - ``recall_at_k`` and ``mrr_at_k`` are non-deciding diagnostics (Section 3): reported, never
   used to compute a gate outcome.
 - ``achieved_resolving_power`` computes the run's own 95% CI half-width from its per-query
-  score dispersion (StandardsDocument.md 5.4).
+  score dispersion (StandardsDocument.md 5.4) -- the MARGINAL figure, diagnostic and R2's own
+  tolerance quantity.
+- ``paired_resolving_power`` computes the same CI half-width over the per-query DIFFERENCE
+  between two arms (design Section 4.4, TE-49 amendment) -- the figure the gate's F1/F2
+  minimum-effect rule actually acts on, since both floors are paired comparisons.
 - ``executed_chance_level`` scores R uniformly-random rankings per set (Section 4.4) rather
   than assuming chance analytically.
 
@@ -296,13 +300,49 @@ def ndcg_at_k_pytrec(
 def achieved_resolving_power(per_query_scores: Mapping[str, float]) -> float:
     """95% CI half-width on the mean, computed from THIS run's own per-query dispersion --
     ``1.96 * sigma / sqrt(n)`` -- rather than the a-priori sigma=0.30 assumption the design
-    uses only to justify the set choice (Section 4.4). This is the achieved resolving power
-    every verdict is stated against."""
+    uses only to justify the set choice (Section 4.4). This is the MARGINAL resolving power:
+    one arm's own per-query dispersion in isolation. It is diagnostic and is R2's own
+    tolerance quantity (design Section 5); it is NOT what the gate's F1/F2 minimum-effect
+    rule acts on -- see ``paired_resolving_power`` below (Section 4.4, TE-49 amendment,
+    D-SLM5385)."""
     values = list(per_query_scores.values())
     n = len(values)
     if n < 2:
         return float("nan")
     sigma = float(np.std(values, ddof=1))
+    return 1.96 * sigma / math.sqrt(n)
+
+
+def paired_resolving_power(
+    per_query_a: Mapping[str, float], per_query_b: Mapping[str, float]
+) -> float:
+    """The paired resolving power (design Section 4.4, TE-49 amendment, D-SLM5385): the 95%
+    CI half-width of the per-query DIFFERENCE ``a(q) - b(q)`` over the queries shared by both
+    arms -- ``1.96 * sigma_diff / sqrt(n)`` -- rather than either arm's marginal dispersion
+    (``achieved_resolving_power``, above).
+
+    F1 and F2 are both paired comparisons: the same test queries, the same qrels, two
+    rankings. What sets how small a real difference the gate can resolve is how that
+    DIFFERENCE varies query-to-query, not how either ranking's own scores vary in isolation --
+    a quantity tightened by whatever correlation exists between the two arms (both tend to do
+    well or badly on the same easy or hard queries), which is invisible in either arm's
+    marginal spread alone. F1 uses ``paired_resolving_power(cand, ref)``; F2 uses
+    ``paired_resolving_power(cand, bm25)`` -- two different numbers per set, computed
+    independently, because the per-query correlation between the candidate and the reference
+    is not the correlation between the candidate and BM25.
+
+    Executed against Run 1's own packet (`Claude/Popper/te48-k1-run1-result-debunk-2026-08-30.md`
+    A3, Wizard project records tree): the paired figure is 11%-48% tighter than the marginal
+    figure this instrument used before this amendment, on every one of the five sets. A too-
+    wide resolving power can only ever hide a real shortfall, never manufacture one --
+    leniency-only relative to the prior (marginal) implementation.
+    """
+    shared = sorted(set(per_query_a.keys()) & set(per_query_b.keys()))
+    n = len(shared)
+    if n < 2:
+        return float("nan")
+    diffs = np.array([per_query_a[q] - per_query_b[q] for q in shared], dtype=np.float64)
+    sigma = float(np.std(diffs, ddof=1))
     return 1.96 * sigma / math.sqrt(n)
 
 

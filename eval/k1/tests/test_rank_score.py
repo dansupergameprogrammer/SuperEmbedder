@@ -16,6 +16,7 @@ from eval.k1.rank_score import (
     mrr_at_k,
     ndcg_at_k_own,
     ndcg_at_k_pytrec,
+    paired_resolving_power,
     read_trec_run,
     recall_at_k,
     write_trec_run,
@@ -289,6 +290,42 @@ def test_chance_level_resolving_power_is_the_single_trial_spread_not_the_mean_ci
     # and is deliberately NOT what this function returns.
     wrong_reading = 1.96 * 0.0013 / math.sqrt(1000)
     assert rp > wrong_reading * 10
+
+
+def test_paired_resolving_power_uses_only_shared_queries():
+    a = {"q1": 0.9, "q2": 0.5, "q3": 0.1}
+    b = {"q2": 0.4, "q3": 0.2, "q4": 0.9}  # only q2, q3 shared with a
+    rp = paired_resolving_power(a, b)
+    diffs = [0.5 - 0.4, 0.1 - 0.2]  # q2, q3 only
+    expected_sigma = float(np.std(diffs, ddof=1))
+    assert rp == pytest.approx(1.96 * expected_sigma / math.sqrt(2), abs=1e-9)
+
+
+def test_paired_resolving_power_tighter_than_marginal_when_arms_correlate():
+    """Design Section 4.4 (TE-49 amendment): the paired RP is tighter than either arm's
+    marginal RP when the two arms are correlated (both tend to do well/badly on the same
+    queries), because the shared per-query variance cancels in the difference. Executed
+    against Run 1's own packet, the paired figure measured 11%-48% tighter than the marginal
+    one on every set (`Claude/Popper/te48-k1-run1-result-debunk-2026-08-30.md` A3)."""
+    rng = np.random.default_rng(0)
+    n = 300
+    base = rng.normal(0.5, 0.15, size=n)  # the shared, correlated component
+    a = {f"q{i}": float(base[i] + rng.normal(0, 0.01)) for i in range(n)}
+    b = {f"q{i}": float(base[i] + rng.normal(0, 0.01)) for i in range(n)}
+    rp_paired = paired_resolving_power(a, b)
+    rp_marginal_a = achieved_resolving_power(a)
+    assert rp_paired < rp_marginal_a
+
+
+def test_paired_resolving_power_is_symmetric_up_to_sign():
+    a = {f"q{i}": v for i, v in enumerate([0.9, 0.5, 0.1, 0.7, 0.3])}
+    b = {f"q{i}": v for i, v in enumerate([0.8, 0.6, 0.2, 0.5, 0.4])}
+    assert paired_resolving_power(a, b) == pytest.approx(paired_resolving_power(b, a), abs=1e-12)
+
+
+def test_paired_resolving_power_nan_below_two_shared_queries():
+    assert math.isnan(paired_resolving_power({"q1": 0.5}, {"q1": 0.4, "q2": 0.9}))
+    assert math.isnan(paired_resolving_power({"q1": 0.5}, {"q2": 0.9}))
 
 
 def test_executed_chance_level_is_near_zero_for_sparse_relevance():

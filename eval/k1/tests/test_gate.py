@@ -1,7 +1,11 @@
-"""Tests for the F1/F2 floor-gate arithmetic (`eval/k1/gate.py`, design Section 4). U-K1 fix
-round, 2026-08-25, Finding C pin: fire and no-fire on constructed readings on each side of
-both components (F1 and F2), plus the aggregation rule (design Section 4.3) and the
-minimum-effect-size rule (design Section 4.4)."""
+"""Tests for the F1/F2 floor-gate arithmetic (`eval/k1/gate.py`, design Section 4, amended by
+Section 17, TE-49). U-K1 fix round, 2026-08-25, Finding C pin: fire and no-fire on
+constructed readings on each side of both components (F1 and F2), plus the aggregation rule
+(design Section 4.3) and the minimum-effect-size rule (design Section 4.4). TE-50 pass,
+2026-08-30: F1 stays shortfall-only over its own PAIRED resolving power; F2 is rewritten as a
+margin-only rule with no null disposition (D-SLM5387/5388), and the packet fixture below
+carries `f1_paired_resolving_power`/`f2_paired_resolving_power` rather than a single shared
+`achieved_resolving_power`, per D-SLM5385."""
 from __future__ import annotations
 
 import pytest
@@ -83,7 +87,8 @@ def test_f1_does_not_fire_when_candidate_beats_reference():
 
 
 # --------------------------------------------------------------------------------------
-# F2 -- candidate must exceed BM25 by more than RP_achieved (design Section 4.2)
+# F2 -- candidate must exceed BM25 by MORE than RP_paired, a bar to clear, no null
+# disposition (design Section 4.2, amended by Section 17.2, D-SLM5387/5388).
 # --------------------------------------------------------------------------------------
 
 
@@ -92,14 +97,49 @@ def test_f2_fires_when_candidate_resolvably_below_bm25():
     assert v.floor == "F2" and v.fires
 
 
-def test_f2_does_not_fire_when_candidate_within_rp_of_bm25():
+def test_f2_fires_when_candidate_within_rp_below_bm25():
+    """The asymmetric rule's core pin (TE-48 debunk A6, D-SLM5388): under the OLD
+    shortfall-vs-RP arithmetic (`evaluate_floor`), a candidate trailing BM25 by less than RP
+    would PASS. F2 has no such null disposition -- it FAILS."""
     v = evaluate_f2(bm25_ndcg=0.60, candidate_ndcg=0.585, achieved_rp=0.02)
-    assert v.floor == "F2" and v.passed
+    assert v.floor == "F2" and v.fires and not v.passed
 
 
-def test_f2_does_not_fire_when_candidate_beats_bm25():
+def test_f2_fires_on_an_exact_tie():
+    v = evaluate_f2(bm25_ndcg=0.60, candidate_ndcg=0.60, achieved_rp=0.02)
+    assert v.fires and not v.passed
+
+
+def test_f2_fires_when_margin_exists_but_does_not_exceed_rp():
+    """A positive margin that does not resolvably clear RP is still a FAIL -- distinct from
+    F1, where a shortfall within RP is a PASS (null). Uses values exactly representable in
+    binary floating point (0.5, 0.75, 0.25) so the margin == RP boundary is not itself
+    confounded by float subtraction noise (mirrors `test_floor_boundary_at_exactly_rp_does_not_fire`)."""
+    v = evaluate_f2(bm25_ndcg=0.50, candidate_ndcg=0.75, achieved_rp=0.25)
+    assert v.shortfall == -0.25
+    assert v.fires and not v.passed
+
+
+def test_f2_passes_only_when_margin_strictly_exceeds_rp():
+    v = evaluate_f2(bm25_ndcg=0.50, candidate_ndcg=0.76, achieved_rp=0.25)
+    assert v.passed and not v.fires
+
+
+def test_f2_does_not_fire_when_candidate_beats_bm25_by_more_than_rp():
     v = evaluate_f2(bm25_ndcg=0.60, candidate_ndcg=0.75, achieved_rp=0.02)
     assert v.floor == "F2" and v.passed
+
+
+def test_f2_is_not_evaluate_floors_shortfall_rule():
+    """Pins the two functions as genuinely distinct arithmetic (not merely distinct call
+    sites over one shared rule): the same inputs given to `evaluate_floor` (F1's shortfall-
+    only rule) and to `evaluate_f2` (the margin-only rule) disagree on this construction,
+    exactly TE-48's debunk A6 table's second row (cand=0.480, bm25=0.500, RP=0.04): the
+    shortfall reading passes, the design's literal F2 fails."""
+    shortfall_reading = evaluate_floor("F2", "bm25", floor_value=0.500, candidate_value=0.480, achieved_rp=0.04)
+    literal_f2 = evaluate_f2(bm25_ndcg=0.500, candidate_ndcg=0.480, achieved_rp=0.04)
+    assert shortfall_reading.passed is True
+    assert literal_f2.passed is False
 
 
 # --------------------------------------------------------------------------------------
@@ -108,13 +148,23 @@ def test_f2_does_not_fire_when_candidate_beats_bm25():
 
 
 def _packet_for_sets(set_names, candidate_ndcg_by_set, ref_ndcg=0.70, bm25_ndcg=0.50, rp=0.02):
+    """`rp` is used as BOTH `f1_paired_resolving_power` and `f2_paired_resolving_power` in
+    these fixtures -- the two are independent numbers in a real packet (design Section 4.4),
+    but nothing below this helper's own tests exercises their difference, so one shared
+    value keeps the fixture simple; `test_gate_uses_the_f1_and_f2_specific_paired_rp`, below,
+    is the pin that the two are read independently rather than one shared field."""
     sets = {}
     for name in set_names:
         sets[name] = {
             "models": {
                 "bge-small-en-v1.5-reference": {"ndcg_at_10": ref_ndcg},
                 "bm25": {"ndcg_at_10": bm25_ndcg},
-                "candidate": {"ndcg_at_10": candidate_ndcg_by_set[name], "achieved_resolving_power": rp},
+                "candidate": {
+                    "ndcg_at_10": candidate_ndcg_by_set[name],
+                    "achieved_resolving_power": rp,  # marginal, diagnostic only -- unused by the gate
+                    "f1_paired_resolving_power": rp,
+                    "f2_paired_resolving_power": rp,
+                },
             }
         }
     return {"sets": sets}
@@ -206,14 +256,62 @@ def test_gate_evaluates_multiple_candidate_models_independently():
             "models": {
                 "bge-small-en-v1.5-reference": {"ndcg_at_10": 0.70},
                 "bm25": {"ndcg_at_10": 0.50},
-                "good-candidate": {"ndcg_at_10": 0.72, "achieved_resolving_power": 0.02},
-                "bad-candidate": {"ndcg_at_10": 0.10, "achieved_resolving_power": 0.02},
+                "good-candidate": {
+                    "ndcg_at_10": 0.72, "achieved_resolving_power": 0.02,
+                    "f1_paired_resolving_power": 0.02, "f2_paired_resolving_power": 0.02,
+                },
+                "bad-candidate": {
+                    "ndcg_at_10": 0.10, "achieved_resolving_power": 0.02,
+                    "f1_paired_resolving_power": 0.02, "f2_paired_resolving_power": 0.02,
+                },
             }
         }
     verdict = evaluate_gate({"sets": sets})
     assert verdict.per_model_passed["good-candidate"] is True
     assert verdict.per_model_passed["bad-candidate"] is False
     assert not verdict.passed  # aggregate over all gated models
+
+
+def test_gate_uses_the_f1_and_f2_specific_paired_rp_independently():
+    """F1 and F2 read DIFFERENT fields (design Section 4.4, TE-49 amendment, D-SLM5385): a
+    packet where F1's paired RP is wide enough to null a shortfall but F2's paired RP is too
+    tight to absorb an equal-sized margin shortfall must fail F2 while passing F1 -- proving
+    the gate reads `f1_paired_resolving_power` and `f2_paired_resolving_power` independently
+    rather than one shared field applied to both."""
+    sets = {
+        "only": {
+            "models": {
+                "bge-small-en-v1.5-reference": {"ndcg_at_10": 0.70},
+                "bm25": {"ndcg_at_10": 0.50},
+                "candidate": {
+                    "ndcg_at_10": 0.685,  # 0.015 below ref, 0.185 above bm25
+                    "f1_paired_resolving_power": 0.02,   # 0.015 shortfall <= 0.02 -> F1 passes (null)
+                    "f2_paired_resolving_power": 0.20,   # 0.185 margin <= 0.20 -> F2 FAILS (no null)
+                },
+            }
+        }
+    }
+    verdict = evaluate_gate({"sets": sets})
+    assert verdict.per_set["only"]["candidate"].f1.passed is True
+    assert verdict.per_set["only"]["candidate"].f2.passed is False
+
+
+def test_gate_skips_a_pair_missing_a_paired_resolving_power():
+    """A (set, model) reading with no `f1_paired_resolving_power` / `f2_paired_resolving_power`
+    -- e.g. a pre-TE-49 packet -- is skipped rather than silently graded, matching the
+    existing skip-on-missing-reference/bm25 convention."""
+    sets = {
+        "scifact": {
+            "models": {
+                "bge-small-en-v1.5-reference": {"ndcg_at_10": 0.70},
+                "bm25": {"ndcg_at_10": 0.50},
+                "candidate": {"ndcg_at_10": 0.90},  # no paired RP fields at all
+            }
+        }
+    }
+    verdict = evaluate_gate({"sets": sets})
+    assert any("no paired resolving power" in s for s in verdict.skips)
+    assert verdict.per_set["scifact"] == {}
 
 
 def test_gate_note_states_the_minimum_effect_size_rule():

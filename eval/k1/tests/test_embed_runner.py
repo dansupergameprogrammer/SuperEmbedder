@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from eval.k1.embed_runner import (
+    BARE_QUERY_CONVENTION,
     ModelSpec,
     POOLING_NATIVE,
     POOLING_PS1_PRE_NORM,
@@ -77,6 +78,59 @@ def test_native_pooling_auto_detects_last_token_for_qwen3_embedding():
     vecs, manifest = embed_texts(spec, TEXTS, device="cuda")
     assert vecs.shape == (3, 1024)
     assert manifest.pooling == "native:last_token"
+
+
+@pytest.mark.skipif(not _local_cache_has("BAAI/bge-small-en-v1.5"), reason="model not cached locally")
+def test_query_convention_is_recorded_as_bare_when_no_prompt_is_set():
+    """Design Section 4.5 (TE-49 amendment): a model with no documented query-side
+    instruction is queried bare, and that convention is recorded on the manifest -- never
+    left None."""
+    spec = ModelSpec(
+        name="bge-small-ref", hf_repo="BAAI/bge-small-en-v1.5", revision=BGE_SMALL_REVISION,
+        pooling=POOLING_NATIVE, batch_size=2, max_length=64,
+    )
+    _vecs, manifest = embed_texts(spec, TEXTS, device="cuda", is_query=True)
+    assert manifest.query_convention == BARE_QUERY_CONVENTION
+
+
+@pytest.mark.skipif(not _local_cache_has("BAAI/bge-small-en-v1.5"), reason="model not cached locally")
+def test_query_convention_is_recorded_as_the_prompt_when_one_is_set():
+    prompt = "Represent this sentence for searching relevant passages: "
+    spec = ModelSpec(
+        name="bge-small-ref-instructed", hf_repo="BAAI/bge-small-en-v1.5", revision=BGE_SMALL_REVISION,
+        pooling=POOLING_NATIVE, batch_size=2, max_length=64, query_prompt=prompt,
+    )
+    _vecs, manifest = embed_texts(spec, TEXTS, device="cuda", is_query=True)
+    assert manifest.query_convention == prompt
+
+
+@pytest.mark.skipif(not _local_cache_has("BAAI/bge-small-en-v1.5"), reason="model not cached locally")
+def test_query_convention_is_none_for_a_document_not_query_embedding():
+    spec = ModelSpec(
+        name="bge-small-ref", hf_repo="BAAI/bge-small-en-v1.5", revision=BGE_SMALL_REVISION,
+        pooling=POOLING_NATIVE, batch_size=2, max_length=64,
+        query_prompt="Represent this sentence for searching relevant passages: ",
+    )
+    _vecs, manifest = embed_texts(spec, TEXTS, device="cuda", is_query=False)
+    assert manifest.query_convention is None
+
+
+@pytest.mark.skipif(not _local_cache_has("BAAI/bge-small-en-v1.5"), reason="model not cached locally")
+def test_instructed_and_bare_queries_produce_different_vectors():
+    """The prompt must actually reach the model, not merely be recorded -- a query embedded
+    with the instruction prepended is a genuinely different forward pass."""
+    spec_bare = ModelSpec(
+        name="bare", hf_repo="BAAI/bge-small-en-v1.5", revision=BGE_SMALL_REVISION,
+        pooling=POOLING_NATIVE, batch_size=2, max_length=64,
+    )
+    spec_instructed = ModelSpec(
+        name="instructed", hf_repo="BAAI/bge-small-en-v1.5", revision=BGE_SMALL_REVISION,
+        pooling=POOLING_NATIVE, batch_size=2, max_length=64,
+        query_prompt="Represent this sentence for searching relevant passages: ",
+    )
+    vecs_bare, _m1 = embed_texts(spec_bare, TEXTS, device="cuda", is_query=True)
+    vecs_instructed, _m2 = embed_texts(spec_instructed, TEXTS, device="cuda", is_query=True)
+    assert not (vecs_bare == vecs_instructed).all()
 
 
 def test_unpinned_revision_refuses():

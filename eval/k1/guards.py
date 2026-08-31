@@ -199,3 +199,19 @@ def check_bm25_params_present(set_name: str, k1: float | None, b: float | None) 
             "K1_BM25_PARAMS_MISSING",
             f"[{set_name}] sets.lock carries no BM25 (k1, b) pair",
         )
+
+
+def check_query_convention_recorded(model_name: str, query_convention: str | None) -> None:
+    """Refuses (``K1_QUERY_CONVENTION_UNRECORDED``) a query embedding whose query-side
+    convention was not recorded. Design Section 6.2, row 2's refusal condition (TE-49
+    amendment, Section 4.5, D-SLM5389): "each arm's queries carry its own documented
+    query-side instruction, recorded in the manifest as query_convention"; a query embedded
+    with no recorded convention is refused, whether the model runs bare (recorded as the
+    literal string ``"bare"``) or under a documented instruction (recorded as the instruction
+    text itself) -- either is acceptable, an unrecorded convention is not."""
+    if not query_convention:
+        raise K1GuardError(
+            "K1_QUERY_CONVENTION_UNRECORDED",
+            f"model '{model_name}': a query embedding carries no recorded query_convention "
+            f"(design Section 4.5 -- record 'bare' explicitly rather than leaving this unset)",
+        )
