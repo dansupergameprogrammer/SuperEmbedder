@@ -216,13 +216,21 @@ def check_reused_run_covers_population(
     ``runner.run_gate`` already guards against on the corpus side (see ``runner.py``'s own
     comment on ``_select_smoke_queries``). Executed on SciFact's own reused ranking truncated to
     150 of 300 queries: nDCG@10 dropped from 0.699868 to 0.348176 with no refusal anywhere.
-    Checked at the point the reused run is read, before any score is computed from it."""
-    missing = sorted(set(required_query_ids) - set(run_query_ids))
+    Checked at the point the reused run is read, before any score is computed from it.
+
+    TE-53 review, J-3 (Minor): ``required_query_ids`` is consumed exactly once, into a local
+    ``set``, and that set is reused for both the ``missing`` computation and the refusal
+    message's own denominator -- the signature accepts any ``Iterable``, including a
+    single-use generator, and the message previously re-consumed the (by then exhausted)
+    iterable a second time, reporting "missing N of 0" regardless of the true population
+    size."""
+    required = set(required_query_ids)
+    missing = sorted(required - set(run_query_ids))
     if missing:
         raise K1GuardError(
             "K1_REUSED_RUN_INCOMPLETE",
             f"[{set_name}] the reused TREC run for '{model_name}' is missing {len(missing)} of "
-            f"{len(set(required_query_ids))} required test queries: {missing[:10]}"
+            f"{len(required)} required test queries: {missing[:10]}"
             f"{'...' if len(missing) > 10 else ''} -- a reused ranking must cover every query "
             f"this run is scoring; a partial ranking silently depresses nDCG@10 rather than "
             f"failing (TE-51 H-4)",

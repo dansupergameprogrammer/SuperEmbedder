@@ -13,9 +13,12 @@ under its own documented query-side instruction, when one exists; a model with n
 queried bare. ``ModelSpec.query_prompt`` carries that instruction (``None`` means bare, by
 that model's own documentation -- not a default applied uniformly regardless of what each
 model documents). The convention actually used is recorded on the emitted manifest as
-``query_convention`` (the prompt text, or the literal string ``"bare"``) -- refused
-(``guards.check_query_convention_recorded``) if left unrecorded, per Section 6.2 row 2's
-refusal condition.
+``query_convention`` (the prompt text, or the literal string ``"bare"``). **This module
+always records it** -- TE-53 review, J-5 (Minor): ``guards.check_query_convention_recorded``
+no longer lives here (TE-51 review, H-5 moved it to ``runner.run_gate``'s packet-assembly
+point, the one place a query embedding's convention can genuinely arrive unrecorded -- the
+candidate-reuse path, not this module's own embed call). A reader asking what refuses an
+unrecorded convention should look there, per Section 6.2 row 2's refusal condition.
 
 Emits vectors plus a run manifest carrying model revision, dtype, batch size, max_length,
 torch/transformers versions, GPU name, a SHA-256 over the emitted vectors, and

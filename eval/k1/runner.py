@@ -380,7 +380,10 @@ def render_human_table(packet: dict) -> str:
         # dispersions reported beside every score; this table now shows all three, the marginal
         # one relabeled so it is not mistaken for what the gate acts on. bm25/reference rows
         # carry no paired RP of their own (they are the floors, not the candidates being
-        # graded) and print blank for those two columns.
+        # graded) and print "nan" for those two columns -- TE-53 review, J-4 (Minor): this
+        # comment previously said "blank"; the actual printed value (below, via
+        # ``m.get(..., float('nan'))``) is the literal string "nan", which is deliberately
+        # better than a fabricated 0.0 -- a reader can tell a missing value from a zero one.
         header = (
             f"  {'model':<32}{'nDCG@10':>10}{'recall@10':>12}{'MRR@10':>10}"
             f"{'marg.RP':>10}{'f1.RP':>10}{'f2.RP':>10}"

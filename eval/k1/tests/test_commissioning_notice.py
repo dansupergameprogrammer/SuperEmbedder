@@ -18,6 +18,7 @@ from pathlib import Path
 
 from eval.k1 import (
     COMMISSIONED_SETS,
+    COMMISSIONING_DECISIONS,
     COMMISSIONING_NOTICE,
     RECOMMISSIONING_NOTE,
     RECOMMISSIONING_OUTSTANDING,
@@ -54,12 +55,16 @@ def test_notice_names_the_commissioned_sets_constant_rather_than_a_bare_set_list
 
 
 def test_notice_does_not_claim_load_bearing_across_every_locked_set():
-    """The notice's load-bearing claim must be scoped to the commissioned cell, not asserted
-    as a blanket statement across every set the roster locks."""
+    """TE-53 review, J-8 (Observation): this test's docstring and hardcoded five-name list
+    used to describe the property `test_the_notices_own_load_bearing_clause_is_generated_from_
+    commissioned_sets` below now actually checks (a set removed from `COMMISSIONED_SETS` is
+    mechanically absent from the notice) -- while itself remaining a hardcoded prose list that
+    cannot fail on an over-broad claim, since it was written before the notice's name list was
+    generated. What this test actually pins, correctly if narrowly: today's real, filed
+    commissioned roster (all five currently-locked sets) is named in today's real notice text,
+    and the notice states "load-bearing" at all. It is not a check that the notice EXCLUDES
+    anything -- that property belongs to the mechanism test below."""
     assert "load-bearing" in COMMISSIONING_NOTICE
-    # The blanket pre-fix phrasing asserted load-bearing status unconditionally; the fixed
-    # text must qualify it to the commissioned sets, named explicitly in the notice. TE-47
-    # added SCIDOCS (D-SLM5363) to eval.k1.COMMISSIONED_SETS, so it is named here too.
     for name in ("SciFact", "NFCorpus", "FiQA-2018", "ArguAna", "SCIDOCS"):
         assert name in COMMISSIONING_NOTICE
 
@@ -115,6 +120,39 @@ def test_the_notices_own_load_bearing_clause_is_generated_from_commissioned_sets
 
 
 # --------------------------------------------------------------------------------------
+# J-7 (Observation, TE-53 review): the notice built its two load-bearing clauses by filtering
+# COMMISSIONED_SETS against two literal decision-id strings ('D-SLM4707', 'D-SLM5363'). A set
+# commissioned under a THIRD decision id -- how every future commissioning arrives, since each
+# is filed as its own decision-log entry -- matched neither filter and the notice built
+# cleanly while silently omitting it. `_commissioning_clauses_by_decision` groups by the LIVE
+# mapping instead, so a new decision id is included by construction.
+# --------------------------------------------------------------------------------------
+
+
+def test_a_set_commissioned_under_a_third_decision_id_is_not_silently_omitted(monkeypatch):
+    """Reproduces J-7's exact failure shape and proves the fix: a made-up sixth set,
+    commissioned under a decision id that is neither of the two the old code filtered on
+    literally, must still get its own clause -- generated, not omitted."""
+    import eval.k1 as k1_mod
+
+    decisions_with_third_id = {**COMMISSIONING_DECISIONS, "trec-covid": "D-NEW-THIRD-ID"}
+    names_with_new_set = {**SET_DISPLAY_NAMES, "trec-covid": "TREC-COVID"}
+    monkeypatch.setattr(k1_mod, "COMMISSIONING_DECISIONS", decisions_with_third_id)
+    monkeypatch.setattr(k1_mod, "SET_DISPLAY_NAMES", names_with_new_set)
+
+    rendered = k1_mod._commissioning_clauses_by_decision(
+        ("scifact", "nfcorpus", "fiqa", "arguana", "scidocs", "trec-covid")
+    )
+    assert "D-NEW-THIRD-ID" in rendered
+    assert "TREC-COVID" in rendered
+    # The pre-fix failure mode: the notice built cleanly and simply dropped the set. Confirm
+    # the other two groups are still present too -- the fix adds coverage, it does not trade
+    # one group's presence for another's.
+    assert "D-SLM4707" in rendered
+    assert "D-SLM5363" in rendered
+
+
+# --------------------------------------------------------------------------------------
 # H-2 (Critical, TE-51 review): the notice stated the general re-commissioning RULE but not
 # that it is CURRENTLY outstanding -- D-SLM5396 records the gap, D-SLM5397 defers it, and a
 # reader of the notice alone had no way to learn either. Pins the mechanism (both branches of
@@ -133,13 +171,28 @@ def test_recommissioning_clause_is_empty_when_not_outstanding():
 
 
 def test_todays_real_notice_states_the_outstanding_recommissioning_gap():
-    """Today's real, filed state (D-SLM5396/5397): b16ac70 changed four commissioned
-    components after every set in COMMISSIONED_SETS had its own verdict filed, and no
-    independent seat has re-fired and re-filed since -- the live notice must carry that as a
-    live fact, not only the general rule."""
-    assert RECOMMISSIONING_OUTSTANDING is True
-    assert "OUTSTANDING" in COMMISSIONING_NOTICE
-    assert RECOMMISSIONING_NOTE in COMMISSIONING_NOTICE
+    """TE-53 review, J-1/J-2: RECOMMISSIONING_OUTSTANDING is now DERIVED
+    (`eval.k1._derive_recommissioning_gap`, pinned on its own branch logic and against real
+    historical commits in `test_recommissioning_gap.py`), not hand-set -- so this pin must not
+    merely assert today's value is `True`, which is exactly the shape of claim that goes stale
+    silently (that IS J-2). It instead recomputes the fact independently, via a real git query
+    over each commissioned decision's own baseline, and checks the module's computed value
+    against that recomputation -- so this test fails the day the module's own derivation
+    disagrees with the repository's real history, in either direction."""
+    from eval.k1 import COMMISSIONED_AT_COMMIT, COMMISSIONING_DECISIONS, _component_files_changed_since
+
+    any_component_changed_since_its_own_baseline = False
+    for decision_id in set(COMMISSIONING_DECISIONS.values()):
+        baseline = COMMISSIONED_AT_COMMIT[decision_id]
+        if _component_files_changed_since(baseline, "HEAD"):
+            any_component_changed_since_its_own_baseline = True
+
+    assert RECOMMISSIONING_OUTSTANDING is any_component_changed_since_its_own_baseline
+    if any_component_changed_since_its_own_baseline:
+        assert "OUTSTANDING" in COMMISSIONING_NOTICE
+        assert RECOMMISSIONING_NOTE in COMMISSIONING_NOTICE
+    else:
+        assert "OUTSTANDING" not in COMMISSIONING_NOTICE
 
 
 def test_readme_carries_the_notices_configuration_scoping_clause():

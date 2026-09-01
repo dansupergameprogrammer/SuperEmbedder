@@ -145,3 +145,19 @@ def test_reused_run_population_check_refuses_when_the_run_is_empty():
     with pytest.raises(K1GuardError) as exc:
         check_reused_run_covers_population("unit", "candidate", ["q1"], [])
     assert exc.value.code == "K1_REUSED_RUN_INCOMPLETE"
+
+
+def test_reused_run_population_check_denominator_is_correct_for_a_generator(monkeypatch):
+    """TE-53 review, J-3 (Minor): the signature's own type annotation
+    (``required_query_ids: Iterable[str]``) invites a single-use generator, and the guard
+    previously consumed it twice -- once for ``missing``, once again for the refusal
+    message's denominator -- so the second consumption always saw an exhausted iterator and
+    reported "missing N of 0" regardless of the true required population. Executed with a
+    generator, exactly as the review found: the denominator must read the true population
+    size (2), not zero."""
+    required_ids = (q for q in ["q1", "q2", "q3"])
+    with pytest.raises(K1GuardError) as exc:
+        check_reused_run_covers_population("s", "m", required_ids, ["q1"])
+    message = str(exc.value)
+    assert "missing 2 of 3 required test queries" in message
+    assert "missing 2 of 0 required test queries" not in message

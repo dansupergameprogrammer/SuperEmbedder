@@ -32,18 +32,16 @@ from typing import Optional
 
 import pytest
 
-from eval.k1 import COMMISSIONED_SETS, COMMISSIONING_DECISIONS
+from eval.k1 import COMMISSIONED_SETS, COMMISSIONING_DECISIONS, SET_DISPLAY_NAMES
 
-# Display name each set is referred to by in the Wizard project's decision-log prose --
-# distinct from the lowercase keys `COMMISSIONED_SETS`/`COMMISSIONING_DECISIONS` use, which
-# match `eval.k1.set_roster`'s own set-name convention.
-_SET_DISPLAY_NAMES = {
-    "scifact": "SciFact",
-    "nfcorpus": "NFCorpus",
-    "fiqa": "FiQA-2018",
-    "arguana": "ArguAna",
-    "scidocs": "SCIDOCS",
-}
+# TE-53 review, J-6 (Observation): this file used to carry its own verbatim copy of
+# `eval.k1.SET_DISPLAY_NAMES` as `_SET_DISPLAY_NAMES`, so `test_commissioning_decisions_covers_
+# every_display_name` below guarded the COPY rather than the dict `commissioned_names_clause`
+# actually indexes -- a set added under an existing decision id but missing from the real
+# `SET_DISPLAY_NAMES` raised a bare `KeyError` at `eval.k1` module import, uncaught by this
+# pin, because the pin was checking a different map that happened to still be complete.
+# Importing the real constant makes this the same map `eval.k1.__init__` uses to render the
+# notice, so a gap in it is a gap this pin actually sees.
 
 _ENV_OVERRIDE = "SUPEREMBEDDER_WIZARD_RECORDS"
 _DEFAULT_ROOT = Path(r"D:\Wizard")
@@ -130,10 +128,10 @@ def test_commissioning_decisions_covers_every_display_name():
     citation table's key space (allowing the table to be a subset of the full locked roster --
     only the display-name map needs to be complete, so a newly locked-but-not-yet-commissioned
     set does not silently fall out of this pin's coverage)."""
-    assert set(COMMISSIONING_DECISIONS.keys()) <= set(_SET_DISPLAY_NAMES.keys())
+    assert set(COMMISSIONING_DECISIONS.keys()) <= set(SET_DISPLAY_NAMES.keys())
 
 
-@pytest.mark.parametrize("set_name", sorted(_SET_DISPLAY_NAMES))
+@pytest.mark.parametrize("set_name", sorted(SET_DISPLAY_NAMES))
 def test_commissioned_sets_agrees_with_the_filed_decision_log_verdict(
     set_name: str, wizard_decision_log_text: str
 ):
@@ -148,7 +146,7 @@ def test_commissioned_sets_agrees_with_the_filed_decision_log_verdict(
         return
 
     entry_text = _entry_text(wizard_decision_log_text, decision_id)
-    display_name = _SET_DISPLAY_NAMES[set_name]
+    display_name = SET_DISPLAY_NAMES[set_name]
     assert display_name in entry_text, (
         f"{decision_id}'s entry does not mention {display_name} -- the citation does not "
         f"actually pertain to this set"

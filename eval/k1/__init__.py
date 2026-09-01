@@ -59,6 +59,11 @@ Every entry point in this package prints this notice before emitting a result.
 `COMMISSIONING_DECISIONS` and, where reachable, against the filed decision-log entries
 themselves, so this constant cannot silently drift from the record again.
 """
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+from typing import Dict, List, Tuple
 
 # The set names an independent seat has fired all three commissioning constructions against
 # and filed a COMMISSIONED verdict for: SciFact, NFCorpus, FiQA-2018, ArguAna together
@@ -118,30 +123,184 @@ def commissioned_names_clause(commissioned_sets) -> str:
     return ", ".join(SET_DISPLAY_NAMES[name] for name in commissioned_sets)
 
 
-# TE-51 review, H-2 (Critical): the commissioning constructions ARE independent of the
-# instrument's build (module docstring above) -- but the constructions fired against CODE, and
-# `b16ac70` (TE-50) changed four commissioned components -- `bm25_baseline._tokenize` (the BM25
-# analyzer), `embed_runner` (the reference's query vectors), `rank_score` (the paired resolving
-# power dispersion) and `gate.evaluate_f2` (the verdict arithmetic) -- after EVERY set in
-# `COMMISSIONED_SETS` had its own verdict filed. D-SLM5396 records the gap; D-SLM5397 defers it
-# explicitly "before K1-Run-2's verdict is read as load-bearing." No reading this instrument has
-# produced from b16ac70 forward has been re-commissioned against the changed code.
+# Additional narrative context for a decision id's own commissioning clause in the notice --
+# separate from COMMISSIONING_DECISIONS (which CITES the decision) so that a decision id can
+# be added there and immediately get its own clause in the notice (TE-53 review, J-7) even
+# before anyone has written the narrative aside for it. A decision id absent from this table
+# still gets a clause -- generic rather than annotated -- never silently omitted.
+COMMISSIONING_NARRATIVE = {
+    "D-SLM4707": (
+        "2026-08-25, instrument commit 3426bee; the zero-qrels guard's vitality proven on "
+        "this group"
+    ),
+    "D-SLM5363": (
+        "2026-08-30, on a content-distance-aware remedy construction for must-reject 2, "
+        "after a first attempt -- D-SLM5338 -- returned NOT COMMISSIONED on the original "
+        "construction"
+    ),
+}
+
+
+def _commissioning_clauses_by_decision(commissioned_sets) -> str:
+    """Builds one load-bearing clause per decision id actually present in
+    `COMMISSIONING_DECISIONS`, grouping `commissioned_sets` by the decision that commissioned
+    each -- TE-53 review, J-7 (Observation): the notice previously filtered on two literal
+    decision-id strings, so a set commissioned under a THIRD id (how every future
+    commissioning arrives, since each is filed as its own decision-log entry) matched neither
+    filter and the notice built cleanly while silently omitting it, even though the notice's
+    first sentence still asserted load-bearing standing on all of `COMMISSIONED_SETS`.
+    Grouping by the live mapping instead makes a set's presence in some clause and its
+    presence in `COMMISSIONED_SETS` mechanically the same fact -- the same property
+    `commissioned_names_clause` already gives the name list within one clause."""
+    groups: Dict[str, List[str]] = {}
+    for s in commissioned_sets:
+        groups.setdefault(COMMISSIONING_DECISIONS[s], []).append(s)
+    clauses = []
+    for decision_id in sorted(groups):
+        names = commissioned_names_clause(groups[decision_id])
+        narrative = COMMISSIONING_NARRATIVE.get(decision_id)
+        if narrative:
+            clauses.append(f"{names} ({decision_id}, {narrative})")
+        else:
+            clauses.append(f"{names} ({decision_id} -- see eval.k1.COMMISSIONING_DECISIONS)")
+    return " and ".join(clauses)
+
+
+# TE-53 review, J-1 (Significant) / J-2 (Significant): RECOMMISSIONING_OUTSTANDING and
+# RECOMMISSIONING_NOTE used to be a hand-set boolean and a hand-typed string -- both asserted
+# a fact (which commissioned-component modules changed since which set's own commissioning
+# baseline) that this repository's own git history already states as data. J-1 found the
+# hand-typed note incomplete about the very commit that authored it; J-2 found the root: a
+# hand-set flag cannot re-arm once correctly cleared, so the NEXT component change after a
+# re-commissioning would ship with the flag silently reading False again. Both close the same
+# way `uncommissioned_required_sets` (TE-40 review, F-1) already closed the sibling gap for an
+# uncommissioned SET: compute the fact from what actually changed, rather than typing a claim
+# about it.
 #
-# Flip to False -- and clear RECOMMISSIONING_NOTE to "" -- ONLY when an independent seat has
-# re-fired the affected constructions against the changed code and filed a fresh decision-log
-# entry citing that execution (the same discipline COMMISSIONED_SETS itself is grown under,
-# module docstring above). Never as a rewording of this notice.
-RECOMMISSIONING_OUTSTANDING = True
-RECOMMISSIONING_NOTE = (
-    "b16ac70 (TE-50, 2026-08-30) changed four commissioned components -- bm25_baseline._tokenize "
-    "(the BM25 analyzer), embed_runner (the reference's query vectors), rank_score (the paired "
-    "resolving power dispersion) and gate.evaluate_f2 (the verdict arithmetic) -- after every "
-    "set in eval.k1.COMMISSIONED_SETS already had its own COMMISSIONED verdict filed. D-SLM5396 "
-    "records the gap; D-SLM5397 defers it, explicitly 'before K1-Run-2's verdict is read as "
-    "load-bearing.' No reading this instrument has produced from b16ac70 forward has been "
-    "re-commissioned against the changed code (Claude/Poirot/"
-    "b16ac70-te51-k1-instrument-confirmation.md Finding H-2, Wizard project records tree)."
+# COMMISSIONED_COMPONENT_FILES names the concrete files the disposition rule's component
+# sentence ("the loader, ranker, scorer, or guard") means in this instrument.
+# COMMISSIONED_AT_COMMIT cites, per decision id, the instrument commit that decision's own
+# COMMISSIONED verdict was executed against (module docstring above: "instrument commit
+# 3426bee" for D-SLM4707; D-SLM5363's own decision-log entry cites
+# "fix/te40-k1-stale-truth@263a750"). Both grow only alongside COMMISSIONING_DECISIONS, under
+# the same discipline: a new file or a new baseline commit is added when a filed verdict's own
+# text names it, never edited to make a real diff disappear.
+COMMISSIONED_COMPONENT_FILES: Tuple[str, ...] = (
+    "eval/k1/bm25_baseline.py",
+    "eval/k1/embed_runner.py",
+    "eval/k1/gate.py",
+    "eval/k1/guards.py",
+    "eval/k1/rank_score.py",
+    "eval/k1/runner.py",
+    "eval/k1/sets_lock.py",
 )
+
+COMMISSIONED_AT_COMMIT: Dict[str, str] = {
+    "D-SLM4707": "3426bee",
+    "D-SLM5363": "263a750",
+}
+
+_K1_PACKAGE_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _K1_PACKAGE_DIR.parents[1]  # eval/k1 -> eval -> repository root
+
+
+class _RecommissioningCheckUnavailable(RuntimeError):
+    """Raised internally when the git query a component's re-commissioning gap depends on
+    cannot be answered -- no `git` binary, this directory not a git checkout, or a cited
+    baseline commit unreachable (e.g. a shallow clone). Never escapes
+    `_derive_recommissioning_gap`: caught there and folded into an outstanding result, because
+    a check that could not run is not evidence of a clear one."""
+
+
+def _component_files_changed_since(commit: str, to_ref: str = "HEAD") -> List[str]:
+    """Runs `git diff --name-only <commit>..<to_ref>`, scoped to
+    `COMMISSIONED_COMPONENT_FILES`, from the repository this package is checked out in.
+    `to_ref` defaults to `HEAD` for real use; a test passes a fixed historical commit so it can
+    reproduce a past finding without depending on where this branch's HEAD happens to be today.
+    Raises `_RecommissioningCheckUnavailable` -- never a bare subprocess exception -- on any
+    failure, so the caller fails toward "outstanding" rather than toward a silent, unverified
+    "clear"."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", f"{commit}..{to_ref}", "--", *COMMISSIONED_COMPONENT_FILES],
+            cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise _RecommissioningCheckUnavailable(f"git diff could not run: {exc}") from exc
+    if result.returncode != 0:
+        raise _RecommissioningCheckUnavailable(
+            f"git diff --name-only {commit}..{to_ref} exited {result.returncode}: "
+            f"{result.stderr.strip()}"
+        )
+    return sorted(line.strip() for line in result.stdout.splitlines() if line.strip())
+
+
+def _derive_recommissioning_gap() -> Tuple[bool, str]:
+    """Computes the component re-commissioning gap from git history rather than from a
+    hand-typed claim (TE-53 review, J-1/J-2).
+
+    For every decision id currently backing a commissioned set (the values of
+    `COMMISSIONING_DECISIONS`), diffs `COMMISSIONED_COMPONENT_FILES` from that decision's own
+    `COMMISSIONED_AT_COMMIT` baseline to `HEAD` -- the disposition rule's component sentence,
+    executed rather than paraphrased. A decision id with no changed files since its own
+    baseline contributes nothing to the result; grouped by decision id, the same shape
+    `commissioned_names_clause` already groups the notice's set-name text by, so a set
+    commissioned under a new decision id (J-7's own class) is covered by construction, not by
+    a list someone remembers to extend.
+
+    Fails toward outstanding rather than toward silence: a decision id with no
+    `COMMISSIONED_AT_COMMIT` entry, or a git query that cannot be answered at all (no git
+    binary, this directory not a checkout, or a cited commit unreachable), is folded into the
+    result as outstanding, with a note naming the check that could not run -- never as a quiet
+    `False` that nothing actually verified.
+    """
+    active_decision_ids = sorted(set(COMMISSIONING_DECISIONS.values()))
+    problems: List[str] = []
+    changes_by_decision: Dict[str, List[str]] = {}
+    for decision_id in active_decision_ids:
+        baseline = COMMISSIONED_AT_COMMIT.get(decision_id)
+        if baseline is None:
+            problems.append(
+                f"{decision_id} has no COMMISSIONED_AT_COMMIT baseline -- its component "
+                f"re-commissioning gap cannot be computed and is treated as outstanding"
+            )
+            continue
+        try:
+            changed = _component_files_changed_since(baseline)
+        except _RecommissioningCheckUnavailable as exc:
+            problems.append(f"{decision_id} (baseline {baseline}): {exc}")
+            continue
+        if changed:
+            changes_by_decision[decision_id] = changed
+
+    if not problems and not changes_by_decision:
+        return False, ""
+
+    parts = []
+    for decision_id in sorted(changes_by_decision):
+        changed = changes_by_decision[decision_id]
+        baseline = COMMISSIONED_AT_COMMIT[decision_id]
+        parts.append(
+            f"since {decision_id}'s own commissioning baseline ({baseline}), "
+            f"{', '.join(changed)} changed"
+        )
+    for problem in problems:
+        parts.append(f"UNVERIFIED -- {problem}")
+
+    note = (
+        "Component re-commissioning gap, computed from git history rather than asserted: "
+        + "; ".join(parts) + ". D-SLM5396/D-SLM5397 (Wizard project records tree) record and "
+        "defer the gap this replaces the hand-typed claim about. No reading this instrument "
+        "produces from any listed change forward has been re-commissioned against the "
+        "changed code. Flip to False only by an independent seat re-firing the affected "
+        "constructions and filing a fresh decision-log entry that updates "
+        "COMMISSIONED_AT_COMMIT to the new baseline commit -- never by editing this note or "
+        "this function."
+    )
+    return True, note
+
+
+RECOMMISSIONING_OUTSTANDING, RECOMMISSIONING_NOTE = _derive_recommissioning_gap()
 
 
 def _recommissioning_clause(outstanding: bool, note: str) -> str:
@@ -158,13 +317,8 @@ COMMISSIONING_NOTICE = (
     "U-K1 INSTRUMENT -- COMMISSIONED ON eval.k1.COMMISSIONED_SETS ONLY. All three "
     "commissioning constructions (must-accept, must-reject 1, must-reject 2) fire correctly "
     f"and readings are load-bearing on: "
-    f"{commissioned_names_clause(s for s in COMMISSIONED_SETS if COMMISSIONING_DECISIONS.get(s) == 'D-SLM4707')} "
-    "(D-SLM4707, 2026-08-25, instrument commit 3426bee; the zero-qrels guard's vitality proven "
-    "on these four) and "
-    f"{commissioned_names_clause(s for s in COMMISSIONED_SETS if COMMISSIONING_DECISIONS.get(s) == 'D-SLM5363')} "
-    "(D-SLM5363, 2026-08-30, on a content-distance-aware remedy "
-    "construction for must-reject 2, after a first attempt -- D-SLM5338 -- returned NOT "
-    "COMMISSIONED on the original construction). See eval.k1.COMMISSIONING_DECISIONS for the "
+    f"{_commissioning_clauses_by_decision(COMMISSIONED_SETS)}. "
+    "See eval.k1.COMMISSIONING_DECISIONS for the "
     "decision ID governing each set. NOTE ON SCIDOCS: its must-reject-1 construction fires by "
     "a narrow margin -- exceeds its own resolving power by roughly 3e-05, a genuine boundary "
     "case independently measured twice, corroborated across three seeds, non-replicating at "

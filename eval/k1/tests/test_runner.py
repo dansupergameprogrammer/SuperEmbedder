@@ -155,10 +155,13 @@ def test_render_human_table_shows_all_three_resolving_powers_distinctly_labeled(
     assert "0.0300" in candidate_lines[0]
 
 
-def test_render_human_table_blank_paired_rp_for_bm25_and_reference_rows():
-    """bm25 and the reference are the floors, not candidates being graded -- they carry no
-    paired resolving power of their own, and the table must not silently print 0.0 for a field
-    that was never computed."""
+def test_render_human_table_nan_paired_rp_for_bm25_and_reference_rows():
+    """TE-53 review, J-4 (Minor): this test's own name and the code comment beside its call
+    site previously said "blank" -- the table prints the literal string "nan", not an empty
+    field, which is the better behaviour (a reader can tell a missing value from a zero one).
+    bm25 and the reference are the floors, not candidates being graded -- they carry no paired
+    resolving power of their own, and the table must not silently print 0.0 for a field that
+    was never computed."""
     packet = _packet_for_table()
     packet["sets"]["scifact"]["models"]["bm25"] = {
         "ndcg_at_10": 0.50, "recall_at_10": 0.60, "mrr_at_10": 0.40,
