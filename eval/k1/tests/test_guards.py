@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from eval.k1.guards import K1GuardError, check_query_convention_recorded, validate_qrels_join
+from eval.k1.guards import (
+    K1GuardError,
+    check_query_convention_recorded,
+    check_reused_run_covers_population,
+    validate_qrels_join,
+)
 
 
 def _healthy_inputs():
@@ -107,3 +112,36 @@ def test_query_convention_passes_when_bare_is_recorded():
 
 def test_query_convention_passes_when_an_instruction_is_recorded():
     check_query_convention_recorded("some-model", "Represent this sentence for searching relevant passages: ")
+
+
+# --------------------------------------------------------------------------------------
+# check_reused_run_covers_population (TE-51 review, H-4, Significant): a candidate-reuse
+# ranking (TE-50, embed_runner.ModelSpec.reuse_trec_run_dir) that is missing queries the run
+# is scoring must be refused -- ndcg_at_k_own scores a missing query 0.0 rather than excluding
+# it, silently depressing the reading instead of failing.
+# --------------------------------------------------------------------------------------
+
+
+def test_reused_run_population_check_passes_when_every_query_is_covered():
+    check_reused_run_covers_population("unit", "candidate", ["q1", "q2", "q3"], ["q1", "q2", "q3"])  # does not raise
+
+
+def test_reused_run_population_check_passes_when_the_run_carries_extra_queries():
+    """A reused run covering MORE than the required population is not itself a defect -- only
+    a SHORTFALL against the required population is refused."""
+    check_reused_run_covers_population("unit", "candidate", ["q1", "q2"], ["q1", "q2", "q3"])  # does not raise
+
+
+def test_reused_run_population_check_refuses_a_partial_ranking():
+    """Executed shape from the review (SciFact truncated to 150 of 300 queries): a run missing
+    even one required query id must refuse, not silently score it 0.0."""
+    with pytest.raises(K1GuardError) as exc:
+        check_reused_run_covers_population("scifact", "qwen3-embedding-0.6b", ["q1", "q2", "q3"], ["q1", "q2"])
+    assert exc.value.code == "K1_REUSED_RUN_INCOMPLETE"
+    assert "q3" in str(exc.value)
+
+
+def test_reused_run_population_check_refuses_when_the_run_is_empty():
+    with pytest.raises(K1GuardError) as exc:
+        check_reused_run_covers_population("unit", "candidate", ["q1"], [])
+    assert exc.value.code == "K1_REUSED_RUN_INCOMPLETE"

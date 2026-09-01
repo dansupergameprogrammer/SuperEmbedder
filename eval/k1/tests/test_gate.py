@@ -366,3 +366,96 @@ def test_gate_verdict_uncommissioned_required_sets_is_empty_once_a_set_is_added_
     verdict = evaluate_gate(packet)
     assert verdict.uncommissioned_required_sets == []
     assert "not yet commissioned" not in verdict.reason
+
+
+# --------------------------------------------------------------------------------------
+# H-6 (Minor, TE-51 review): evaluate_floor's own docstring claimed to be the shared
+# arithmetic behind both F1 and F2 -- the exact merge the module docstring, in bold, says
+# must never happen (TE-49 amendment, D-SLM5388).
+# --------------------------------------------------------------------------------------
+
+
+def test_evaluate_floor_docstring_no_longer_claims_to_be_f2s_rule_too():
+    doc = evaluate_floor.__doc__ or ""
+    assert "shared arithmetic behind both F1 and F2" not in doc
+    assert "F1" in doc
+
+
+# --------------------------------------------------------------------------------------
+# H-7 (Minor, TE-51 review): the skip-reason summary named a single cause ("a missing
+# reference/bm25 reading") for every skip, even after this same round introduced a SECOND
+# skip class (a missing paired resolving power) directly above it.
+# --------------------------------------------------------------------------------------
+
+
+def test_gate_reason_names_the_paired_rp_skip_cause_not_a_missing_reading():
+    """A pair with BOTH readings present, skipped only for a missing paired resolving power,
+    must not be described in the reason as having a missing reference/bm25 reading."""
+    sets = {
+        "scifact": {
+            "models": {
+                "bge-small-en-v1.5-reference": {"ndcg_at_10": 0.70},
+                "bm25": {"ndcg_at_10": 0.50},
+                "candidate": {"ndcg_at_10": 0.90},  # both readings present; no paired RP fields
+            }
+        }
+    }
+    verdict = evaluate_gate({"sets": sets})
+    assert "paired resolving power" in verdict.reason
+    assert "missing reference/bm25 reading" not in verdict.reason
+
+
+def test_gate_reason_names_both_skip_causes_when_both_occur():
+    packet = _packet_for_sets(GATE_REQUIRED_SETS, {name: 0.90 for name in GATE_REQUIRED_SETS})
+    del packet["sets"]["scifact"]["models"]["bm25"]  # missing-reading skip
+    del packet["sets"]["nfcorpus"]["models"]["candidate"]["f1_paired_resolving_power"]  # missing-RP skip
+    verdict = evaluate_gate(packet)
+    assert "missing reference/bm25 reading" in verdict.reason
+    assert "paired resolving power" in verdict.reason
+
+
+# --------------------------------------------------------------------------------------
+# H-2 (Critical, TE-51 review): the one place status is asserted claimed unqualified
+# load-bearing standing while D-SLM5396/5397 record an outstanding component
+# re-commissioning gap. GateVerdict now carries the same fact a reader of the verdict alone
+# can see, mirroring uncommissioned_required_sets's own shape (TE-40 F-1).
+# --------------------------------------------------------------------------------------
+
+
+def test_gate_verdict_carries_the_recommissioning_outstanding_fact(monkeypatch):
+    import eval.k1.gate as gate_mod
+
+    monkeypatch.setattr(gate_mod, "RECOMMISSIONING_OUTSTANDING", True)
+    monkeypatch.setattr(gate_mod, "RECOMMISSIONING_NOTE", "unit-test gap text")
+    packet = _packet_for_sets(GATE_REQUIRED_SETS, {name: 0.90 for name in GATE_REQUIRED_SETS})
+    verdict = evaluate_gate(packet)
+    assert verdict.recommissioning_outstanding is True
+    assert verdict.recommissioning_note == "unit-test gap text"
+    assert "RE-COMMISSIONING OUTSTANDING" in verdict.reason
+
+
+def test_gate_verdict_recommissioning_outstanding_is_false_once_resolved(monkeypatch):
+    """Demonstrates the field tracks eval.k1.RECOMMISSIONING_OUTSTANDING rather than being a
+    fixed True -- once an independent seat re-fires the affected constructions and the flag is
+    correctly cleared, the verdict (and its reason) stop naming a gap that no longer exists."""
+    import eval.k1.gate as gate_mod
+
+    monkeypatch.setattr(gate_mod, "RECOMMISSIONING_OUTSTANDING", False)
+    monkeypatch.setattr(gate_mod, "RECOMMISSIONING_NOTE", "unit-test gap text")
+    packet = _packet_for_sets(GATE_REQUIRED_SETS, {name: 0.90 for name in GATE_REQUIRED_SETS})
+    verdict = evaluate_gate(packet)
+    assert verdict.recommissioning_outstanding is False
+    assert verdict.recommissioning_note == ""
+    assert "RE-COMMISSIONING OUTSTANDING" not in verdict.reason
+
+
+def test_gate_verdict_today_carries_the_real_recommissioning_gap():
+    """Today's real, filed state (D-SLM5396/5397): b16ac70 changed four commissioned
+    components after every set in COMMISSIONED_SETS had its own verdict filed, and no
+    independent seat has re-fired and re-filed since -- so the live verdict must carry the
+    gap, not only the notice text."""
+    packet = _packet_for_sets(GATE_REQUIRED_SETS, {name: 0.90 for name in GATE_REQUIRED_SETS})
+    verdict = evaluate_gate(packet)
+    assert verdict.recommissioning_outstanding is True
+    assert "RE-COMMISSIONING OUTSTANDING" in verdict.reason
+    assert verdict.recommissioning_note != ""

@@ -90,12 +90,79 @@ COMMISSIONING_DECISIONS = {
     "scidocs": "D-SLM5363",
 }
 
+# Display names for the notice's own prose -- TE-51 review, H-11: keyed by the same set names
+# `COMMISSIONED_SETS` and `COMMISSIONING_DECISIONS` use, so a name list built from the live
+# cell (via `commissioned_names_clause` below) can never spell a set differently than the
+# constant it was generated from.
+SET_DISPLAY_NAMES = {
+    "scifact": "SciFact",
+    "nfcorpus": "NFCorpus",
+    "fiqa": "FiQA-2018",
+    "arguana": "ArguAna",
+    "scidocs": "SCIDOCS",
+}
+
+
+def commissioned_names_clause(commissioned_sets) -> str:
+    """Builds a comma-joined display-name clause FROM ``commissioned_sets`` (normally
+    ``COMMISSIONED_SETS``, or a subset of it grouped by decision id) rather than a hand-typed
+    prose list -- TE-51 review, H-11 (Minor): the notice's own guarding test
+    (`eval/k1/tests/test_commissioning_notice.py`) asserted five hardcoded display names, which
+    ``COMMISSIONED_SETS == ALL_LOCKED_SETS`` (post-TE-47) satisfies exactly as well as it would
+    have satisfied a genuinely over-broad claim -- the test could no longer fail on the property
+    it was written to catch. Generating the clause from its argument, rather than typing it by
+    hand, makes a set's presence in the clause and its presence in ``commissioned_sets``
+    mechanically the same fact: remove a set from the cell and the display name this function
+    would produce is mechanically absent too, not merely absent from a prose list someone
+    remembered to edit."""
+    return ", ".join(SET_DISPLAY_NAMES[name] for name in commissioned_sets)
+
+
+# TE-51 review, H-2 (Critical): the commissioning constructions ARE independent of the
+# instrument's build (module docstring above) -- but the constructions fired against CODE, and
+# `b16ac70` (TE-50) changed four commissioned components -- `bm25_baseline._tokenize` (the BM25
+# analyzer), `embed_runner` (the reference's query vectors), `rank_score` (the paired resolving
+# power dispersion) and `gate.evaluate_f2` (the verdict arithmetic) -- after EVERY set in
+# `COMMISSIONED_SETS` had its own verdict filed. D-SLM5396 records the gap; D-SLM5397 defers it
+# explicitly "before K1-Run-2's verdict is read as load-bearing." No reading this instrument has
+# produced from b16ac70 forward has been re-commissioned against the changed code.
+#
+# Flip to False -- and clear RECOMMISSIONING_NOTE to "" -- ONLY when an independent seat has
+# re-fired the affected constructions against the changed code and filed a fresh decision-log
+# entry citing that execution (the same discipline COMMISSIONED_SETS itself is grown under,
+# module docstring above). Never as a rewording of this notice.
+RECOMMISSIONING_OUTSTANDING = True
+RECOMMISSIONING_NOTE = (
+    "b16ac70 (TE-50, 2026-08-30) changed four commissioned components -- bm25_baseline._tokenize "
+    "(the BM25 analyzer), embed_runner (the reference's query vectors), rank_score (the paired "
+    "resolving power dispersion) and gate.evaluate_f2 (the verdict arithmetic) -- after every "
+    "set in eval.k1.COMMISSIONED_SETS already had its own COMMISSIONED verdict filed. D-SLM5396 "
+    "records the gap; D-SLM5397 defers it, explicitly 'before K1-Run-2's verdict is read as "
+    "load-bearing.' No reading this instrument has produced from b16ac70 forward has been "
+    "re-commissioned against the changed code (Claude/Poirot/"
+    "b16ac70-te51-k1-instrument-confirmation.md Finding H-2, Wizard project records tree)."
+)
+
+
+def _recommissioning_clause(outstanding: bool, note: str) -> str:
+    """The notice's live-fact half (TE-51 H-2): non-empty only while re-commissioning is
+    actually outstanding, so the sentence disappears the moment ``RECOMMISSIONING_OUTSTANDING``
+    is correctly flipped to ``False`` -- no second edit to this string required, the same
+    property ``commissioned_names_clause`` gives the set-name list above."""
+    if not outstanding:
+        return ""
+    return f" RE-COMMISSIONING CURRENTLY OUTSTANDING (TE-51 H-2): {note}"
+
+
 COMMISSIONING_NOTICE = (
     "U-K1 INSTRUMENT -- COMMISSIONED ON eval.k1.COMMISSIONED_SETS ONLY. All three "
     "commissioning constructions (must-accept, must-reject 1, must-reject 2) fire correctly "
-    "and readings are load-bearing on: SciFact, NFCorpus, FiQA-2018, ArguAna (D-SLM4707, "
-    "2026-08-25, instrument commit 3426bee; the zero-qrels guard's vitality proven on these "
-    "four) and SCIDOCS (D-SLM5363, 2026-08-30, on a content-distance-aware remedy "
+    f"and readings are load-bearing on: "
+    f"{commissioned_names_clause(s for s in COMMISSIONED_SETS if COMMISSIONING_DECISIONS.get(s) == 'D-SLM4707')} "
+    "(D-SLM4707, 2026-08-25, instrument commit 3426bee; the zero-qrels guard's vitality proven "
+    "on these four) and "
+    f"{commissioned_names_clause(s for s in COMMISSIONED_SETS if COMMISSIONING_DECISIONS.get(s) == 'D-SLM5363')} "
+    "(D-SLM5363, 2026-08-30, on a content-distance-aware remedy "
     "construction for must-reject 2, after a first attempt -- D-SLM5338 -- returned NOT "
     "COMMISSIONED on the original construction). See eval.k1.COMMISSIONING_DECISIONS for the "
     "decision ID governing each set. NOTE ON SCIDOCS: its must-reject-1 construction fires by "
@@ -117,4 +184,4 @@ COMMISSIONING_NOTICE = (
     "Claude/Mendeleev/te46-scidocs-mustreject2-remedy-2026-08-30.md, and "
     "Claude/Mendeleev/u-k1-commissioning-2026-08-25.md Section 5, Wizard project records "
     "tree)."
-)
+) + _recommissioning_clause(RECOMMISSIONING_OUTSTANDING, RECOMMISSIONING_NOTE)

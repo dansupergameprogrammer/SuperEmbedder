@@ -43,16 +43,35 @@ records tree).
    written into the corrected packet itself, as ``rescore_report`` (TE-40 review Finding
    F-12), not only printed to stdout.
 
-**Refuses rather than silently reporting success (TE-40 review Finding F-3).** If any (set,
-model) pair's TREC run file is missing, this script raises ``RescoreRefusalError`` (a non-zero
-exit from the CLI) instead of writing a "corrected" packet that recomputed nothing for those
-pairs while stamping it with the current notice and a freshly-computed ``gate_verdict`` built
-from stale readings. Pass ``--notice-only`` (``notice_only=True``) to refresh only the gate
-verdict and status notice from the packet's *own already-stored* readings, without requiring
-persisted TREC files -- use this only when you specifically intend to leave the readings
-untouched (e.g. after a code change that affects only the verdict/notice text, not the
-scorer); the diff report and the output packet both record ``"notice_only": true`` so a reader
-can tell the readings were not touched.
+**Refuses rather than silently writing anything, on five conditions (TE-51 review, H-10: this
+docstring previously named two, the other three had each been added by a prior round without
+this list being updated).** All five raise ``RescoreRefusalError`` (a non-zero exit from the
+CLI) and leave no output file written:
+
+1. ``--out`` equal to the input packet path (TE-40 review Finding F-13) -- the original packet
+   is never overwritten (StandardsDocument.md 6.6).
+2. ``--out`` with a non-``.json`` suffix (TE-44 review, G-5) -- the corrected packet is always
+   written as JSON, and a non-``.json`` ``--out`` makes the derived ``.txt`` table path collide
+   with the packet write itself.
+3. The derived ``.txt`` table path colliding with the input or output packet path by any other
+   route than case 2 (belt-and-suspenders on the same hazard, covering the default
+   ``output_path=None`` case too).
+4. Any (set, model) pair missing its persisted TREC run file, unless ``--notice-only`` is passed
+   (TE-40 review Finding F-3) -- otherwise this would write a "corrected" packet that recomputed
+   nothing for those pairs while stamping it with the current notice and a freshly-computed
+   ``gate_verdict`` built from stale readings.
+5. **The packet's persisted readings predating the TE-49 amendment** (TE-51 review, H-1,
+   Critical) -- no bm25 reading carries ``bm25_analyzer`` and no query manifest carries
+   ``query_convention``, both fields the amendment introduced. Rescoring such a packet under the
+   currently-installed F1/F2 rules would grade an unamended BM25 ranking as though it were the
+   amended standard-analyzer floor -- a different quantity, not a stale one. Checked regardless
+   of ``--notice-only``.
+
+Pass ``--notice-only`` (``notice_only=True``) to refresh only the gate verdict and status notice
+from the packet's *own already-stored* readings, without requiring persisted TREC files -- use
+this only when you specifically intend to leave the readings untouched (e.g. after a code change
+that affects only the verdict/notice text, not the scorer); the diff report and the output
+packet both record ``"notice_only": true`` so a reader can tell the readings were not touched.
 
 Returns a diff report: every (set, model) reading whose recomputed nDCG@10 differs from the
 original by more than floating-point noise, the old vs. new ``gate_verdict.passed``, and the
@@ -79,7 +98,7 @@ from typing import Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from eval.k1 import COMMISSIONING_NOTICE
-from eval.k1.gate import evaluate_gate
+from eval.k1.gate import BM25_MODEL_NAME, REFERENCE_SUFFIX, evaluate_gate
 from eval.k1.rank_score import (
     achieved_resolving_power,
     mrr_at_k,
@@ -104,6 +123,37 @@ class RescoreRefusalError(RuntimeError):
     names which guard fired. Caught by ``main()`` and reported as a clean, non-zero exit;
     this tool never writes a packet stamped "corrected" while a guard is unsatisfied
     (TE-40 review Findings F-3, F-13)."""
+
+
+def _packet_predates_te49_amendment(packet: dict) -> bool:
+    """TE-51 review, H-1 (Critical): True when NOTHING in ``packet`` carries the TE-49
+    amendment's own provenance fields -- ``bm25_analyzer`` on any bm25 reading, or
+    ``query_convention`` on any query manifest. Both fields are new to the amendment (the
+    standard-analyzer BM25 floor and the recorded query-side convention are its own contract
+    clauses, design Section 17.2 and 4.5); their total absence across every set in the packet
+    is the amendment's own birthmark on a packet produced before it landed -- verified on the
+    live Run 1 packet (`Claude/Poirot/b16ac70-te51-k1-instrument-confirmation.md`, H-1's own
+    discriminator): neither field is present anywhere in it.
+
+    Used to refuse a full recompute against the amended code's F1/F2 rules over rankings that
+    predate it -- executed on the live Run 1 packet, that recompute silently swaps the bare-
+    tokenizer BM25 reading (0.648677 on SciFact) for what the amended F2 rule expects (the
+    standard-analyzer BM25, 0.680986) and returns ``passed: True`` where the amended re-run of
+    the SAME candidate returns ``False`` -- StandardsDocument.md 5.4's "both sides are the same
+    quantity" failure, produced by the rescore tool whose entire purpose is to make a stale
+    packet current."""
+    for set_result in packet.get("sets", {}).values():
+        models = set_result.get("models", {})
+        bm25 = models.get(BM25_MODEL_NAME)
+        if bm25 is not None and "bm25_analyzer" in bm25:
+            return False
+        for model_name, model_result in models.items():
+            if model_name == BM25_MODEL_NAME:
+                continue
+            query_manifest = model_result.get("query_manifest")
+            if query_manifest and query_manifest.get("query_convention"):
+                return False
+    return True
 
 
 def _trec_path(output_dir: Path, run_id: str, set_name: str, model_name: str) -> Path:
@@ -186,6 +236,24 @@ def rescore_packet(
 
     packet = json.loads(packet_path.read_text(encoding="utf-8"))
     run_id = packet["run_id"]
+
+    # TE-51 review, H-1 (Critical): refuse rather than grade a pre-amendment packet's
+    # unamended rankings under the currently-installed (amended) F1/F2 rules -- see
+    # _packet_predates_te49_amendment's own docstring for why this is not the same failure a
+    # stale-reading refresh would be. Checked before any recompute so a refused packet is never
+    # partially processed.
+    if _packet_predates_te49_amendment(packet):
+        raise RescoreRefusalError(
+            f"{packet_path} predates the TE-49 amendment (design Section 17, D-SLM5387/5388): "
+            f"no bm25 reading in it carries bm25_analyzer and no query manifest carries "
+            f"query_convention -- both fields the amendment introduced. Rescoring it under the "
+            f"currently-installed F1/F2 rules would grade an unamended (bare-tokenizer) BM25 "
+            f"ranking as though it were the amended standard-analyzer floor, a different "
+            f"quantity rather than a stale one (TE-51 H-1; executed on the live Run 1 packet, "
+            f"this produced gate_verdict.passed=True where the amended re-run of the SAME "
+            f"candidate returns False). Re-run the sweep under the amended code instead of "
+            f"rescoring this packet."
+        )
 
     diff: dict = {
         "run_id": run_id, "packet_path": str(packet_path), "notice_only": notice_only,
@@ -285,10 +353,10 @@ def rescore_packet(
         for set_name, set_result in packet.get("sets", {}).items():
             per_query_by_model = per_query_ndcg_by_set.get(set_name, {})
             reference_model_name = next(
-                (name for name in per_query_by_model if name.endswith("reference")), None
+                (name for name in per_query_by_model if name.endswith(REFERENCE_SUFFIX)), None
             )
             for model_name, model_result in set_result.get("models", {}).items():
-                if model_name == "bm25" or model_name.endswith("reference"):
+                if model_name == BM25_MODEL_NAME or model_name.endswith(REFERENCE_SUFFIX):
                     continue
                 cand_per_q = per_query_by_model.get(model_name)
                 if cand_per_q is None:
@@ -297,9 +365,9 @@ def rescore_packet(
                     model_result["f1_paired_resolving_power"] = paired_resolving_power(
                         cand_per_q, per_query_by_model[reference_model_name]
                     )
-                if "bm25" in per_query_by_model:
+                if BM25_MODEL_NAME in per_query_by_model:
                     model_result["f2_paired_resolving_power"] = paired_resolving_power(
-                        cand_per_q, per_query_by_model["bm25"]
+                        cand_per_q, per_query_by_model[BM25_MODEL_NAME]
                     )
 
     if diff["trec_files_missing"] and not notice_only:

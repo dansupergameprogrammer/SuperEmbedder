@@ -17,7 +17,11 @@ TE-40 review (Finding F-1): `GateVerdict.uncommissioned_required_sets` names whi
 assertion -- it is the same kind of fact `required_sets_complete` already states about data
 presence, now stated about commissioning presence -- and it takes no position on whether an
 uncommissioned set's own reading is good or bad; the notice remains the one place that says
-what "uncommissioned" means for the packet as a whole.
+what "uncommissioned" means for the packet as a whole. A second exception, added by the TE-51
+review (Finding H-2): `GateVerdict.recommissioning_outstanding` /
+`GateVerdict.recommissioning_note` mirror `eval.k1.RECOMMISSIONING_OUTSTANDING` /
+`RECOMMISSIONING_NOTE` -- the same kind of fact, for a change to a commissioned COMPONENT
+(rather than a set) landing after every currently-commissioned set's own filed verdict.
 
 **The two floors, quoted from the design as amended by Section 17 (TE-49, D-SLM5387/5388):**
 
@@ -75,7 +79,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from eval.k1 import COMMISSIONED_SETS
+from eval.k1 import COMMISSIONED_SETS, RECOMMISSIONING_NOTE, RECOMMISSIONING_OUTSTANDING
 from eval.k1.set_roster import ALL_LOCKED_SETS
 
 MINIMUM_EFFECT_SIZE_RULE = (
@@ -133,8 +137,13 @@ class FloorVerdict:
 def evaluate_floor(
     floor: str, floor_label: str, floor_value: float, candidate_value: float, achieved_rp: float
 ) -> FloorVerdict:
-    """The shared arithmetic behind both F1 and F2 (design Section 4.4's rule, stated once
-    and applied identically to both floors -- see module docstring)."""
+    """F1's shortfall-vs-RP arithmetic (design Section 4.1), used by F1 alone. TE-51 review,
+    H-6: this docstring previously claimed to serve both floors identically -- the exact merge
+    the module docstring above states, in bold, must never happen again (TE-49 amendment,
+    D-SLM5388, closing TE-48 debunk A6: applying this shortfall-vs-RP rule to F2 passed a
+    candidate that merely tied or trailed BM25 within RP, the opposite of Section 4.2's
+    bar-to-clear rule). ``evaluate_f2`` below is F2's own, deliberately distinct, margin-only
+    arithmetic."""
     shortfall = floor_value - candidate_value
     fires = shortfall > achieved_rp
     if shortfall <= 0:
@@ -263,6 +272,12 @@ class GateVerdict:
     # packet's own run happened to include that set. Non-empty on every verdict until an
     # independent seat commissions the remaining set(s); see eval.k1.COMMISSIONING_NOTICE.
     uncommissioned_required_sets: List[str] = field(default_factory=list)
+    # TE-51 review, H-2: mirrors uncommissioned_required_sets's own shape, for a DIFFERENT gap
+    # -- a change to a commissioned component (not a set) after every currently-commissioned
+    # set's own filed verdict, per eval.k1.RECOMMISSIONING_OUTSTANDING / RECOMMISSIONING_NOTE.
+    # Independent of `passed`; see that constant's own docstring for when it clears.
+    recommissioning_outstanding: bool = False
+    recommissioning_note: str = ""
     passed: bool = False
     reason: str = ""
 
@@ -290,6 +305,14 @@ def evaluate_gate(packet: dict) -> GateVerdict:
     """
     per_set: Dict[str, Dict[str, SetGateVerdict]] = {}
     skips: List[str] = []
+    # TE-51 review, H-7: the two skip causes below are tracked separately (rather than folded
+    # into one "missing reference/bm25 reading" count) so the aggregate `reason` states the
+    # actual cause of each -- before this, a pair skipped for a missing PAIRED RESOLVING POWER
+    # (the class this round's own paired-RP amendment, Section 4.4, introduced) was reported to
+    # a reader as "skipped for a missing reference/bm25 reading," sending them to look for a
+    # reading that was, in fact, present.
+    missing_reading_skip_count = 0
+    missing_paired_rp_skip_count = 0
     model_set_results: Dict[str, Dict[str, SetGateVerdict]] = {}
 
     sets = packet.get("sets", {})
@@ -307,6 +330,7 @@ def evaluate_gate(packet: dict) -> GateVerdict:
             if ref_ndcg is None or bm25_ndcg is None:
                 missing = "reference" if ref_ndcg is None else "bm25"
                 skips.append(f"{set_name}/{model_name}: no {missing} reading in this run")
+                missing_reading_skip_count += 1
                 continue
             f1_rp = model_result.get("f1_paired_resolving_power")
             f2_rp = model_result.get("f2_paired_resolving_power")
@@ -315,6 +339,7 @@ def evaluate_gate(packet: dict) -> GateVerdict:
                     f"{set_name}/{model_name}: no paired resolving power computed for F1/F2 "
                     f"in this run (design Section 4.4, TE-49 amendment)"
                 )
+                missing_paired_rp_skip_count += 1
                 continue
             verdict = evaluate_candidate_on_set(
                 set_name, model_name, model_result["ndcg_at_10"],
@@ -343,7 +368,14 @@ def evaluate_gate(packet: dict) -> GateVerdict:
     if not model_set_results:
         reasons.insert(0, "no model/set pair had both a reference and bm25 reading to gate against")
     if skips:
-        reasons.append(f"{len(skips)} (set, model) pair(s) skipped for a missing reference/bm25 reading")
+        # TE-51 review, H-7: state each skip cause this run actually saw, not a single
+        # hardcoded cause that both classes were folded into.
+        skip_causes = []
+        if missing_reading_skip_count:
+            skip_causes.append(f"{missing_reading_skip_count} for a missing reference/bm25 reading")
+        if missing_paired_rp_skip_count:
+            skip_causes.append(f"{missing_paired_rp_skip_count} for a missing paired resolving power")
+        reasons.append(f"{len(skips)} (set, model) pair(s) skipped ({'; '.join(skip_causes)})")
 
     overall_passed = bool(model_set_results) and all(per_model_passed.values())
     reason = "; ".join(reasons) if reasons else "F1 and F2 both pass on every required set for every gated model"
@@ -361,6 +393,14 @@ def evaluate_gate(packet: dict) -> GateVerdict:
             f"disposition rule independent of this verdict's pass/fail; {reason}"
         )
 
+    # TE-51 review, H-2: the same live fact `eval.k1.COMMISSIONING_NOTICE` now states in prose
+    # -- outstanding component re-commissioning (D-SLM5396/5397) -- stated here as a verdict
+    # field too, in the same shape `uncommissioned_required_sets` above already states the
+    # uncommissioned-set gap: a reader of the verdict alone sees it, not only a reader of the
+    # notice text. Never changes `passed` (module docstring).
+    if RECOMMISSIONING_OUTSTANDING:
+        reason = f"RE-COMMISSIONING OUTSTANDING (eval.k1.RECOMMISSIONING_NOTE): {reason}"
+
     return GateVerdict(
         per_set=per_set,
         per_model_passed=per_model_passed,
@@ -368,6 +408,8 @@ def evaluate_gate(packet: dict) -> GateVerdict:
         sets_present=sets_present,
         required_sets_complete=required_sets_complete,
         uncommissioned_required_sets=uncommissioned_required_sets,
+        recommissioning_outstanding=RECOMMISSIONING_OUTSTANDING,
+        recommissioning_note=RECOMMISSIONING_NOTE if RECOMMISSIONING_OUTSTANDING else "",
         passed=overall_passed,
         reason=reason,
     )

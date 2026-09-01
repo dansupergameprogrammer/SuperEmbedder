@@ -13,7 +13,11 @@ scope (see module docstring in ``eval/k1/__init__.py`` and the build log).
 ``<reuse_trec_run_dir>/<set_name>/<model_name>.trec`` instead, so an already-computed,
 already-costed ranking (Run 1's candidate) can be scored under this module's current scoring
 and gate logic without paying to re-embed it. See ``embed_runner.ModelSpec`` and
-``run_spec.run1_amended_rerun``.
+``run_spec.run1_amended_rerun``. **TE-51 review, H-3/H-4:** the same directory must also carry
+a ``<set_name>/<model_name>.manifest.json`` sidecar (the reused arm's real provenance, written
+by the caller -- see ``tools/rerun_te50_amended.py::copy_candidate_rankings``); this module
+refuses (``K1GuardError``) a reuse directory missing that sidecar, and separately refuses a
+reused ranking that does not cover every query the run is scoring.
 
 **Paired resolving power (design Section 4.4, TE-49 amendment, D-SLM5385).** For every
 candidate model (a model that is neither the reference nor bm25), this module computes and
@@ -30,13 +34,19 @@ import json
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from eval.k1 import COMMISSIONING_NOTICE
 from eval.k1.bm25_baseline import BM25_ANALYZER, bm25_topk, build_bm25_index
 from eval.k1.embed_runner import embed_corpus, embed_queries
-from eval.k1.gate import GateVerdict, evaluate_gate
-from eval.k1.guards import K1GuardError, validate_qrels_join
+from eval.k1.gate import BM25_MODEL_NAME, GateVerdict, REFERENCE_SUFFIX, evaluate_gate
+from eval.k1.guards import (
+    K1GuardError,
+    check_query_convention_recorded,
+    check_reused_run_covers_population,
+    check_unpinned_revision,
+    validate_qrels_join,
+)
 from eval.k1.rank_score import (
     achieved_resolving_power,
     cosine_topk,
@@ -61,6 +71,48 @@ def _build_qrels_by_query(qrels_rows: List[dict]) -> Dict[str, Dict[str, float]]
     for row in qrels_rows:
         by_query.setdefault(row["query-id"], {})[row["corpus-id"]] = float(row["score"])
     return by_query
+
+
+def _load_reused_arm_manifests(
+    reuse_dir: str, set_name: str, model_name: str, reuse_path: Path
+) -> Tuple[dict, dict]:
+    """Loads the manifest sidecar for a candidate-reuse model (TE-50,
+    ``embed_runner.ModelSpec.reuse_trec_run_dir``) and returns ``(corpus_manifest_dict,
+    query_manifest_dict)`` -- TE-51 review, H-3. Before this, the reuse path replaced BOTH
+    manifests with a two-key ``{"reused_from", "note"}`` stub, so the packet could not be
+    checked at all (design Section 17.6 dimension 7: "a packet with neither field is not a K1
+    reading"). The sidecar (``<reuse_dir>/<set_name>/<model_name>.manifest.json``) is written by
+    the caller that populated ``reuse_dir`` -- see
+    ``tools/rerun_te50_amended.py::copy_candidate_rankings``, which sources it from the run
+    that actually produced the ranking being reused, backfilling only what that source predates
+    (e.g. ``query_convention``, a field newer than Run 1's own packet) from the model's own
+    static spec.
+
+    Deliberately does NOT invent or backfill anything itself: a sidecar that is missing, or
+    whose ``query_manifest`` genuinely carries no ``query_convention``, is carried through
+    exactly as thin as it arrived -- ``runner.run_gate``'s own
+    ``check_query_convention_recorded`` call (TE-51 H-5) is what refuses it, at the point the
+    packet is assembled. Papering over a missing field here would make that guard unreachable
+    again, on a different path, the same defect H-5 already found once.
+
+    Raises ``K1GuardError`` (``K1_REUSE_MANIFEST_MISSING``) if the sidecar itself is absent."""
+    manifest_path = Path(reuse_dir) / set_name / f"{model_name}.manifest.json"
+    if not manifest_path.exists():
+        raise K1GuardError(
+            "K1_REUSE_MANIFEST_MISSING",
+            f"[{set_name}] '{model_name}' reuses a TREC run from {reuse_dir} but carries no "
+            f"manifest sidecar ({manifest_path}) -- the reused arm's provenance "
+            f"(corpus_manifest, query_manifest) cannot be carried forward without it "
+            f"(TE-51 H-3; design Section 17.6 dimension 7)",
+        )
+    source = json.loads(manifest_path.read_text(encoding="utf-8"))
+    reuse_note = {
+        "note": "TE-50: ranking reused from a prior run per the ticket brief; not re-embedded",
+        "reused_from": str(reuse_path),
+    }
+    corpus_manifest_dict = {**source.get("corpus_manifest", {}), **reuse_note}
+    query_manifest_dict = {**source.get("query_manifest", {}), **reuse_note}
+    return corpus_manifest_dict, query_manifest_dict
 
 
 def _select_smoke_queries(
@@ -165,8 +217,8 @@ def run_gate(
             per_q_ndcg, mean_ndcg = ndcg_at_k_own(qrels_by_query, bm25_run, k=run_spec.k)
             _per_q_recall, mean_recall = recall_at_k(qrels_by_query, bm25_run, k=run_spec.k)
             _per_q_mrr, mean_mrr = mrr_at_k(qrels_by_query, bm25_run, k=run_spec.k)
-            per_query_ndcg_by_model["bm25"] = per_q_ndcg
-            set_result["models"]["bm25"] = {
+            per_query_ndcg_by_model[BM25_MODEL_NAME] = per_q_ndcg
+            set_result["models"][BM25_MODEL_NAME] = {
                 "ndcg_at_10": mean_ndcg,
                 "recall_at_10": mean_recall,
                 "mrr_at_10": mean_mrr,
@@ -182,14 +234,26 @@ def run_gate(
             if reuse_dir:
                 # TE-50 (D-SLM5390's re-run): this model's ranking is read back rather than
                 # re-embedded -- see runner.py's module docstring and
-                # run_spec.run1_amended_rerun.
+                # run_spec.run1_amended_rerun. TE-51 review, H-3: the reused arm's provenance
+                # (corpus_manifest, query_manifest) is carried forward from a manifest sidecar
+                # the caller writes alongside the .trec file (see
+                # tools/rerun_te50_amended.py::copy_candidate_rankings) -- a two-key
+                # {"reused_from", "note"} stub used to stand in for both manifests, which
+                # design Section 17.6 dimension 7 does not accept ("a packet with neither field
+                # is not a K1 reading"). check_unpinned_revision also runs here (H-3: it was
+                # skipped on this path, same as check_query_convention_recorded below) -- the
+                # revision is known statically from model_spec, not something re-embedding
+                # alone would have checked.
+                check_unpinned_revision(model_spec.hf_repo, model_spec.revision)
                 reuse_path = Path(reuse_dir) / set_name / f"{model_spec.name}.trec"
+                corpus_manifest_dict, query_manifest_dict = _load_reused_arm_manifests(
+                    reuse_dir, set_name, model_spec.name, reuse_path
+                )
                 run = read_trec_run(reuse_path)
-                corpus_manifest_dict = {
-                    "reused_from": str(reuse_path),
-                    "note": "TE-50: ranking reused from a prior run per the ticket brief; not re-embedded",
-                }
-                query_manifest_dict = dict(corpus_manifest_dict)
+                # TE-51 review, H-4: a reused ranking must cover every query this run is
+                # scoring -- ndcg_at_k_own scores an absent query 0.0 rather than excluding it,
+                # so a short reused run file silently depresses the reading instead of failing.
+                check_reused_run_covers_population(set_name, model_spec.name, test_query_ids, list(run.keys()))
                 if output_dir is not None:
                     run_files_dir = output_dir / "run_files" / run_spec.run_id / set_name
                     run_files_dir.mkdir(parents=True, exist_ok=True)
@@ -210,12 +274,21 @@ def run_gate(
                     run_files_dir.mkdir(parents=True, exist_ok=True)
                     write_trec_run(run, run_files_dir / f"{model_spec.name}.trec", run_name=f"u-k1-{model_spec.name}")
 
+            # TE-51 review, H-5: the packet-assembly point -- the one place a model result's
+            # query-side convention is genuinely knowable and, on the reuse path, genuinely
+            # producible as missing (H-3's stub carried none at all). Runs for both branches
+            # above; on the real-embed branch this can never fire (embed_texts always records
+            # either the model's own prompt or the literal "bare"), which is expected -- the
+            # guard's job is to be ABLE to fire on the path that can actually produce the
+            # defect, not to fire on every path.
+            check_query_convention_recorded(model_spec.name, query_manifest_dict.get("query_convention"))
+
             per_q_ndcg, mean_ndcg = ndcg_at_k_own(qrels_by_query, run, k=run_spec.k)
             _per_q_recall, mean_recall = recall_at_k(qrels_by_query, run, k=run_spec.k)
             _per_q_mrr, mean_mrr = mrr_at_k(qrels_by_query, run, k=run_spec.k)
             rp = achieved_resolving_power(per_q_ndcg)
             per_query_ndcg_by_model[model_spec.name] = per_q_ndcg
-            if model_spec.name.endswith("reference"):
+            if model_spec.name.endswith(REFERENCE_SUFFIX):
                 reference_model_name = model_spec.name
 
             model_result = {
@@ -237,7 +310,7 @@ def run_gate(
                 except ImportError as e:
                     model_result["r1_independent_scorer_error"] = str(e)
 
-            if anchors and set_name in anchors.get("reference", {}) and model_spec.name.endswith("reference"):
+            if anchors and set_name in anchors.get("reference", {}) and model_spec.name.endswith(REFERENCE_SUFFIX):
                 anchor = anchors["reference"][set_name]
                 model_result["published_anchor_ndcg_at_10"] = anchor["ndcg_at_10"]
                 model_result["r2_delta_vs_anchor"] = abs(mean_ndcg - anchor["ndcg_at_10"])
@@ -251,7 +324,7 @@ def run_gate(
         # left without one of the two fields, which evaluate_gate treats as a skip rather
         # than a guess.
         for model_name, model_result in set_result["models"].items():
-            if model_name == "bm25" or model_name.endswith("reference"):
+            if model_name == BM25_MODEL_NAME or model_name.endswith(REFERENCE_SUFFIX):
                 continue
             cand_per_q = per_query_ndcg_by_model.get(model_name)
             if cand_per_q is None:
@@ -260,9 +333,9 @@ def run_gate(
                 model_result["f1_paired_resolving_power"] = paired_resolving_power(
                     cand_per_q, per_query_ndcg_by_model[reference_model_name]
                 )
-            if "bm25" in per_query_ndcg_by_model:
+            if BM25_MODEL_NAME in per_query_ndcg_by_model:
                 model_result["f2_paired_resolving_power"] = paired_resolving_power(
-                    cand_per_q, per_query_ndcg_by_model["bm25"]
+                    cand_per_q, per_query_ndcg_by_model[BM25_MODEL_NAME]
                 )
 
         packet["sets"][set_name] = set_result
@@ -300,12 +373,25 @@ def render_human_table(packet: dict) -> str:
         chance = set_result["executed_chance"]
         lines.append(f"  executed chance nDCG@10: {chance['mean']:.4f} (std {chance['std']:.4f}, "
                      f"{chance['trials']} trials)")
-        header = f"  {'model':<32}{'nDCG@10':>10}{'recall@10':>12}{'MRR@10':>10}{'ach.RP':>10}"
+        # TE-51 review, H-8: the RP column used to be headed "ach.RP" and print
+        # achieved_resolving_power -- the MARGINAL dispersion -- while the verdict notes below
+        # quote the PAIRED resolving power the gate has acted on since the TE-49 amendment
+        # (design Section 4.4): three numbers, one label. Design Section 6.5 requires all three
+        # dispersions reported beside every score; this table now shows all three, the marginal
+        # one relabeled so it is not mistaken for what the gate acts on. bm25/reference rows
+        # carry no paired RP of their own (they are the floors, not the candidates being
+        # graded) and print blank for those two columns.
+        header = (
+            f"  {'model':<32}{'nDCG@10':>10}{'recall@10':>12}{'MRR@10':>10}"
+            f"{'marg.RP':>10}{'f1.RP':>10}{'f2.RP':>10}"
+        )
         lines.append(header)
         for name, m in set_result["models"].items():
             lines.append(
                 f"  {name:<32}{m['ndcg_at_10']:>10.4f}{m['recall_at_10']:>12.4f}"
                 f"{m['mrr_at_10']:>10.4f}{m.get('achieved_resolving_power', float('nan')):>10.4f}"
+                f"{m.get('f1_paired_resolving_power', float('nan')):>10.4f}"
+                f"{m.get('f2_paired_resolving_power', float('nan')):>10.4f}"
             )
         lines.append("")
 

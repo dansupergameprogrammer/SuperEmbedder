@@ -201,6 +201,35 @@ def check_bm25_params_present(set_name: str, k1: float | None, b: float | None) 
         )
 
 
+def check_reused_run_covers_population(
+    set_name: str,
+    model_name: str,
+    required_query_ids: Iterable[str],
+    run_query_ids: Iterable[str],
+) -> None:
+    """Refuses (``K1_REUSED_RUN_INCOMPLETE``) a candidate-reuse ranking (TE-50,
+    ``embed_runner.ModelSpec.reuse_trec_run_dir``) that does not cover every query this run is
+    scoring -- TE-51 review, H-4 (Significant). ``rank_score.ndcg_at_k_own`` takes
+    ``run.get(qid, [])`` for a query id absent from the run, which scores that query 0.0 rather
+    than excluding it, so a short reused run file silently depresses the reading instead of
+    failing loudly -- the run-file-side mirror of the corpus-truncation hazard
+    ``runner.run_gate`` already guards against on the corpus side (see ``runner.py``'s own
+    comment on ``_select_smoke_queries``). Executed on SciFact's own reused ranking truncated to
+    150 of 300 queries: nDCG@10 dropped from 0.699868 to 0.348176 with no refusal anywhere.
+    Checked at the point the reused run is read, before any score is computed from it."""
+    missing = sorted(set(required_query_ids) - set(run_query_ids))
+    if missing:
+        raise K1GuardError(
+            "K1_REUSED_RUN_INCOMPLETE",
+            f"[{set_name}] the reused TREC run for '{model_name}' is missing {len(missing)} of "
+            f"{len(set(required_query_ids))} required test queries: {missing[:10]}"
+            f"{'...' if len(missing) > 10 else ''} -- a reused ranking must cover every query "
+            f"this run is scoring; a partial ranking silently depresses nDCG@10 rather than "
+            f"failing (TE-51 H-4)",
+            missing_queries=missing,
+        )
+
+
 def check_query_convention_recorded(model_name: str, query_convention: str | None) -> None:
     """Refuses (``K1_QUERY_CONVENTION_UNRECORDED``) a query embedding whose query-side
     convention was not recorded. Design Section 6.2, row 2's refusal condition (TE-49

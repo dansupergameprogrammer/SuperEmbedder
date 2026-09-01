@@ -440,3 +440,87 @@ def test_rescored_gate_verdict_names_no_uncommissioned_set_once_all_are_commissi
     rescore_packet(smoke_copy, output_path=out)
     written = json.loads(out.read_text(encoding="utf-8"))
     assert written["gate_verdict"]["uncommissioned_required_sets"] == []
+
+
+# --------------------------------------------------------------------------------------
+# H-1 (Critical, TE-51 review) -- rescore graded pre-amendment rankings under the amended
+# F1/F2 rules and, executed on the live Run 1 packet, returned passed=True where the amended
+# re-run of the SAME candidate returns False. The discriminator: a bm25 reading with no
+# bm25_analyzer, and query manifests with no query_convention -- both fields new to the TE-49
+# amendment -- mean the packet's rankings predate it and cannot be graded under the amended
+# rules at all.
+# --------------------------------------------------------------------------------------
+
+
+def _strip_amendment_fields(packet_path):
+    """Mutates a copy of the (now-amended) smoke fixture back into the shape a genuine
+    pre-amendment packet has -- exactly the live Run 1 packet's own shape, verified in
+    `Claude/Poirot/b16ac70-te51-k1-instrument-confirmation.md` H-1: no bm25_analyzer anywhere,
+    no query_convention anywhere."""
+    data = json.loads(packet_path.read_text(encoding="utf-8"))
+    for set_result in data["sets"].values():
+        for model_result in set_result["models"].values():
+            model_result.pop("bm25_analyzer", None)
+            if "query_manifest" in model_result:
+                model_result["query_manifest"].pop("query_convention", None)
+    packet_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_rescore_refuses_a_packet_that_predates_the_te49_amendment(smoke_copy, tmp_path):
+    """H-1's own construction, at unit-test scale: a packet whose bm25 reading carries no
+    bm25_analyzer and whose query manifests carry no query_convention -- the live Run 1
+    packet's own shape -- must be refused rather than graded under the currently-installed
+    (amended) F1/F2 rules. Before this fix, this exact packet shape rescored cleanly and
+    returned a gate_verdict computed from an unamended BM25 ranking treated as though it were
+    the amended standard-analyzer floor."""
+    _strip_amendment_fields(smoke_copy)
+    out = tmp_path / "out.json"
+    with pytest.raises(RescoreRefusalError) as exc:
+        rescore_packet(smoke_copy, output_path=out)
+    assert "TE-49" in str(exc.value)
+    assert not out.exists(), "a refused rescore must not write a packet"
+
+
+def test_rescore_refusal_fires_regardless_of_notice_only(smoke_copy, tmp_path):
+    """The amendment-age check runs before the notice_only branch: a pre-amendment packet is
+    refused even when only the notice/verdict (not the readings) would be refreshed, since
+    ``evaluate_gate`` itself is amended code being asked to grade unamended rankings either
+    way."""
+    _strip_amendment_fields(smoke_copy)
+    out = tmp_path / "out.json"
+    with pytest.raises(RescoreRefusalError) as exc:
+        rescore_packet(smoke_copy, output_path=out, notice_only=True)
+    assert "TE-49" in str(exc.value)
+    assert not out.exists()
+
+
+def test_rescore_accepts_a_packet_that_carries_the_amendment_fields(smoke_copy, tmp_path):
+    """The committed smoke fixture is itself amended (regenerated under this round's code) --
+    confirms the discriminator does not false-positive on a genuinely current packet, which
+    every other test in this file already relies on succeeding."""
+    from eval.k1.tools.rescore_packet import _packet_predates_te49_amendment
+
+    data = json.loads(smoke_copy.read_text(encoding="utf-8"))
+    assert _packet_predates_te49_amendment(data) is False
+    out = tmp_path / "out.json"
+    rescore_packet(smoke_copy, output_path=out)  # does not raise
+    assert out.exists()
+
+
+# --------------------------------------------------------------------------------------
+# H-10 (Minor, TE-51 review) -- the docstring named two refusal conditions; two more had
+# already been added by a prior round, and this round's H-1 adds a fifth, without the list
+# being updated each time.
+# --------------------------------------------------------------------------------------
+
+
+def test_docstring_names_all_five_refusal_conditions():
+    import eval.k1.tools.rescore_packet as mod
+
+    doc = mod.__doc__
+    assert "five conditions" in doc
+    assert "equal to the input packet path" in doc
+    assert "non-``.json`` suffix" in doc
+    assert "colliding with the input or output packet path" in doc
+    assert "missing its persisted TREC run file" in doc
+    assert "predating the TE-49 amendment" in doc

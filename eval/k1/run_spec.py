@@ -181,7 +181,10 @@ def run1_amended_rerun(candidate_reuse_dir: str) -> RunSpec:
     ``candidate_reuse_dir`` must contain ``<set_name>/qwen3-embedding-0.6b.trec`` for every
     set in Run 1's roster (SciFact, NFCorpus, FiQA-2018, ArguAna, SCIDOCS) -- copied out of
     Run 1's own output directory by the caller (the ticket brief: write only into the
-    caller's own output directory, never back into Run 1's)."""
+    caller's own output directory, never back into Run 1's). **TE-51 review, H-3:** it must
+    also contain a ``<set_name>/qwen3-embedding-0.6b.manifest.json`` sidecar per set, carrying
+    the reused arm's real provenance (``runner.run_gate`` refuses a reuse directory that lacks
+    one) -- see ``tools/rerun_te50_amended.py::copy_candidate_rankings``, which writes both."""
     import dataclasses
 
     reused_candidate = dataclasses.replace(QWEN3_EMB_0_6B, reuse_trec_run_dir=candidate_reuse_dir)

@@ -16,7 +16,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from eval.k1 import COMMISSIONED_SETS, COMMISSIONING_NOTICE
+from eval.k1 import (
+    COMMISSIONED_SETS,
+    COMMISSIONING_NOTICE,
+    RECOMMISSIONING_NOTE,
+    RECOMMISSIONING_OUTSTANDING,
+    SET_DISPLAY_NAMES,
+    _recommissioning_clause,
+    commissioned_names_clause,
+)
 from eval.k1.set_roster import ALL_LOCKED_SETS
 
 README_PATH = Path(__file__).resolve().parents[1] / "README.md"
@@ -70,6 +78,68 @@ def test_commissioned_sets_now_includes_scidocs():
     state."""
     assert "scidocs" in COMMISSIONED_SETS
     assert set(ALL_LOCKED_SETS) - set(COMMISSIONED_SETS) == set()
+
+
+# --------------------------------------------------------------------------------------
+# H-11 (Minor, TE-51 review): the test above previously asserted five hardcoded display
+# names appear in the notice -- a check COMMISSIONED_SETS == ALL_LOCKED_SETS (post-TE-47)
+# satisfies exactly as readily as it would satisfy a genuinely over-broad claim, so it could
+# no longer fail on the property it was written to catch. Pins the MECHANISM instead:
+# commissioned_names_clause is driven by its argument, so a set removed from the commissioned
+# cell is mechanically absent from the clause it would produce, not merely absent from a
+# hand-maintained prose list someone remembered to edit.
+# --------------------------------------------------------------------------------------
+
+
+def test_commissioned_names_clause_excludes_a_set_removed_from_its_argument():
+    narrowed = tuple(s for s in COMMISSIONED_SETS if s != "scidocs")
+    clause = commissioned_names_clause(narrowed)
+    assert SET_DISPLAY_NAMES["scidocs"] not in clause
+    for s in narrowed:
+        assert SET_DISPLAY_NAMES[s] in clause
+
+
+def test_commissioned_names_clause_includes_every_set_present_in_its_argument():
+    clause = commissioned_names_clause(COMMISSIONED_SETS)
+    for s in COMMISSIONED_SETS:
+        assert SET_DISPLAY_NAMES[s] in clause
+
+
+def test_the_notices_own_load_bearing_clause_is_generated_from_commissioned_sets():
+    """The real notice's own name list is built by commissioned_names_clause over
+    COMMISSIONED_SETS (grouped by decision id), not typed by hand -- so the mechanism the two
+    tests above pin is the SAME code path that produced today's real notice text, not a
+    parallel implementation that happens to agree with it today."""
+    for s in COMMISSIONED_SETS:
+        assert SET_DISPLAY_NAMES[s] in COMMISSIONING_NOTICE
+
+
+# --------------------------------------------------------------------------------------
+# H-2 (Critical, TE-51 review): the notice stated the general re-commissioning RULE but not
+# that it is CURRENTLY outstanding -- D-SLM5396 records the gap, D-SLM5397 defers it, and a
+# reader of the notice alone had no way to learn either. Pins the mechanism (both branches of
+# _recommissioning_clause) and today's real, filed state separately.
+# --------------------------------------------------------------------------------------
+
+
+def test_recommissioning_clause_is_present_when_outstanding():
+    text = _recommissioning_clause(True, "the gap text")
+    assert "OUTSTANDING" in text
+    assert "the gap text" in text
+
+
+def test_recommissioning_clause_is_empty_when_not_outstanding():
+    assert _recommissioning_clause(False, "the gap text") == ""
+
+
+def test_todays_real_notice_states_the_outstanding_recommissioning_gap():
+    """Today's real, filed state (D-SLM5396/5397): b16ac70 changed four commissioned
+    components after every set in COMMISSIONED_SETS had its own verdict filed, and no
+    independent seat has re-fired and re-filed since -- the live notice must carry that as a
+    live fact, not only the general rule."""
+    assert RECOMMISSIONING_OUTSTANDING is True
+    assert "OUTSTANDING" in COMMISSIONING_NOTICE
+    assert RECOMMISSIONING_NOTE in COMMISSIONING_NOTICE
 
 
 def test_readme_carries_the_notices_configuration_scoping_clause():

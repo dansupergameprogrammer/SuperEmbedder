@@ -31,7 +31,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 
-from eval.k1.guards import check_query_convention_recorded, check_unpinned_revision
+from eval.k1.guards import check_unpinned_revision
 from eval.k1.pooling import (
     NATIVE_POOLING_FUNCS,
     mean_pool_excluding_position_zero,
@@ -111,10 +111,17 @@ def embed_texts(
 
     check_unpinned_revision(model_spec.hf_repo, model_spec.revision)
 
+    # TE-51 review, H-5: this used to call ``check_query_convention_recorded`` immediately
+    # after computing ``query_convention`` from this exact expression -- a guard placed one
+    # line after the assignment that makes its own refusal condition unreachable (the
+    # expression is truthy for every value of ``query_prompt``, so the guard fired on 0 of 4
+    # reachable inputs). The check now lives in ``runner.py``, at the point a model's
+    # ``query_manifest`` is folded into the packet -- the one place a query embedding's
+    # convention can genuinely arrive unrecorded (the candidate-reuse path, TE-50), which is
+    # exactly the failure this guard exists to catch.
     query_convention: Optional[str] = None
     if is_query:
         query_convention = model_spec.query_prompt if model_spec.query_prompt else BARE_QUERY_CONVENTION
-        check_query_convention_recorded(model_spec.name, query_convention)
         if model_spec.query_prompt:
             texts = [f"{model_spec.query_prompt}{t}" for t in texts]
 
