@@ -193,7 +193,17 @@ def test_todays_real_notice_states_the_outstanding_recommissioning_gap():
     `test_a_git_query_that_cannot_run_is_outstanding_and_unverified`). It cannot produce a false
     PASS here: a missing baseline would raise `KeyError` on `COMMISSIONED_AT_COMMIT[decision_id]`
     above and an unavailable git would raise out of `_component_files_changed_since` -- both
-    fail this test as an error rather than silently agreeing with a wrong value."""
+    fail this test as an error rather than silently agreeing with a wrong value.
+
+    TE-57 review, L-7 (Observation): closing this deferral, if it were ever worth doing, costs a
+    second recomputation branch here that also models the "a baseline is missing / a git query
+    is unanswerable" path -- e.g. monkeypatching `COMMISSIONED_AT_COMMIT` to drop one active
+    decision id's baseline, or `_component_files_changed_since` to raise
+    `_RecommissioningCheckUnavailable`, then asserting `RECOMMISSIONING_OUTSTANDING is True` and
+    `"UNVERIFIED"` in the notice against that simulated state instead of today's real one. A few
+    lines, not attempted here: today's real state has no real `problems` input to recompute
+    against, and that branch is already exercised directly, against real subprocess failures,
+    in `test_recommissioning_gap.py`'s two unit tests named above."""
     from eval.k1 import COMMISSIONED_AT_COMMIT, COMMISSIONING_DECISIONS, _component_files_changed_since
 
     any_component_changed_since_its_own_baseline = False

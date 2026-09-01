@@ -47,23 +47,51 @@ reachable, against the cited decision-log entries themselves.
 
 | # | Component | File |
 |---|---|---|
-| 1 | Pinned set loader + `sets.lock` | `sets_lock.py`, `sets.lock.json`, `tools/mint_sets_lock.py` |
+| 1 | Pinned set loader + `sets.lock` | `sets_lock.py`, `sets.lock.json`, `set_roster.py` (the locked-set roster) |
 | 2 | Embedding runner | `embed_runner.py`, `pooling.py` |
-| 3 | Ranker + dual scorer | `rank_score.py` |
+| 3 | Ranker + dual scorer | `rank_score.py`, `self_exclusion.py` (shared self-exclusion helper -- see below) |
 | 4 | The zero-qrels guard | `guards.py` |
-| 5 | `anchors.json` + its fetch step | `anchors.py`, `anchors.json`, `tools/mint_anchors.py` |
-| 6 | BM25 baseline | `bm25_baseline.py`, `porter_stemmer.py` |
+| 5 | `anchors.json` + its fetch step | `anchors.py`, `anchors.json` |
+| 6 | BM25 baseline | `bm25_baseline.py`, `porter_stemmer.py`, `self_exclusion.py` (shared, see row 3) |
 
-Orchestration (not itself one of the six, but required to run any of them together):
-`run_spec.py` (Run 0 / Run 1 / smoke rosters) and `runner.py` (`run_gate()`, one code path
-for all three).
+**`tools/mint_sets_lock.py` and `tools/mint_anchors.py` are CLI wrappers, not separate
+components** (TE-57 review, L-4 (Minor) -- a prior version of this table listed them as
+components' own files, which disagreed with `eval.k1.COMMISSIONED_COMPONENT_FILES`, and the
+build log that closed it stated the two agreed, which was false in membership though true in
+count): `mint_sets_lock.py` (81 lines) is a thin CLI wrapper over `sets_lock.py`'s own fetch
+logic and `mint_anchors.py` (60 lines) is a thin CLI wrapper over `anchors.py`'s; both are
+excluded from the re-commissioning partition below via the `tools/` exclusion, deliberately --
+a mint change that alters anything a reading depends on surfaces through the output files
+(`sets.lock.json`, `anchors.json`), which ARE components. `self_exclusion.py` is the one
+helper both rankers (`rank_score.py` and `bm25_baseline.py`) call into for the shared
+self-exclusion/truncation convention -- one file, listed under both rows because both rows
+depend on it, not two files.
 
-**The gate (design Section 4, not one of the six components -- the decision layer that reads
-the instrument's readings)**: `gate.py`. Computes the F1/F2 floor arithmetic
-(`evaluate_gate`) over an executed run packet and is wired into `runner.run_gate()` as the
-packet's `gate_verdict` field and into `render_human_table`'s text report. Computing this
-arithmetic does not itself decide the packet's standing -- a `gate_verdict` carries exactly
-the standing of the readings it was computed from, per `eval.k1.COMMISSIONING_NOTICE`.
+Orchestration (not itself one of the six, but required to run any of them together, and IN the
+re-commissioning partition below): `run_spec.py` (Run 0 / Run 1 / smoke rosters) and
+`runner.py` (`run_gate()`, one code path for all three).
+
+**The gate (design Section 4, not one of the six components, but IN the re-commissioning
+partition below -- the decision layer that reads the instrument's readings)**: `gate.py`.
+Computes the F1/F2 floor arithmetic (`evaluate_gate`) over an executed run packet and is wired
+into `runner.run_gate()` as the packet's `gate_verdict` field and into `render_human_table`'s
+text report. Computing this arithmetic does not itself decide the packet's standing -- a
+`gate_verdict` carries exactly the standing of the readings it was computed from, per
+`eval.k1.COMMISSIONING_NOTICE`.
+
+**`eval.k1.COMMISSIONED_COMPONENT_FILES` -- the set the re-commissioning partition below
+actually checks -- is a deliberate superset of these six** (TE-57 review, L-4 (Minor)): it is
+defined as every file physically present under `eval/k1/` that is not a documented exclusion
+(`_partition_gap`, `eval/k1/__init__.py`), which includes `gate.py`, `run_spec.py` and
+`runner.py` even though none is one of the six design components above. This is deliberately
+the safe direction -- a change to the decision layer or the orchestration re-arms the
+re-commissioning gap even where the design's own component sentence would not strictly require
+it, rather than the reverse. **This table is descriptive of the design's own six components and
+is not independently checked against the constant** -- which of the two is the normative
+statement of "what a component is" is an open question this review raised and has not
+settled (see `Claude/Poirot/8517759-te57-k1-instrument-confirmation4.md` L-4); until it is,
+treat `eval.k1.COMMISSIONED_COMPONENT_FILES` as the operative set (it is what the code
+executes) and this table as orientation for a reader who has not opened the code.
 
 ## Commissioning status
 

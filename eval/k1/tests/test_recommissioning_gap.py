@@ -44,6 +44,7 @@ import subprocess
 import pytest
 
 import eval.k1 as k1
+from eval.k1.tests._historical_fixtures import SEVEN_FILE_TUPLE_AT_6317E68 as _SEVEN_FILE_TUPLE_AT_6317E68
 
 
 def _run_git(args, cwd):
@@ -175,20 +176,10 @@ def _git_available() -> bool:
 requires_git = pytest.mark.skipif(not _git_available(), reason="git binary not on PATH")
 
 
-# The seven-file component tuple as it stood at 6317e68 (TE-55's own review target), before
-# K-1's fix completed it to the design's real fifteen-file component set. Fixed here as a
-# LITERAL list -- not `k1.COMMISSIONED_COMPONENT_FILES` -- so the two historical-reproduction
-# tests below keep pinning the same historical fact regardless of how the live tuple grows
-# (TE-55 review, K-4 (Minor)).
-_SEVEN_FILE_TUPLE_AT_6317E68 = (
-    "eval/k1/bm25_baseline.py",
-    "eval/k1/embed_runner.py",
-    "eval/k1/gate.py",
-    "eval/k1/guards.py",
-    "eval/k1/rank_score.py",
-    "eval/k1/runner.py",
-    "eval/k1/sets_lock.py",
-)
+# TE-57 review, L-7 (Observation): `_SEVEN_FILE_TUPLE_AT_6317E68` used to be defined twice,
+# identically, here and in test_component_partition.py -- both pinning the same historical
+# fact with nothing comparing them. Now imported from one shared module
+# (`eval/k1/tests/_historical_fixtures.py`), removing the chance of the two drifting.
 
 
 @requires_git
@@ -250,12 +241,24 @@ def test_self_diff_is_always_empty_the_re_arm_condition_is_reachable_on_real_git
     """A decision id whose baseline is HEAD itself has, by construction, zero component
     changes since its own commissioning -- the real-git counterpart of
     `test_this_is_the_re_arm_j2_asked_for` above, proving the "clear" branch is reachable
-    through the actual subprocess path, not only through a stub. Uses the LIVE
-    (working-tree-aware) function, not the historical one -- this is what the real derivation
-    actually calls, and the worktree's own untracked paths at the time of this suite's
-    authorship (`_te41_step2_must_accept_cpu.py`, `eval/k1/te50_output/`) are not among
-    `COMMISSIONED_COMPONENT_FILES`, so they cannot make this non-empty."""
-    assert k1._component_files_changed_since("HEAD") == []
+    through the actual subprocess path, not only through a stub.
+
+    TE-57 review, L-2 (Significant): this used to assert
+    `k1._component_files_changed_since("HEAD") == []` -- the LIVE, working-tree-aware query
+    K-2's own fix (TE-55) made deliberately NOT always empty: it returns every commissioned
+    component that differs between HEAD and the actual working tree, so it goes red the moment
+    a developer edits a component and runs the suite before committing -- the exact shape this
+    lineage's own commit messages describe as normal. The claim this cell exists to make (the
+    "clear" branch is reachable through the real subprocess path, on a pure two-commit span) is
+    a claim about `_component_files_changed_since`'s HISTORICAL sibling,
+    `_component_files_changed_between`, which is empty by construction between any commit and
+    itself regardless of the working tree -- so it is scoped there instead. The live function's
+    own "clear" branch, on real git, is already covered by
+    `test_component_files_changed_since_catches_an_uncommitted_modification`'s first assertion
+    (`== []` on a clean scratch repository, before its edit), in a tree whose state that test
+    controls rather than one this repository's own working tree happens to be in when the
+    suite runs."""
+    assert k1._component_files_changed_between("HEAD", "HEAD") == []
 
 
 @requires_git
@@ -317,14 +320,31 @@ def test_component_files_changed_since_catches_an_untracked_new_component_file(t
 
 
 @requires_git
-def test_todays_real_gap_is_outstanding_and_names_both_commissioning_baselines():
-    """The package's own real, computed state: as of this ticket, no decision's own component
-    set is clear (every commissioned decision's baseline predates ongoing K1 fix rounds that
-    keep touching gate.py/guards.py/runner.py), so the derived result is outstanding and its
-    note is traceable to both decisions on file -- generated, not typed."""
-    assert k1.RECOMMISSIONING_OUTSTANDING is True
-    assert "D-SLM4707" in k1.RECOMMISSIONING_NOTE
-    assert "D-SLM5363" in k1.RECOMMISSIONING_NOTE
+def test_todays_real_gap_is_traceable_to_whichever_decisions_are_actually_outstanding():
+    """The package's own real, computed state, recomputed rather than assumed.
+
+    TE-57 review, L-3 (Minor): this previously hardcoded `k1.RECOMMISSIONING_OUTSTANDING is
+    True` -- K-3's own class (`Claude/CLAUDE.md`'s "a fix round's pin count trails its remedy
+    count by exactly one" arithmetic, applied here to a REVIEW finding instead: K-3 named two
+    hardcoded instances, the K-3 remedy round swept `test_gate.py`'s, and this one survived).
+    The day an independent seat legitimately clears one commissioned decision's component gap
+    and not the other -- exactly the re-arm property J-2/K-2 exist to prove is reachable -- this
+    cell would fail for being right rather than wrong. Recomputes, per decision id, whether ITS
+    OWN component set changed since ITS OWN baseline (the same loop
+    `_derive_recommissioning_gap` runs), and asserts the note's content and the overall flag
+    against that live fact instead of against today's frozen value -- mirroring
+    `test_gate.py::test_gate_verdict_today_carries_the_real_recommissioning_gap`'s own K-3
+    repair and `test_commissioning_notice.py::test_todays_real_notice_states_the_outstanding_recommissioning_gap`'s
+    established recomputation shape."""
+    any_outstanding = False
+    for decision_id in sorted(set(k1.COMMISSIONING_DECISIONS.values())):
+        baseline = k1.COMMISSIONED_AT_COMMIT[decision_id]
+        if k1._component_files_changed_since(baseline):
+            any_outstanding = True
+            assert decision_id in k1.RECOMMISSIONING_NOTE
+        else:
+            assert decision_id not in k1.RECOMMISSIONING_NOTE
+    assert k1.RECOMMISSIONING_OUTSTANDING is any_outstanding
     assert "UNVERIFIED" not in k1.RECOMMISSIONING_NOTE  # the real git query succeeded
     assert k1.RECOMMISSIONING_NOTE in k1.COMMISSIONING_NOTICE
 
@@ -336,3 +356,18 @@ def test_commissioned_at_commit_keys_match_commissioning_decisions_values():
     no-baseline-is-outstanding branch instead of computing a real answer. This is the
     structural counterpart of test_commissioned_sets_pin.py's own citation-table pin."""
     assert set(k1.COMMISSIONING_DECISIONS.values()) <= set(k1.COMMISSIONED_AT_COMMIT.keys())
+
+
+def test_commissioned_at_commit_is_append_only_each_filed_baseline_pinned():
+    """TE-57 review, L-6 (Minor): D-SLM5844 rules `COMMISSIONED_AT_COMMIT` append-only -- a
+    decision id's value is the commit ITS OWN filed verdict was executed against, fixed forever
+    once filed, and a re-commissioning never mutates an existing key. That ruling was, until
+    now, enforced by prose alone (the module docstring, two code comments, and the generated
+    clearing instruction all state it, but nothing checked it): a hand-edit to an existing
+    key's value would silently move the derivation's own input with a green suite everywhere
+    else. Pinning each filed decision's own baseline literally makes the day someone follows the
+    superseded clearing instruction (mutate rather than add a key) a red one, not a silent one.
+    Permits a NEW key to be added freely -- that is how re-commissioning is meant to work -- and
+    refuses only a mutated EXISTING one."""
+    assert k1.COMMISSIONED_AT_COMMIT["D-SLM4707"] == "3426bee"
+    assert k1.COMMISSIONED_AT_COMMIT["D-SLM5363"] == "263a750"

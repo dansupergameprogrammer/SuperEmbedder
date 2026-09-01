@@ -193,16 +193,29 @@ def _commissioning_clauses_by_decision(commissioned_sets) -> str:
 # uncommissioned SET: compute the fact from what actually changed, rather than typing a claim
 # about it.
 #
-# COMMISSIONED_COMPONENT_FILES names the concrete files the disposition rule's component
-# sentence ("the loader, ranker, scorer, or guard") means in this instrument -- every file
-# under eval/k1/ that is not a documented exclusion (COMMISSIONED_COMPONENT_EXCLUDED_DIRS /
-# COMMISSIONED_COMPONENT_EXCLUDED_FILES below) must appear here, pinned by
-# eval/k1/tests/test_component_partition.py (TE-55 review, K-1 (Significant)): the seven-file
-# tuple that shipped at 6317e68 omitted six of the design's own components --
-# `pooling.py`, `porter_stemmer.py`, `self_exclusion.py`, `run_spec.py`, `anchors.py`,
-# `anchors.json`, `set_roster.py`, `sets.lock.json` -- including `porter_stemmer.py`, 193
-# lines created whole in the very commit this instrument's re-commissioning gap is about, and
-# nothing compared the tuple against the package's actual files to catch it.
+# COMMISSIONED_COMPONENT_FILES is DEFINED as the partition rule states it (TE-57 review, L-4
+# (Minor) -- resolving what used to be two different membership rules stated in one paragraph):
+# every file physically present under eval/k1/ that is not a documented exclusion
+# (COMMISSIONED_COMPONENT_EXCLUDED_DIRS / COMMISSIONED_COMPONENT_EXCLUDED_DIR_SUFFIXES /
+# COMMISSIONED_COMPONENT_EXCLUDED_FILES below), checked by `_partition_gap` and pinned by
+# eval/k1/tests/test_component_partition.py. The design's own component sentence -- the
+# disposition rule's "the loader, ranker, scorer, or guard" (`Claude/Vitruvius/te33-k1-gate-
+# design-2026-08-25.md` Section 6.2, Wizard project records tree) -- is what the EXCLUSION
+# list is justified against instead: `tests/`, `tools/` and any `*_output` directory are not
+# the loader, ranker, scorer or guard, so they are excluded; every other file is in scope by
+# construction. This is deliberately a superset of the design's six components -- it also
+# covers `gate.py` (the decision layer, design Section 4) and the orchestration modules
+# `run_spec.py` / `runner.py`, none of which `eval/k1/README.md` calls one of the six, because
+# the safe direction is a change to the decision layer or orchestration re-arming the gap even
+# where the design's own sentence would not strictly require it, not the reverse. See
+# `eval/k1/README.md` "The six components" for the design-level mapping this superset is built
+# from and around.
+# Before this rule existed, the seven-file tuple that shipped at 6317e68 omitted eight of the
+# design's own components -- `pooling.py`, `porter_stemmer.py`, `self_exclusion.py`,
+# `run_spec.py`, `anchors.py`, `anchors.json`, `set_roster.py`, `sets.lock.json` -- including
+# `porter_stemmer.py`, 193 lines created whole in the very commit this instrument's
+# re-commissioning gap is about, and nothing compared the tuple against the package's actual
+# files to catch it (TE-55 review, K-1 (Significant)).
 # COMMISSIONED_AT_COMMIT cites, per decision id, the instrument commit that decision's own
 # COMMISSIONED verdict was executed against (D-SLM4707's own entry: instrument commit
 # 3426bee; D-SLM5363's own entry: "fix/te40-k1-stale-truth@263a750"). D-SLM5844 rules this
@@ -244,18 +257,41 @@ _REPO_ROOT = _K1_PACKAGE_DIR.parents[1]  # eval/k1 -> eval -> repository root
 # against itself -- nothing compared it to the package's actual files, so a new module was
 # silently out of the re-commissioning gap's scope until someone remembered to add it, exactly
 # how porter_stemmer.py (created whole in b16ac70) went unseen for two rounds running. These
-# two constants make that comparison possible: every regular file physically present under
-# eval/k1/ must be either a commissioned component (above) or named here as a documented
-# exclusion. `_partition_gap` (below) walks the real directory and returns whatever is in
-# neither -- a new production module is therefore IN scope by default (it fails the partition
-# test the moment it exists on disk, committed or not) rather than silently out of scope until
-# someone remembers to extend a list.
+# constants make that comparison possible: every regular file physically present under
+# eval/k1/ must be either a commissioned component (above) or excluded by one of the two rules
+# below. `_partition_gap` (below) walks the real directory and returns whatever is in neither --
+# a new production module is therefore IN scope by default (it fails the partition test the
+# moment it exists on disk, committed or not) rather than silently out of scope until someone
+# remembers to extend a list.
+#
+# TE-57 review, L-1 (Significant): a hand-typed enumeration of directory NAMES is the same
+# defect K-1 closed for component files, one level further out -- it replaced a hand-typed
+# *inclusion* list with a checked partition, and introduced a hand-typed *exclusion* list which
+# nothing checks. Executed against the live product checkout (D:\SuperEmbedder, the repository
+# this branch has not yet merged into), `_partition_gap` reported 33 files, every one under
+# `eval/k1/run1_output/` -- the live Run 1 evidence packet -- because the enumeration named
+# `smoke_output` and `te50_output` but not `run1_output`. The three output directories this
+# package has produced (`smoke_output`, `te50_output`, `run1_output`) all share one naming
+# convention: a top-level directory under eval/k1/ whose name ends in `_output`. That
+# convention is now the rule a run directory is excluded BY --
+# `COMMISSIONED_COMPONENT_EXCLUDED_DIR_SUFFIXES` -- so a fourth output directory (this arc has
+# produced one about once per ticket) is excluded the moment it exists, without anyone editing
+# this list. Run-output directories are not source: they hold executed evidence, not code the
+# re-commissioning gap needs to track. `COMMISSIONED_COMPONENT_EXCLUDED_DIRS` keeps only the
+# names that are NOT run-output directories and do not fit that convention.
+#
+# The directory check anchors to the path's FIRST component only (TE-57 review, L-7
+# (Observation)): a prior form matched a name against every path segment except the last, so a
+# future nested directory that happened to be named `tests` or `tools` two levels deep would
+# silently vanish from the partition too, beyond where the comment above says this check's
+# reach ends.
 COMMISSIONED_COMPONENT_EXCLUDED_DIRS: Tuple[str, ...] = (
     "tests",
     "tools",
-    "smoke_output",
-    "te50_output",
     "__pycache__",
+)
+COMMISSIONED_COMPONENT_EXCLUDED_DIR_SUFFIXES: Tuple[str, ...] = (
+    "_output",
 )
 COMMISSIONED_COMPONENT_EXCLUDED_FILES: Tuple[str, ...] = (
     "__init__.py",
@@ -266,9 +302,12 @@ COMMISSIONED_COMPONENT_EXCLUDED_FILES: Tuple[str, ...] = (
 def _partition_gap(component_files=None, package_dir: Path = None) -> List[str]:
     """Returns every regular file physically present under ``eval/k1/`` that is neither a
     commissioned component (``component_files``, defaulting to the live
-    ``COMMISSIONED_COMPONENT_FILES``) nor a documented exclusion
-    (``COMMISSIONED_COMPONENT_EXCLUDED_DIRS`` / ``COMMISSIONED_COMPONENT_EXCLUDED_FILES``).
-    Empty means the partition holds: every file is accounted for as one or the other.
+    ``COMMISSIONED_COMPONENT_FILES``) nor a documented exclusion: a top-level directory named in
+    ``COMMISSIONED_COMPONENT_EXCLUDED_DIRS``, a top-level directory whose name ends in one of
+    ``COMMISSIONED_COMPONENT_EXCLUDED_DIR_SUFFIXES`` (TE-57 review, L-1 (Significant) -- the
+    run-output-directory naming convention, checked as a rule rather than a remembered name),
+    or a top-level file named in ``COMMISSIONED_COMPONENT_EXCLUDED_FILES``. Empty means the
+    partition holds: every file is accounted for as one or the other.
 
     A non-empty result names exactly the files a re-commissioning gap check would silently
     never examine (TE-55 review, K-1) -- this check walks the real directory rather than
@@ -289,7 +328,16 @@ def _partition_gap(component_files=None, package_dir: Path = None) -> List[str]:
         if not path.is_file():
             continue
         parts = path.relative_to(package_dir).parts
-        if any(part in COMMISSIONED_COMPONENT_EXCLUDED_DIRS for part in parts[:-1]):
+        # TE-57 review, L-7 (Observation): anchored to the FIRST path component only -- a prior
+        # form checked `any(part in ... for part in parts[:-1])`, which matches a name at ANY
+        # depth, so a future nested directory that happened to be named `tests` or `tools`
+        # (or, now, one ending `_output`) two levels deep would silently vanish from the
+        # partition too. This check's own comment says it excludes top-level run/test/tool
+        # directories; anchoring to `parts[0]` is what keeps its reach where the comment says.
+        if len(parts) > 1 and (
+            parts[0] in COMMISSIONED_COMPONENT_EXCLUDED_DIRS
+            or parts[0].endswith(COMMISSIONED_COMPONENT_EXCLUDED_DIR_SUFFIXES)
+        ):
             continue
         if len(parts) == 1 and parts[0] in COMMISSIONED_COMPONENT_EXCLUDED_FILES:
             continue
@@ -472,8 +520,13 @@ def _derive_recommissioning_gap() -> Tuple[bool, str]:
         parts.append(f"UNVERIFIED -- {problem}")
 
     note = (
+        # TE-57 review, L-7 (Observation): dropped the "-- TE-55 K-2" casebook finding-id
+        # citation from this generated, product-facing text. A decision id in this text is
+        # traceable by a consumer of the notice; a private review-casebook finding id is not,
+        # and told such a reader nothing. The citation still lives in this function's own
+        # docstring above, where it belongs.
         "Component re-commissioning gap, computed from git history (including the working "
-        "tree -- TE-55 K-2) rather than asserted: "
+        "tree) rather than asserted: "
         + "; ".join(parts) + ". D-SLM5396/D-SLM5397 (Wizard project records tree) record and "
         "defer the gap this replaces the hand-typed claim about. No reading this instrument "
         "produces from any listed change forward has been re-commissioned against the "

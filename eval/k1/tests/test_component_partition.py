@@ -19,24 +19,18 @@ the check must FAIL on the pre-fix seven-file tuple, naming the omitted artifact
 PASSES on the fixed one."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import eval.k1 as k1
+from eval.k1.tests._historical_fixtures import SEVEN_FILE_TUPLE_AT_6317E68 as _SEVEN_FILE_TUPLE_AT_6317E68
 
-# The seven-file tuple that shipped at 6317e68 -- TE-55's own review target, before K-1's fix.
-# Fixed here as a literal list (not `k1.COMMISSIONED_COMPONENT_FILES`) so this test keeps
-# reproducing the SAME historical gap regardless of how the live tuple grows.
-_SEVEN_FILE_TUPLE_AT_6317E68 = (
-    "eval/k1/bm25_baseline.py",
-    "eval/k1/embed_runner.py",
-    "eval/k1/gate.py",
-    "eval/k1/guards.py",
-    "eval/k1/rank_score.py",
-    "eval/k1/runner.py",
-    "eval/k1/sets_lock.py",
-)
-
-# The eight artifacts TE-55's review named as omitted by the pre-fix seven-file tuple (six
-# against D-SLM4707's baseline, two against D-SLM5363's -- the union of both, since the
-# partition check is not baseline-scoped).
+# TE-57 review, L-6 (Minor): this used to read "the union of both baseline-scoped diffs," which
+# is six files (D-SLM4707's own six, D-SLM5363's own two, and porter_stemmer.py/run_spec.py
+# appear in both), not eight. The actual eight is that six-file union PLUS pooling.py and
+# self_exclusion.py -- two files that changed at NEITHER baseline (so TE-55's diff-based finding
+# never named them) but were still physically present and omitted from the pre-fix seven-file
+# tuple, which the partition check catches because it compares against the package's real files
+# rather than against either baseline's diff.
 _ARTIFACTS_TE55_FOUND_OMITTED = (
     "eval/k1/anchors.json",
     "eval/k1/anchors.py",
@@ -96,5 +90,136 @@ def test_documented_exclusions_are_non_empty_and_disjoint_from_the_component_tup
     documented exclusion and a commissioned component)."""
     assert k1.COMMISSIONED_COMPONENT_EXCLUDED_DIRS
     assert k1.COMMISSIONED_COMPONENT_EXCLUDED_FILES
+    assert k1.COMMISSIONED_COMPONENT_EXCLUDED_DIR_SUFFIXES
     component_basenames = {f.rsplit("/", 1)[-1] for f in k1.COMMISSIONED_COMPONENT_FILES}
     assert component_basenames.isdisjoint(k1.COMMISSIONED_COMPONENT_EXCLUDED_FILES)
+
+
+# ----------------------------------------------------------------------------------------
+# TE-57 review, L-1 (Significant): the partition was green only in the worktree it was written
+# in. Pointed at the live product checkout's package directory (D:\SuperEmbedder\eval\k1),
+# `_partition_gap` reported 33 files, every one under `eval/k1/run1_output/` -- the exclusion
+# list named `smoke_output` and `te50_output` but not `run1_output`. The routed fix is a rule
+# (a `*_output` suffix convention on the directory's own top-level name), not a fourth entry.
+# These cells prove the rule generalizes on disposable, portable fixtures -- never against
+# D:\SuperEmbedder's actual absolute path, which is a real, evidence-bearing sibling repository
+# on this machine and not a fixture this suite should depend on existing at all, let alone at a
+# fixed location. The proof against the real product checkout was executed directly (never
+# committed as a test) and is recorded in the fix log.
+# ----------------------------------------------------------------------------------------
+
+
+def test_a_fourth_output_directory_is_excluded_without_editing_the_exclusion_list(tmp_path):
+    """The property the suffix rule exists to prove: an output directory this package has never
+    produced before -- `brand_new_output/`, invented for this test, named nothing like
+    `run1_output` or `smoke_output` beyond sharing the suffix -- is excluded from the partition
+    the moment it exists on disk, with zero edits to
+    `COMMISSIONED_COMPONENT_EXCLUDED_DIRS` or `COMMISSIONED_COMPONENT_EXCLUDED_DIR_SUFFIXES`.
+    This is what makes the convention load-bearing rather than a habit: the NEXT output
+    directory this arc produces (it has produced roughly one per ticket) is covered by
+    construction."""
+    package_dir = tmp_path / "k1"
+    package_dir.mkdir()
+    (package_dir / "a_real_component.py").write_text("X = 1\n", encoding="utf-8")
+    fourth_output_dir = package_dir / "brand_new_output"
+    (fourth_output_dir / "nested" / "deep").mkdir(parents=True)
+    (fourth_output_dir / "evidence.json").write_text("{}\n", encoding="utf-8")
+    (fourth_output_dir / "nested" / "deep" / "run_file.txt").write_text("x\n", encoding="utf-8")
+
+    gap = k1._partition_gap(
+        component_files=("eval/k1/a_real_component.py",),
+        package_dir=package_dir,
+    )
+    assert gap == []
+
+
+def test_the_three_shipped_output_directories_are_excluded_by_the_same_single_rule(tmp_path):
+    """Regression proof that removing `smoke_output` and `te50_output` from the hand-typed
+    `COMMISSIONED_COMPONENT_EXCLUDED_DIRS` list (TE-57 L-1) did not un-exclude them -- all three
+    output directories this package has actually produced (`run1_output`, `smoke_output`,
+    `te50_output`) are excluded by the one `*_output` suffix rule, with no directory name typed
+    into any exclusion list."""
+    package_dir = tmp_path / "k1"
+    package_dir.mkdir()
+    (package_dir / "a_real_component.py").write_text("X = 1\n", encoding="utf-8")
+    for name in ("run1_output", "smoke_output", "te50_output"):
+        out_dir = package_dir / name
+        out_dir.mkdir()
+        (out_dir / "result.json").write_text("{}\n", encoding="utf-8")
+
+    gap = k1._partition_gap(
+        component_files=("eval/k1/a_real_component.py",),
+        package_dir=package_dir,
+    )
+    assert gap == []
+    assert not any(
+        name in k1.COMMISSIONED_COMPONENT_EXCLUDED_DIRS
+        for name in ("run1_output", "smoke_output", "te50_output")
+    )
+
+
+def test_the_directory_exclusion_is_anchored_to_the_top_level_component_only(tmp_path):
+    """TE-57 review, L-7 (Observation): the prior form matched an excluded name against ANY
+    path segment, so a nested directory literally named `tests` two levels deep -- inside a real
+    component subpackage, not the package's own top-level `tests/` -- would silently vanish from
+    the partition too. Anchored to `parts[0]`, a same-named directory that is NOT the top-level
+    one is not exempted: its file is still reported in the gap."""
+    package_dir = tmp_path / "k1"
+    package_dir.mkdir()
+    subpkg = package_dir / "subpkg"
+    nested_tests_dir = subpkg / "tests"
+    nested_tests_dir.mkdir(parents=True)
+    (subpkg / "real_module.py").write_text("X = 1\n", encoding="utf-8")
+    (nested_tests_dir / "leftover.py").write_text("Y = 2\n", encoding="utf-8")
+
+    gap = k1._partition_gap(
+        component_files=("eval/k1/subpkg/real_module.py",),
+        package_dir=package_dir,
+    )
+    # The top-level "tests" exclusion does not reach a directory that merely happens to share
+    # its name two levels down -- the nested file is a real gap, not silently exempted.
+    assert gap == ["eval/k1/subpkg/tests/leftover.py"]
+
+
+# ----------------------------------------------------------------------------------------
+# TE-57 review, L-5 (Minor): `_partition_gap` walks the disk and reports files the tuple does
+# not account for, but performs no converse check -- a tuple entry naming a file that does not
+# exist is silent in both mechanisms (a stale or mistyped path silently narrows the
+# re-commissioning gap query and the partition test stays green). This closes it: every entry
+# in the LIVE `COMMISSIONED_COMPONENT_FILES` must resolve to a real file on disk.
+# ----------------------------------------------------------------------------------------
+
+
+def test_every_commissioned_component_file_resolves_to_a_real_file_on_disk():
+    """The converse of the partition: a phantom or mistyped entry in
+    `COMMISSIONED_COMPONENT_FILES` would otherwise silently narrow every git query scoped to
+    the tuple (`git diff`/`git status` do not error on an unmatched pathspec) without the
+    partition ever noticing, since `_partition_gap` only ever reports disk-not-in-tuple, never
+    tuple-not-on-disk."""
+    missing = [
+        f for f in k1.COMMISSIONED_COMPONENT_FILES
+        if not (k1._REPO_ROOT / Path(f)).is_file()
+    ]
+    assert missing == []
+
+
+def test_every_commissioned_component_file_resolves_to_a_real_file_on_a_disposable_tree(tmp_path):
+    """Reproduces the defect L-5 names, on a disposable fixture rather than by mutating the live
+    tuple: a stale or mistyped tuple entry naming a file that does not exist is not reported by
+    `_partition_gap` (which only walks disk-to-tuple, never tuple-to-disk) -- so the converse
+    check above is genuinely load-bearing, not vacuously true because nothing could fail it."""
+    package_dir = tmp_path / "k1"
+    package_dir.mkdir()
+    (package_dir / "a_real_component.py").write_text("X = 1\n", encoding="utf-8")
+    component_files = (
+        "eval/k1/a_real_component.py",
+        "eval/k1/typo_does_not_exist.py",
+    )
+    # The partition itself stays green: the phantom entry contributes nothing to the disk walk.
+    assert k1._partition_gap(component_files=component_files, package_dir=package_dir) == []
+    # The converse check this defect requires does catch it.
+    missing = [
+        f for f in component_files
+        if not (package_dir / Path(f).relative_to("eval/k1")).is_file()
+    ]
+    assert missing == ["eval/k1/typo_does_not_exist.py"]
