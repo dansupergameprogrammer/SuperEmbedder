@@ -81,17 +81,29 @@ text report. Computing this arithmetic does not itself decide the packet's stand
 
 **`eval.k1.COMMISSIONED_COMPONENT_FILES` -- the set the re-commissioning partition below
 actually checks -- is a deliberate superset of these six** (TE-57 review, L-4 (Minor)): it is
-defined as every file physically present under `eval/k1/` that is not a documented exclusion
-(`_partition_gap`, `eval/k1/__init__.py`), which includes `gate.py`, `run_spec.py` and
-`runner.py` even though none is one of the six design components above. This is deliberately
-the safe direction -- a change to the decision layer or the orchestration re-arms the
-re-commissioning gap even where the design's own component sentence would not strictly require
-it, rather than the reverse. **This table is descriptive of the design's own six components and
-is not independently checked against the constant** -- which of the two is the normative
-statement of "what a component is" is an open question this review raised and has not
-settled (see `Claude/Poirot/8517759-te57-k1-instrument-confirmation4.md` L-4); until it is,
-treat `eval.k1.COMMISSIONED_COMPONENT_FILES` as the operative set (it is what the code
-executes) and this table as orientation for a reader who has not opened the code.
+defined as every file physically present under `eval/k1/` that is not a documented exclusion --
+a top-level `tests/` or `tools/` directory, any top-level `*_output/` directory, or the
+top-level files `eval/k1/__init__.py` and `eval/k1/README.md` itself, checked by
+`_partition_gap` -- which includes `gate.py`, `run_spec.py` and `runner.py` even though none is
+one of the six design components above. This is deliberately the safe direction -- a change to
+the decision layer or the orchestration re-arms the re-commissioning gap even where the
+design's own component sentence would not strictly require it, rather than the reverse.
+
+**This table is descriptive of the design's own six components; `COMMISSIONED_COMPONENT_FILES`
+is its file-level projection.** Which of the two is normative for *what* is commissioned was an
+open question TE-57's review raised (see
+`Claude/Poirot/8517759-te57-k1-instrument-confirmation4.md` L-4) -- **`D-SLM5863` settled it:
+the design's component enumeration is normative for what is commissioned, the tuple is its
+file-level projection, and the two agree by a cell rather than by prose.**
+`eval/k1/tests/test_component_partition.py::test_readme_component_section_agrees_with_the_commissioned_component_tuple`
+extracts every file this section names -- the table plus the `gate.py` / `run_spec.py` /
+`runner.py` prose above, excluding the two `tools/` CLI wrappers and `eval/k1/__init__.py`,
+which this same section frames as not components -- and asserts set equality against the
+tuple; a component added to one side and not the other now fails the suite rather than
+drifting silently, which three of today's fifteen entries (`gate.py`, `run_spec.py`,
+`runner.py`, named only in this prose rather than the table) were already exposed to. Treat
+`eval.k1.COMMISSIONED_COMPONENT_FILES` as the operative set (it is what the code executes) and
+this table as the design-level orientation the cell now keeps honest.
 
 ## Commissioning status
 

@@ -61,6 +61,7 @@ themselves, so this constant cannot silently drift from the record again.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -350,6 +351,87 @@ def _partition_gap(component_files=None, package_dir: Path = None) -> List[str]:
             continue
         gap.append(rel)
     return gap
+
+
+def _phantom_component_entries(component_files=None, package_dir: Path = None) -> List[str]:
+    """The converse of `_partition_gap`: every entry in ``component_files`` (defaulting to the
+    live `COMMISSIONED_COMPONENT_FILES`) that does not resolve to a real file under
+    ``package_dir`` (defaulting to the live package directory) -- TE-57 review, L-5 (Minor).
+    `_partition_gap` walks disk and reports files the tuple does not account for; it performs
+    no converse check, so a phantom or mistyped tuple entry is invisible to it and would
+    otherwise silently narrow every git query scoped to the tuple (`git diff`/`git status` do
+    not error on an unmatched pathspec).
+
+    Promoted out of `eval/k1/tests/test_component_partition.py` into this production module so
+    the live check and its own fixture-driven regression test call the SAME code (TE-59
+    review, M-3 (Minor), `Claude/Poirot/c8ef613-te59-k1-instrument-confirmation5.md`): the
+    fixture test used to recompute this comprehension itself over a different base expression
+    (`package_dir / Path(f).relative_to("eval/k1")`) than the live check used
+    (`k1._REPO_ROOT / Path(f)`) -- a paraphrase of the check, not the check, so deleting the
+    live assertion or repointing `_REPO_ROOT` left the fixture test green regardless, unable to
+    establish the load-bearingness its own docstring claimed. Both cells now call this one
+    function, built like `_partition_gap` around ``package_dir`` (never `_REPO_ROOT` directly)
+    so a disposable tree standing in for `eval/k1/` needs no relationship to this repository's
+    actual root."""
+    component_files = (
+        COMMISSIONED_COMPONENT_FILES if component_files is None else component_files
+    )
+    package_dir = _K1_PACKAGE_DIR if package_dir is None else package_dir
+    return [
+        f for f in component_files
+        if not (package_dir / Path(f).relative_to("eval/k1")).is_file()
+    ]
+
+
+_README_COMPONENT_SECTION_HEADING = "## The six components"
+
+
+def _readme_component_files(readme_path: Path = None) -> "set[str]":
+    """Extracts every `eval/k1/` component file `eval/k1/README.md`'s own "The six components"
+    section names -- the table plus the `gate.py` / `run_spec.py` / `runner.py` orchestration
+    and gate prose above the table's own defining paragraph -- as a set of full `eval/k1/...`
+    paths, for `eval/k1/tests/test_component_partition.py`'s pin against the live
+    `COMMISSIONED_COMPONENT_FILES` (TE-59 review, M-1 (Significant),
+    `Claude/Poirot/c8ef613-te59-k1-instrument-confirmation5.md`; ruling `D-SLM5863`: the
+    design's component enumeration is normative for what is commissioned, the tuple is its
+    file-level projection, and the README agrees with the tuple by a cell rather than by
+    prose). Reads from ``readme_path`` (defaulting to the live `eval/k1/README.md`) rather than
+    a copy passed as text, so a test can point this at a disposable fixture without the pin
+    itself needing to change shape, and the live cell reads the file a reader actually sees.
+
+    Every backtick-quoted token ending `.py` or `.json` between the
+    "## The six components" heading and the next "## " heading is a candidate. Two kinds of
+    mention that same section documents as NOT components are excluded mechanically, never by
+    a second hand-typed list: a token whose basename is one of
+    `COMMISSIONED_COMPONENT_EXCLUDED_FILES` (`eval/k1/__init__.py`), and a token whose basename
+    matches a `tools/`-prefixed mention elsewhere in the same section (the section names each
+    CLI mint wrapper both bare and `tools/`-prefixed, framing both as "not separate
+    components"). What remains is bare component filenames, each resolved to its full
+    `eval/k1/<name>` path -- the same form `COMMISSIONED_COMPONENT_FILES` uses."""
+    readme_path = (
+        _K1_PACKAGE_DIR / "README.md" if readme_path is None else readme_path
+    )
+    lines = readme_path.read_text(encoding="utf-8").splitlines()
+    start = next(
+        i for i, line in enumerate(lines)
+        if line.startswith(_README_COMPONENT_SECTION_HEADING)
+    )
+    end = next(
+        i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")
+    )
+    section = "\n".join(lines[start:end])
+    raw = set(re.findall(r"`([\w./-]+\.(?:py|json))`", section))
+    wrapper_basenames = {m.rsplit("/", 1)[-1] for m in raw if m.startswith("tools/")}
+    excluded_basenames = set(COMMISSIONED_COMPONENT_EXCLUDED_FILES) | wrapper_basenames
+    result = set()
+    for token in raw:
+        basename = token.rsplit("/", 1)[-1]
+        if basename in excluded_basenames:
+            continue
+        if "/" in token:
+            continue
+        result.add(f"eval/k1/{token}")
+    return result
 
 
 class _RecommissioningCheckUnavailable(RuntimeError):

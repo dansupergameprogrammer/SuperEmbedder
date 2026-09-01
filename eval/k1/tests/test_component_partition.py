@@ -84,15 +84,25 @@ def test_partition_gap_catches_a_new_file_in_neither_list(tmp_path):
 
 
 def test_documented_exclusions_are_non_empty_and_disjoint_from_the_component_tuple():
-    """A basic sanity check on the two exclusion constants themselves: neither is empty (an
-    empty exclusion list would make the partition trivially equivalent to "everything must be
-    a component"), and no name appears in both lists (a file cannot be simultaneously a
-    documented exclusion and a commissioned component)."""
+    """A basic sanity check on the three exclusion constants themselves (TE-59 review, M-2
+    (Minor) -- this docstring used to say "the two exclusion constants" beside three
+    assertions, L-6's own shape reintroduced inside this round's own remedy for L-1): neither
+    is empty (an empty exclusion list would make the partition trivially equivalent to
+    "everything must be a component"), no name appears in both the component tuple and
+    `COMMISSIONED_COMPONENT_EXCLUDED_FILES`, and no component's own top-level path segment
+    could be swallowed by `COMMISSIONED_COMPONENT_EXCLUDED_DIRS` or
+    `COMMISSIONED_COMPONENT_EXCLUDED_DIR_SUFFIXES` -- currently unreachable (every component is
+    a top-level file) and, per M-2's own note, the kind of "currently unreachable" this lineage
+    has watched become reachable."""
     assert k1.COMMISSIONED_COMPONENT_EXCLUDED_DIRS
     assert k1.COMMISSIONED_COMPONENT_EXCLUDED_FILES
     assert k1.COMMISSIONED_COMPONENT_EXCLUDED_DIR_SUFFIXES
     component_basenames = {f.rsplit("/", 1)[-1] for f in k1.COMMISSIONED_COMPONENT_FILES}
     assert component_basenames.isdisjoint(k1.COMMISSIONED_COMPONENT_EXCLUDED_FILES)
+    for f in k1.COMMISSIONED_COMPONENT_FILES:
+        first_segment = Path(f).relative_to("eval/k1").parts[0]
+        assert first_segment not in k1.COMMISSIONED_COMPONENT_EXCLUDED_DIRS
+        assert not first_segment.endswith(k1.COMMISSIONED_COMPONENT_EXCLUDED_DIR_SUFFIXES)
 
 
 # ----------------------------------------------------------------------------------------
@@ -195,19 +205,22 @@ def test_every_commissioned_component_file_resolves_to_a_real_file_on_disk():
     `COMMISSIONED_COMPONENT_FILES` would otherwise silently narrow every git query scoped to
     the tuple (`git diff`/`git status` do not error on an unmatched pathspec) without the
     partition ever noticing, since `_partition_gap` only ever reports disk-not-in-tuple, never
-    tuple-not-on-disk."""
-    missing = [
-        f for f in k1.COMMISSIONED_COMPONENT_FILES
-        if not (k1._REPO_ROOT / Path(f)).is_file()
-    ]
-    assert missing == []
+    tuple-not-on-disk. Calls `k1._phantom_component_entries` -- the same production helper the
+    disposable-tree cell below calls (TE-59 review, M-3 (Minor)) -- rather than a comprehension
+    local to this test, so the two cells cannot silently diverge again."""
+    assert k1._phantom_component_entries() == []
 
 
 def test_every_commissioned_component_file_resolves_to_a_real_file_on_a_disposable_tree(tmp_path):
     """Reproduces the defect L-5 names, on a disposable fixture rather than by mutating the live
     tuple: a stale or mistyped tuple entry naming a file that does not exist is not reported by
-    `_partition_gap` (which only walks disk-to-tuple, never tuple-to-disk) -- so the converse
-    check above is genuinely load-bearing, not vacuously true because nothing could fail it."""
+    `_partition_gap` (which only walks disk-to-tuple, never tuple-to-disk). This cell now calls
+    the SAME `k1._phantom_component_entries` helper the live cell above calls (TE-59 review,
+    M-3 (Minor)) -- previously it recomputed the check itself over a different base expression
+    than the live cell used, a paraphrase rather than the check, which stayed green even if the
+    live cell's own assertion was deleted or `_REPO_ROOT` was repointed. Calling the shared
+    helper from both sites makes that impossible: the converse check is now genuinely
+    load-bearing, not vacuously true because nothing could fail it."""
     package_dir = tmp_path / "k1"
     package_dir.mkdir()
     (package_dir / "a_real_component.py").write_text("X = 1\n", encoding="utf-8")
@@ -218,8 +231,95 @@ def test_every_commissioned_component_file_resolves_to_a_real_file_on_a_disposab
     # The partition itself stays green: the phantom entry contributes nothing to the disk walk.
     assert k1._partition_gap(component_files=component_files, package_dir=package_dir) == []
     # The converse check this defect requires does catch it.
-    missing = [
-        f for f in component_files
-        if not (package_dir / Path(f).relative_to("eval/k1")).is_file()
-    ]
-    assert missing == ["eval/k1/typo_does_not_exist.py"]
+    assert k1._phantom_component_entries(
+        component_files=component_files, package_dir=package_dir,
+    ) == ["eval/k1/typo_does_not_exist.py"]
+
+
+# ----------------------------------------------------------------------------------------
+# TE-59 review, M-1 (Significant): `eval/k1/README.md` stated that which of the tuple and the
+# README's "six components" table is normative for "what a component is" was "an open question
+# ... has not settled." `D-SLM5863` settled it: the design's own component enumeration is
+# normative for what is commissioned, `COMMISSIONED_COMPONENT_FILES` is its file-level
+# projection, and the README agrees with the tuple by a cell rather than by prose. These cells
+# are that pin.
+# ----------------------------------------------------------------------------------------
+
+
+def test_readme_component_section_agrees_with_the_commissioned_component_tuple():
+    """The live cell `D-SLM5863` requires: every file `eval/k1/README.md`'s "The six
+    components" section names -- the table plus the `gate.py` / `run_spec.py` / `runner.py`
+    prose above it, excluding the two `tools/` CLI wrappers and `eval/k1/__init__.py`, which
+    the section itself frames as not components -- must equal `COMMISSIONED_COMPONENT_FILES`
+    exactly. A component added to one side and not the other now fails the suite instead of
+    drifting silently, which is the failure mode three of today's fifteen entries were already
+    exposed to (`gate.py`, `run_spec.py`, `runner.py` are named only in the section's prose,
+    never its table)."""
+    assert k1._readme_component_files() == set(k1.COMMISSIONED_COMPONENT_FILES)
+
+
+_FIXTURE_README_TEMPLATE = """# Fixture
+
+## The six components
+
+| # | Component | File |
+|---|---|---|
+| 1 | Widget | `widget.py` |
+| 2 | Gadget | `gadget.py` |
+
+{extra_prose}
+
+## Commissioning status
+"""
+
+
+def test_readme_component_agreement_cell_catches_a_tuple_entry_the_readme_does_not_name(tmp_path):
+    """Proof the cell above is not vacuously true (Poirot's own required evidence, TE-59 M-1:
+    "the cell is proven by adding a sixteenth entry to `COMMISSIONED_COMPONENT_FILES` in a
+    disposable tree and watching the new cell fail"). On a disposable README fixture naming a
+    fixed two-file component section, a tuple carrying a THIRD file the README does not name no
+    longer compares equal."""
+    readme_path = tmp_path / "README.md"
+    readme_path.write_text(_FIXTURE_README_TEMPLATE.format(extra_prose=""), encoding="utf-8")
+    readme_files = k1._readme_component_files(readme_path=readme_path)
+    assert readme_files == {"eval/k1/widget.py", "eval/k1/gadget.py"}
+    tuple_with_extra = ("eval/k1/widget.py", "eval/k1/gadget.py", "eval/k1/extra_module.py")
+    assert readme_files != set(tuple_with_extra)  # the mutation the cell exists to catch
+
+
+def test_readme_component_agreement_cell_catches_a_readme_only_mention(tmp_path):
+    """The converse direction: a file the README names that the tuple does not carry is also
+    caught -- the direction that matters most for a reader, since a stale README entry misleads
+    the opposite way from a missing one, and is exactly today's live shape for `gate.py`,
+    `run_spec.py` and `runner.py` before this cell existed."""
+    readme_path = tmp_path / "README.md"
+    readme_path.write_text(
+        _FIXTURE_README_TEMPLATE.format(extra_prose="Also `extra_prose_only.py`."),
+        encoding="utf-8",
+    )
+    readme_files = k1._readme_component_files(readme_path=readme_path)
+    tuple_files = {"eval/k1/widget.py", "eval/k1/gadget.py"}
+    assert readme_files != tuple_files
+    assert "eval/k1/extra_prose_only.py" in readme_files
+
+
+def test_readme_component_extraction_excludes_the_documented_non_components(tmp_path):
+    """The two kinds of documented non-component mention this section frames explicitly -- a
+    `tools/` CLI wrapper (named both bare and `tools/`-prefixed, exactly how the real README
+    names its two mint wrappers) and `eval/k1/__init__.py` -- are excluded from the extracted
+    set, on a disposable fixture reproducing that shape, so the real pin above is not silently
+    over-broad."""
+    readme_path = tmp_path / "README.md"
+    readme_path.write_text(
+        "# Fixture\n\n"
+        "## The six components\n\n"
+        "| # | Component | File |\n"
+        "|---|---|---|\n"
+        "| 1 | Widget | `widget.py` |\n\n"
+        "`tools/mint_widget.py` is a CLI wrapper, not a separate component:\n"
+        "`mint_widget.py` wraps `widget.py`'s own fetch logic. Not a documented exclusion:\n"
+        "(`eval/k1/__init__.py`).\n\n"
+        "## Commissioning status\n",
+        encoding="utf-8",
+    )
+    assert k1._readme_component_files(readme_path=readme_path) == {"eval/k1/widget.py"}
