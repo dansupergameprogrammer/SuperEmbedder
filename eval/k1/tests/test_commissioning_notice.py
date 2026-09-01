@@ -178,13 +178,28 @@ def test_todays_real_notice_states_the_outstanding_recommissioning_gap():
     silently (that IS J-2). It instead recomputes the fact independently, via a real git query
     over each commissioned decision's own baseline, and checks the module's computed value
     against that recomputation -- so this test fails the day the module's own derivation
-    disagrees with the repository's real history, in either direction."""
+    disagrees with the repository's real history, in either direction. Uses the LIVE
+    (working-tree-aware) `_component_files_changed_since` (TE-55 review, K-2), matching what
+    the production derivation itself now calls.
+
+    TE-55 review, K-7 (Observation, dated deferral 2026-09-01): this recomputation only models
+    the "a component changed" path to outstanding, not the "a baseline is missing / a git query
+    is unanswerable" path -- deliberately, because this test's whole point is recomputing
+    TODAY's real, filed state, and today `COMMISSIONED_AT_COMMIT` covers every active decision
+    id and git is on PATH, so there is no real "problems" input to recompute against without
+    monkeypatching away the real state this test exists to check. That branch is exercised
+    directly, against real subprocess failures, in test_recommissioning_gap.py's unit tests
+    (`test_a_decision_with_no_baseline_is_outstanding_and_unverified`,
+    `test_a_git_query_that_cannot_run_is_outstanding_and_unverified`). It cannot produce a false
+    PASS here: a missing baseline would raise `KeyError` on `COMMISSIONED_AT_COMMIT[decision_id]`
+    above and an unavailable git would raise out of `_component_files_changed_since` -- both
+    fail this test as an error rather than silently agreeing with a wrong value."""
     from eval.k1 import COMMISSIONED_AT_COMMIT, COMMISSIONING_DECISIONS, _component_files_changed_since
 
     any_component_changed_since_its_own_baseline = False
     for decision_id in set(COMMISSIONING_DECISIONS.values()):
         baseline = COMMISSIONED_AT_COMMIT[decision_id]
-        if _component_files_changed_since(baseline, "HEAD"):
+        if _component_files_changed_since(baseline):
             any_component_changed_since_its_own_baseline = True
 
     assert RECOMMISSIONING_OUTSTANDING is any_component_changed_since_its_own_baseline
@@ -193,6 +208,45 @@ def test_todays_real_notice_states_the_outstanding_recommissioning_gap():
         assert RECOMMISSIONING_NOTE in COMMISSIONING_NOTICE
     else:
         assert "OUTSTANDING" not in COMMISSIONING_NOTICE
+
+
+# --------------------------------------------------------------------------------------
+# K-5 (Minor, TE-55 review): COMMISSIONING_NARRATIVE used to embed D-SLM4707's baseline sha
+# directly ("instrument commit 3426bee"), duplicating COMMISSIONED_AT_COMMIT -- the table the
+# derivation actually queries -- with nothing pinning the two together. The sanctioned clearing
+# act (D-SLM5844: file a fresh decision id, add its own baseline to COMMISSIONED_AT_COMMIT)
+# could therefore move the derivation's own input while the notice kept printing the old sha,
+# with a green suite. The clause now interpolates COMMISSIONED_AT_COMMIT directly.
+# --------------------------------------------------------------------------------------
+
+
+def test_notice_clause_baseline_is_read_from_commissioned_at_commit_not_hardcoded(monkeypatch):
+    """Change D-SLM4707's baseline in COMMISSIONED_AT_COMMIT and the rendered clause must
+    change with it, mechanically -- proving the printed commit and the queried commit cannot
+    drift from each other, which is the property K-5 was about."""
+    import eval.k1 as k1_mod
+
+    monkeypatch.setattr(
+        k1_mod, "COMMISSIONED_AT_COMMIT",
+        {**k1_mod.COMMISSIONED_AT_COMMIT, "D-SLM4707": "deadbeef0"},
+    )
+    rendered = k1_mod._commissioning_clauses_by_decision(("scifact",))
+    assert "deadbeef0" in rendered
+    assert "3426bee" not in rendered
+
+
+def test_notice_clause_omits_the_baseline_annotation_when_none_is_on_file(monkeypatch):
+    """A decision id with no COMMISSIONED_AT_COMMIT entry still gets a clause (never a
+    KeyError) -- just without the baseline annotation, since there is nothing true to print."""
+    import eval.k1 as k1_mod
+
+    monkeypatch.setattr(
+        k1_mod, "COMMISSIONED_AT_COMMIT",
+        {k: v for k, v in k1_mod.COMMISSIONED_AT_COMMIT.items() if k != "D-SLM4707"},
+    )
+    rendered = k1_mod._commissioning_clauses_by_decision(("scifact",))
+    assert "instrument commit" not in rendered
+    assert "D-SLM4707" in rendered
 
 
 def test_readme_carries_the_notices_configuration_scoping_clause():

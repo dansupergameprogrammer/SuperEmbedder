@@ -130,8 +130,7 @@ def commissioned_names_clause(commissioned_sets) -> str:
 # still gets a clause -- generic rather than annotated -- never silently omitted.
 COMMISSIONING_NARRATIVE = {
     "D-SLM4707": (
-        "2026-08-25, instrument commit 3426bee; the zero-qrels guard's vitality proven on "
-        "this group"
+        "2026-08-25; the zero-qrels guard's vitality proven on this group"
     ),
     "D-SLM5363": (
         "2026-08-30, on a content-distance-aware remedy construction for must-reject 2, "
@@ -139,6 +138,13 @@ COMMISSIONING_NARRATIVE = {
         "construction"
     ),
 }
+# TE-55 review, K-5 (Minor): this table used to embed D-SLM4707's baseline sha directly
+# ("instrument commit 3426bee"), duplicating COMMISSIONED_AT_COMMIT with nothing pinning the
+# two together -- so the sanctioned clearing act (D-SLM5844: file a fresh decision id, add its
+# baseline to COMMISSIONED_AT_COMMIT) could move the derivation's own input while the notice
+# kept printing the old sha, with a green suite. The baseline is no longer typed here at all --
+# `_commissioning_clauses_by_decision` below interpolates it from `COMMISSIONED_AT_COMMIT`
+# directly, so the printed commit and the queried commit cannot drift from each other.
 
 
 def _commissioning_clauses_by_decision(commissioned_sets) -> str:
@@ -151,7 +157,12 @@ def _commissioning_clauses_by_decision(commissioned_sets) -> str:
     first sentence still asserted load-bearing standing on all of `COMMISSIONED_SETS`.
     Grouping by the live mapping instead makes a set's presence in some clause and its
     presence in `COMMISSIONED_SETS` mechanically the same fact -- the same property
-    `commissioned_names_clause` already gives the name list within one clause."""
+    `commissioned_names_clause` already gives the name list within one clause.
+
+    The clause's commissioning-commit annotation is read from `COMMISSIONED_AT_COMMIT`
+    (TE-55 review, K-5) -- the same table `_derive_recommissioning_gap` actually queries --
+    rather than from a second, hand-typed copy in `COMMISSIONING_NARRATIVE`, so the printed
+    baseline and the queried baseline are mechanically the same value."""
     groups: Dict[str, List[str]] = {}
     for s in commissioned_sets:
         groups.setdefault(COMMISSIONING_DECISIONS[s], []).append(s)
@@ -159,10 +170,15 @@ def _commissioning_clauses_by_decision(commissioned_sets) -> str:
     for decision_id in sorted(groups):
         names = commissioned_names_clause(groups[decision_id])
         narrative = COMMISSIONING_NARRATIVE.get(decision_id)
+        baseline = COMMISSIONED_AT_COMMIT.get(decision_id)
+        baseline_clause = f", instrument commit {baseline}" if baseline else ""
         if narrative:
-            clauses.append(f"{names} ({decision_id}, {narrative})")
+            clauses.append(f"{names} ({decision_id}{baseline_clause}, {narrative})")
         else:
-            clauses.append(f"{names} ({decision_id} -- see eval.k1.COMMISSIONING_DECISIONS)")
+            clauses.append(
+                f"{names} ({decision_id}{baseline_clause} -- see "
+                "eval.k1.COMMISSIONING_DECISIONS)"
+            )
     return " and ".join(clauses)
 
 
@@ -178,20 +194,41 @@ def _commissioning_clauses_by_decision(commissioned_sets) -> str:
 # about it.
 #
 # COMMISSIONED_COMPONENT_FILES names the concrete files the disposition rule's component
-# sentence ("the loader, ranker, scorer, or guard") means in this instrument.
+# sentence ("the loader, ranker, scorer, or guard") means in this instrument -- every file
+# under eval/k1/ that is not a documented exclusion (COMMISSIONED_COMPONENT_EXCLUDED_DIRS /
+# COMMISSIONED_COMPONENT_EXCLUDED_FILES below) must appear here, pinned by
+# eval/k1/tests/test_component_partition.py (TE-55 review, K-1 (Significant)): the seven-file
+# tuple that shipped at 6317e68 omitted six of the design's own components --
+# `pooling.py`, `porter_stemmer.py`, `self_exclusion.py`, `run_spec.py`, `anchors.py`,
+# `anchors.json`, `set_roster.py`, `sets.lock.json` -- including `porter_stemmer.py`, 193
+# lines created whole in the very commit this instrument's re-commissioning gap is about, and
+# nothing compared the tuple against the package's actual files to catch it.
 # COMMISSIONED_AT_COMMIT cites, per decision id, the instrument commit that decision's own
-# COMMISSIONED verdict was executed against (module docstring above: "instrument commit
-# 3426bee" for D-SLM4707; D-SLM5363's own decision-log entry cites
-# "fix/te40-k1-stale-truth@263a750"). Both grow only alongside COMMISSIONING_DECISIONS, under
-# the same discipline: a new file or a new baseline commit is added when a filed verdict's own
-# text names it, never edited to make a real diff disappear.
+# COMMISSIONED verdict was executed against (D-SLM4707's own entry: instrument commit
+# 3426bee; D-SLM5363's own entry: "fix/te40-k1-stale-truth@263a750"). D-SLM5844 rules this
+# table APPEND-ONLY: a decision id's value is the commit its OWN verdict was executed against,
+# fixed forever once filed, and a re-commissioning never mutates an existing key -- it files a
+# NEW decision-log entry under a NEW decision id, adds that id's own baseline here, and
+# re-points the affected sets' entries in COMMISSIONING_DECISIONS to the new id. That is what
+# keeps a key meaning what its own filed decision-log entry says it means, rather than
+# drifting to "the latest baseline for whatever this id once commissioned" after one clear.
+# Both tables grow only alongside a filed verdict's own text naming the addition, never edited
+# to make a real diff disappear.
 COMMISSIONED_COMPONENT_FILES: Tuple[str, ...] = (
+    "eval/k1/anchors.json",
+    "eval/k1/anchors.py",
     "eval/k1/bm25_baseline.py",
     "eval/k1/embed_runner.py",
     "eval/k1/gate.py",
     "eval/k1/guards.py",
+    "eval/k1/pooling.py",
+    "eval/k1/porter_stemmer.py",
     "eval/k1/rank_score.py",
+    "eval/k1/run_spec.py",
     "eval/k1/runner.py",
+    "eval/k1/self_exclusion.py",
+    "eval/k1/set_roster.py",
+    "eval/k1/sets.lock.json",
     "eval/k1/sets_lock.py",
 )
 
@@ -203,6 +240,69 @@ COMMISSIONED_AT_COMMIT: Dict[str, str] = {
 _K1_PACKAGE_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _K1_PACKAGE_DIR.parents[1]  # eval/k1 -> eval -> repository root
 
+# TE-55 review, K-1 (Significant): a hand-typed component tuple can only ever be checked
+# against itself -- nothing compared it to the package's actual files, so a new module was
+# silently out of the re-commissioning gap's scope until someone remembered to add it, exactly
+# how porter_stemmer.py (created whole in b16ac70) went unseen for two rounds running. These
+# two constants make that comparison possible: every regular file physically present under
+# eval/k1/ must be either a commissioned component (above) or named here as a documented
+# exclusion. `_partition_gap` (below) walks the real directory and returns whatever is in
+# neither -- a new production module is therefore IN scope by default (it fails the partition
+# test the moment it exists on disk, committed or not) rather than silently out of scope until
+# someone remembers to extend a list.
+COMMISSIONED_COMPONENT_EXCLUDED_DIRS: Tuple[str, ...] = (
+    "tests",
+    "tools",
+    "smoke_output",
+    "te50_output",
+    "__pycache__",
+)
+COMMISSIONED_COMPONENT_EXCLUDED_FILES: Tuple[str, ...] = (
+    "__init__.py",
+    "README.md",
+)
+
+
+def _partition_gap(component_files=None, package_dir: Path = None) -> List[str]:
+    """Returns every regular file physically present under ``eval/k1/`` that is neither a
+    commissioned component (``component_files``, defaulting to the live
+    ``COMMISSIONED_COMPONENT_FILES``) nor a documented exclusion
+    (``COMMISSIONED_COMPONENT_EXCLUDED_DIRS`` / ``COMMISSIONED_COMPONENT_EXCLUDED_FILES``).
+    Empty means the partition holds: every file is accounted for as one or the other.
+
+    A non-empty result names exactly the files a re-commissioning gap check would silently
+    never examine (TE-55 review, K-1) -- this check walks the real directory rather than
+    trusting a remembered list, so a new file is caught the moment it exists, whether or not it
+    has been committed.
+
+    ``component_files`` is a parameter, defaulting to the live constant, so a test can
+    reproduce a PAST enumeration's gap without the live tuple itself needing to regress --
+    TE-55's own instruction: prove the check fails on the pre-fix seven-file tuple, naming the
+    omitted artifacts, before it passes on the fixed one."""
+    component_files = (
+        COMMISSIONED_COMPONENT_FILES if component_files is None else component_files
+    )
+    package_dir = _K1_PACKAGE_DIR if package_dir is None else package_dir
+    component_set = {Path(f).as_posix() for f in component_files}
+    gap: List[str] = []
+    for path in sorted(package_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        parts = path.relative_to(package_dir).parts
+        if any(part in COMMISSIONED_COMPONENT_EXCLUDED_DIRS for part in parts[:-1]):
+            continue
+        if len(parts) == 1 and parts[0] in COMMISSIONED_COMPONENT_EXCLUDED_FILES:
+            continue
+        # Built relative to `package_dir` itself (never `_REPO_ROOT`) so a test can point this
+        # at a disposable directory standing in for eval/k1/ without it needing to sit under
+        # this repository's actual root -- "eval/k1" is this package's own fixed name, not a
+        # derived path.
+        rel = "eval/k1/" + path.relative_to(package_dir).as_posix()
+        if rel in component_set:
+            continue
+        gap.append(rel)
+    return gap
+
 
 class _RecommissioningCheckUnavailable(RuntimeError):
     """Raised internally when the git query a component's re-commissioning gap depends on
@@ -212,27 +312,101 @@ class _RecommissioningCheckUnavailable(RuntimeError):
     a check that could not run is not evidence of a clear one."""
 
 
-def _component_files_changed_since(commit: str, to_ref: str = "HEAD") -> List[str]:
-    """Runs `git diff --name-only <commit>..<to_ref>`, scoped to
-    `COMMISSIONED_COMPONENT_FILES`, from the repository this package is checked out in.
-    `to_ref` defaults to `HEAD` for real use; a test passes a fixed historical commit so it can
-    reproduce a past finding without depending on where this branch's HEAD happens to be today.
+def _component_files_changed_between(
+    commit_a: str, commit_b: str, component_files=None,
+) -> List[str]:
+    """Runs `git diff --name-only <commit_a>..<commit_b>`, scoped to `component_files`
+    (defaulting to the live `COMMISSIONED_COMPONENT_FILES`), from the repository this package
+    is checked out in -- a pure comparison between two COMMITTED trees, for reproducing a
+    historical fact (e.g. "what changed between these two shipped commits"). Never called by
+    the live derivation (`_derive_recommissioning_gap` uses `_component_files_changed_since`
+    below, which is working-tree aware); this exists so a test can pin a fixed historical span
+    without that span silently becoming working-tree-sensitive.
+
+    `component_files` is an explicit parameter, not only the live default, for the same reason
+    `_partition_gap` takes one (TE-55 review, K-4 (Minor)): a test reproducing what changed in
+    a FIXED historical span between two FIXED commits is pinning a historical fact, and that
+    fact must not silently change shape merely because `COMMISSIONED_COMPONENT_FILES` grows --
+    which it is designed to do. Passing the literal historical file list keeps the historical
+    pin fixed while the live constant still varies freely.
+
     Raises `_RecommissioningCheckUnavailable` -- never a bare subprocess exception -- on any
-    failure, so the caller fails toward "outstanding" rather than toward a silent, unverified
-    "clear"."""
+    failure."""
+    component_files = (
+        COMMISSIONED_COMPONENT_FILES if component_files is None else component_files
+    )
     try:
         result = subprocess.run(
-            ["git", "diff", "--name-only", f"{commit}..{to_ref}", "--", *COMMISSIONED_COMPONENT_FILES],
+            [
+                "git", "diff", "--name-only", f"{commit_a}..{commit_b}",
+                "--", *component_files,
+            ],
             cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise _RecommissioningCheckUnavailable(f"git diff could not run: {exc}") from exc
     if result.returncode != 0:
         raise _RecommissioningCheckUnavailable(
-            f"git diff --name-only {commit}..{to_ref} exited {result.returncode}: "
+            f"git diff --name-only {commit_a}..{commit_b} exited {result.returncode}: "
             f"{result.stderr.strip()}"
         )
     return sorted(line.strip() for line in result.stdout.splitlines() if line.strip())
+
+
+def _component_files_changed_since(commit: str) -> List[str]:
+    """The live derivation's own query (TE-55 review, K-2 (Significant)): every
+    `COMMISSIONED_COMPONENT_FILES` path that differs between `<commit>` and the ACTUAL CURRENT
+    STATE OF THE WORKING TREE -- committed history since `<commit>`, PLUS any staged or
+    unstaged modification not yet committed, PLUS any of those paths that is untracked (new,
+    never committed).
+
+    This replaces the prior `<commit>..HEAD` form, which compares two COMMITTED trees and is
+    therefore blind to exactly the state this instrument actually runs from: the working tree.
+    Executed proof of the gap this closes (K-2, in a disposable scratch repository -- see
+    `eval/k1/tests/test_recommissioning_gap.py`): with the baseline at HEAD (the state right
+    after a re-commissioning), an uncommitted edit to a component gave `git diff --name-only
+    <base>..HEAD` empty and `git diff --name-only <base>` (no `..HEAD`) the file; an entirely
+    untracked new component file -- exactly how `porter_stemmer.py` entered this package -- is
+    invisible to `git diff` regardless of the `..HEAD` form and is caught here by
+    `git status --porcelain` instead.
+
+    Raises `_RecommissioningCheckUnavailable` -- never a bare subprocess exception -- on any
+    failure, so the caller fails toward "outstanding" rather than toward a silent, unverified
+    "clear". This is now the only place that claim is made, and both halves of it (the
+    tracked-modification path and the untracked-new-file path) are each proven, not asserted."""
+    try:
+        diff_result = subprocess.run(
+            ["git", "diff", "--name-only", commit, "--", *COMMISSIONED_COMPONENT_FILES],
+            cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=30,
+        )
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain", "--", *COMMISSIONED_COMPONENT_FILES],
+            cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise _RecommissioningCheckUnavailable(f"git query could not run: {exc}") from exc
+    if diff_result.returncode != 0:
+        raise _RecommissioningCheckUnavailable(
+            f"git diff --name-only {commit} exited {diff_result.returncode}: "
+            f"{diff_result.stderr.strip()}"
+        )
+    if status_result.returncode != 0:
+        raise _RecommissioningCheckUnavailable(
+            f"git status --porcelain exited {status_result.returncode}: "
+            f"{status_result.stderr.strip()}"
+        )
+    changed = {line.strip() for line in diff_result.stdout.splitlines() if line.strip()}
+    for line in status_result.stdout.splitlines():
+        if not line.strip():
+            continue
+        # Porcelain v1 format: "XY PATH" (untracked entries are "?? path"). A renamed entry
+        # would read "R  old -> new"; that shape cannot occur here since the pathspec is a
+        # fixed file list rather than a directory, but the split is defensive rather than
+        # assumed.
+        path = line[3:].strip().split(" -> ")[-1].strip()
+        if path:
+            changed.add(path)
+    return sorted(changed)
 
 
 def _derive_recommissioning_gap() -> Tuple[bool, str]:
@@ -241,18 +415,28 @@ def _derive_recommissioning_gap() -> Tuple[bool, str]:
 
     For every decision id currently backing a commissioned set (the values of
     `COMMISSIONING_DECISIONS`), diffs `COMMISSIONED_COMPONENT_FILES` from that decision's own
-    `COMMISSIONED_AT_COMMIT` baseline to `HEAD` -- the disposition rule's component sentence,
-    executed rather than paraphrased. A decision id with no changed files since its own
-    baseline contributes nothing to the result; grouped by decision id, the same shape
-    `commissioned_names_clause` already groups the notice's set-name text by, so a set
-    commissioned under a new decision id (J-7's own class) is covered by construction, not by
-    a list someone remembers to extend.
+    `COMMISSIONED_AT_COMMIT` baseline to the actual current working tree
+    (`_component_files_changed_since`, which is working-tree aware -- TE-55 review, K-2) --
+    the disposition rule's component sentence, executed rather than paraphrased. A decision id
+    with no changed files since its own baseline contributes nothing to the result; grouped by
+    decision id, the same shape `commissioned_names_clause` already groups the notice's
+    set-name text by, so a set commissioned under a new decision id (J-7's own class) is
+    covered by construction, not by a list someone remembers to extend.
 
     Fails toward outstanding rather than toward silence: a decision id with no
     `COMMISSIONED_AT_COMMIT` entry, or a git query that cannot be answered at all (no git
     binary, this directory not a checkout, or a cited commit unreachable), is folded into the
     result as outstanding, with a note naming the check that could not run -- never as a quiet
-    `False` that nothing actually verified.
+    `False` that nothing actually verified. That property now also holds for the one branch
+    TE-55 found it did not (K-2): a commissioned component modified, or newly added, in the
+    working tree but never committed is no longer invisible to this query.
+
+    D-SLM5844: `COMMISSIONED_AT_COMMIT` is append-only, keyed by decision id. Clearing the gap
+    for a decision id never edits that id's existing entry -- it files a fresh decision-log
+    entry under a NEW decision id, with its own baseline, and re-points the affected sets in
+    `COMMISSIONING_DECISIONS` to it. `active_decision_ids` below is therefore always the
+    CURRENTLY-cited decision ids only; a superseded id's stale baseline simply stops being
+    read, rather than being overwritten.
     """
     active_decision_ids = sorted(set(COMMISSIONING_DECISIONS.values()))
     problems: List[str] = []
@@ -288,18 +472,28 @@ def _derive_recommissioning_gap() -> Tuple[bool, str]:
         parts.append(f"UNVERIFIED -- {problem}")
 
     note = (
-        "Component re-commissioning gap, computed from git history rather than asserted: "
+        "Component re-commissioning gap, computed from git history (including the working "
+        "tree -- TE-55 K-2) rather than asserted: "
         + "; ".join(parts) + ". D-SLM5396/D-SLM5397 (Wizard project records tree) record and "
         "defer the gap this replaces the hand-typed claim about. No reading this instrument "
         "produces from any listed change forward has been re-commissioned against the "
-        "changed code. Flip to False only by an independent seat re-firing the affected "
-        "constructions and filing a fresh decision-log entry that updates "
-        "COMMISSIONED_AT_COMMIT to the new baseline commit -- never by editing this note or "
-        "this function."
+        "changed code. Flip to False for a decision id only by an independent seat re-firing "
+        "the affected constructions and filing a fresh decision-log entry under a NEW "
+        "decision id -- adding that id's own baseline to COMMISSIONED_AT_COMMIT and "
+        "re-pointing the affected sets' entries in COMMISSIONING_DECISIONS to it "
+        "(D-SLM5844: COMMISSIONED_AT_COMMIT is append-only; no existing key's value is ever "
+        "mutated) -- never by editing this note, this function, or an existing "
+        "COMMISSIONED_AT_COMMIT entry."
     )
     return True, note
 
 
+# Executed at import time (K-8, Observation, TE-55 review): every `import eval.k1` shells out
+# to `git` once per commissioned decision id -- measured 0.044s -> 0.128s cold
+# (`import eval.k1.gate`). Accepted as-is rather than made lazy: the safe direction is
+# preserved (an unavailable git yields UNVERIFIED, never a silent clear), the cost is linear
+# in a table that grows slowly, and a lazily-computed property would break the
+# `from eval.k1 import RECOMMISSIONING_OUTSTANDING` binding `gate.py` relies on.
 RECOMMISSIONING_OUTSTANDING, RECOMMISSIONING_NOTE = _derive_recommissioning_gap()
 
 

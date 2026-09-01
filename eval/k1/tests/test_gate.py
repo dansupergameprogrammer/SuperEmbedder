@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+import eval.k1 as k1
 from eval.k1.gate import (
     GATE_REQUIRED_SETS,
     evaluate_f1,
@@ -450,12 +451,23 @@ def test_gate_verdict_recommissioning_outstanding_is_false_once_resolved(monkeyp
 
 
 def test_gate_verdict_today_carries_the_real_recommissioning_gap():
-    """Today's real, filed state (D-SLM5396/5397): b16ac70 changed four commissioned
-    components after every set in COMMISSIONED_SETS had its own verdict filed, and no
-    independent seat has re-fired and re-filed since -- so the live verdict must carry the
-    gap, not only the notice text."""
+    """The gate verdict's recommissioning fields must track `eval.k1`'s own DERIVED state
+    (`eval.k1.RECOMMISSIONING_OUTSTANDING`/`RECOMMISSIONING_NOTE`), recomputed independently
+    here rather than hardcoded (TE-55 review, K-3 (Minor)): this test previously asserted
+    `recommissioning_outstanding is True` against a docstring naming "b16ac70 changed four
+    commissioned components" -- the exact fixed enumeration J-1 found incomplete, still living
+    on in a suite that had replaced the note it described with a real derivation (TE-53
+    review, J-2's own instruction: not an assertion that today's flag is `True`, which is
+    precisely the shape of claim that goes stale silently). Recomputing against the module's
+    own live constants means this test tracks reality in either direction -- outstanding or
+    clear -- rather than needing a hand-edit the day an independent seat re-commissions."""
     packet = _packet_for_sets(GATE_REQUIRED_SETS, {name: 0.90 for name in GATE_REQUIRED_SETS})
     verdict = evaluate_gate(packet)
-    assert verdict.recommissioning_outstanding is True
-    assert "RE-COMMISSIONING OUTSTANDING" in verdict.reason
-    assert verdict.recommissioning_note != ""
+    assert verdict.recommissioning_outstanding is k1.RECOMMISSIONING_OUTSTANDING
+    assert verdict.recommissioning_note == k1.RECOMMISSIONING_NOTE
+    if k1.RECOMMISSIONING_OUTSTANDING:
+        assert "RE-COMMISSIONING OUTSTANDING" in verdict.reason
+        assert verdict.recommissioning_note != ""
+    else:
+        assert "RE-COMMISSIONING OUTSTANDING" not in verdict.reason
+        assert verdict.recommissioning_note == ""
