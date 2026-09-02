@@ -85,11 +85,26 @@ def detect_compiler_id() -> str:
     and used GENERATOR == "Ninja" as a stand-in for "the compiler is MSVC"
     -- wrong on a matrix this project's own CI runs with the Ninja
     generator on all three OSes, where the REAL compiler on ubuntu/macos is
-    GCC/Clang. Reads CMAKE_CXX_COMPILER_ID from an already-configured
-    CMakeCache.txt when one exists (this project's own build/semb, if
-    present), or runs one cheap throwaway configure otherwise. Cached for
-    the process's lifetime -- this is asked once per leg, not once per
-    file."""
+    GCC/Clang. Reads CMAKE_CXX_COMPILER_ID from a fresh, throwaway probe
+    configure's own CMakeFiles/<version>/CMakeCXXCompiler.cmake (not a
+    CMakeCache.txt entry -- found by execution when a first read attempt
+    came back empty). Cached for the process's lifetime.
+
+    TE-69 (found during this round's own Clang verification, not one of
+    the casebook's numbered findings): the prior version read
+    REPO_ROOT/build/semb/CMakeCache.txt FIRST, a persistent directory nine
+    of this file's OWN developer/CI conventions leave behind from a PRIOR
+    run -- if that prior run used a different compiler than the one the
+    CURRENT invocation's CXX/CC environment selects (exactly what happens
+    switching between an MSVC verification and a Clang one in the same
+    working tree without deleting build/semb first), this function reported
+    the WRONG compiler while the actual configure used the right one,
+    silently mislabeling every leg and, for legs that choose a flag
+    spelling from this function's answer, silently choosing the wrong
+    flag. There is no directory this function can trust without configuring
+    it itself: it always runs its own fresh probe now, which respects
+    whatever CXX/CC/CMAKE_CXX_COMPILER the CURRENT process environment
+    specifies, the same way every other leg's real configure does."""
     if "id" in _COMPILER_ID_CACHE:
         return _COMPILER_ID_CACHE["id"]
 
@@ -105,20 +120,29 @@ def detect_compiler_id() -> str:
                     return m.group(1)
         return None
 
-    found = _scan_for_id(REPO_ROOT / "build" / "semb")
+    probe_src = SCRATCH / "_compiler_id_probe_src"
+    probe_build = SCRATCH / "_compiler_id_probe_build"
+    probe_src.mkdir(parents=True, exist_ok=True)
+    (probe_src / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.21)\nproject(probe LANGUAGES CXX)\n", encoding="utf-8",
+    )
+    probe_rc, probe_out = run_cmake_configure(probe_src, probe_build, ENGINE_PREFIX)
+    found = _scan_for_id(probe_build)
     if found is None:
-        probe_src = SCRATCH / "_compiler_id_probe_src"
-        probe_build = SCRATCH / "_compiler_id_probe_build"
-        probe_src.mkdir(parents=True, exist_ok=True)
-        (probe_src / "CMakeLists.txt").write_text(
-            "cmake_minimum_required(VERSION 3.21)\nproject(probe LANGUAGES CXX)\n", encoding="utf-8",
+        # TE-69 P-8: this used to raise with neither the probe's exit code
+        # nor its output -- and this function is first called mid-matrix,
+        # after every C33/C34 leg (including two real engine clones and
+        # builds), so an unhandled raise here discarded the whole RESULTS
+        # report: main()'s json.dumps() never ran and ctest got a traceback
+        # instead of a leg table. The message now carries both.
+        raise RuntimeError(
+            f"could not detect CMAKE_CXX_COMPILER_ID from the probe configure "
+            f"(exit {probe_rc}); no CMakeCXXCompiler.cmake with a recognizable "
+            f"CMAKE_CXX_COMPILER_ID line was found under {probe_build}. Probe output:\n{probe_out}"
         )
-        run_cmake_configure(probe_src, probe_build, ENGINE_PREFIX)
-        found = _scan_for_id(probe_build)
-    if found is None:
-        raise RuntimeError("could not detect CMAKE_CXX_COMPILER_ID from any probe")
     _COMPILER_ID_CACHE["id"] = found
     return found
+
 
 
 def run_cmake_configure(src: Path, build: Path, prefix: Path, extra_defines=None) -> tuple[int, str]:
@@ -660,14 +684,23 @@ def c14_target_compile_options_cleared():
 
 
 def c14_subdirectory_target():
-    """TE-67 N-3. BUILDSYSTEM_TARGETS is per-directory; a target declared in
-    add_subdirectory() must be reached by the recursive walk."""
+    """TE-67 N-3, fixed for TE-69 P-1. BUILDSYSTEM_TARGETS is per-directory;
+    a target declared in add_subdirectory() must be reached by the
+    recursive walk. TE-69 P-1: this leg used to hardcode /fp:fast (MSVC),
+    the exact defect N-7 named, in the same commit that repaired it --
+    reproduced under Clang 18.1.8: -ffast-math is the real forbidden flag
+    off MSVC, so a target carrying /fp:fast (meaningless to Clang)
+    configures clean and the leg recorded a false FAIL. The forbidden-flag
+    spelling is now chosen from detect_compiler_id(), matching what
+    cmake/BuildFlags.cmake itself checks for on the real compiler in use."""
+    compiler_id = detect_compiler_id()
+    forbidden = "/fp:fast" if compiler_id == "MSVC" else "-ffast-math"
     src = copy_repo(SCRATCH / "c14f_src")
     tests_dir = src / "tests"
     tests_dir.mkdir(exist_ok=True)
     (tests_dir / "t.cpp").write_text("int semb_tests_symbol() { return 0; }\n", encoding="utf-8")
     (tests_dir / "CMakeLists.txt").write_text(
-        "add_library(semb_tests STATIC t.cpp)\ntarget_compile_options(semb_tests PRIVATE /fp:fast)\n",
+        f"add_library(semb_tests STATIC t.cpp)\ntarget_compile_options(semb_tests PRIVATE {forbidden})\n",
         encoding="utf-8",
     )
     cmakelists = src / "CMakeLists.txt"
@@ -677,17 +710,23 @@ def c14_subdirectory_target():
     text = text.replace(anchor, "\nadd_subdirectory(tests)\nsemb_assert_precise_fp()\n", 1)
     cmakelists.write_text(text, encoding="utf-8")
     rc, out = run_cmake_configure(src, SCRATCH / "c14f_build", ENGINE_PREFIX)
-    record("C14 subdirectory target with /fp:fast (N-3)", "SEMB_FP_FASTMATH_PRESENT", rc, out)
+    record(f"C14 subdirectory target with fast-math ({compiler_id})", "SEMB_FP_FASTMATH_PRESENT", rc, out)
 
 
 def c14_cxx_flags_release_fastmath():
-    """TE-67 N-4. The identical bypass class E-8 named, one release-build
-    variable over: -DCMAKE_CXX_FLAGS_RELEASE=/fp:fast."""
+    """TE-67 N-4, fixed for TE-69 P-1. The identical bypass class E-8 named,
+    one release-build variable over: -DCMAKE_CXX_FLAGS_RELEASE=<the real
+    compiler's own fast-math spelling>. TE-69 P-1: this leg hardcoded
+    /fp:fast (MSVC); reproduced under Clang: the variable's own content is
+    meaningless to Clang, string(FIND) against -ffast-math never matches,
+    and configure exits 0 -- a false FAIL."""
+    compiler_id = detect_compiler_id()
+    forbidden = "/fp:fast" if compiler_id == "MSVC" else "-ffast-math"
     src = copy_repo(SCRATCH / "c14g_src")
     rc, out = run_cmake_configure(src, SCRATCH / "c14g_build", ENGINE_PREFIX,
                                    extra_defines={"CMAKE_BUILD_TYPE": "Release",
-                                                  "CMAKE_CXX_FLAGS_RELEASE": "/fp:fast"})
-    record("C14 CMAKE_CXX_FLAGS_RELEASE carries fast-math (N-4)", "SEMB_FP_FASTMATH_PRESENT", rc, out)
+                                                  "CMAKE_CXX_FLAGS_RELEASE": forbidden})
+    record(f"C14 CMAKE_CXX_FLAGS_RELEASE carries fast-math ({compiler_id})", "SEMB_FP_FASTMATH_PRESENT", rc, out)
 
 
 def c14_flag_strip():
