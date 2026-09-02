@@ -192,6 +192,18 @@ extern "C" SembWaPoolStatus semb_wa_pool_run(const int8_t* codes, const int64_t*
   uint64_t spread = 0;
   if (!ComputeSpread(e, n, &e_min, &spread)) return kSembInputTooShort;
   if (spread > static_cast<uint64_t>(semb::kAccumulatorSpreadBits)) return kSembAccumulatorOverflow;
+  // TE-79 F-2 (Critical, TE-76 review): e_min's own domain, checked in
+  // int64_t -- the width e_min already lives in, so this comparison
+  // itself cannot overflow -- BEFORE either ShiftLeft call below casts it
+  // to `unsigned` (32 bits). Unchecked, that cast truncates modulo 2^32:
+  // at e_min = 2^32 the 2^e_min factor is dropped entirely (`unsigned(2^32)
+  // == 0`, so ShiftLeft(0) is a no-op), and the pooling epilogue returns
+  // kSembOk with a vector that is wrong by a factor of 2^e_min -- a silent
+  // wrong answer with a success status, executed and confirmed by the
+  // review (e_min = 2^32 returned 5*2^30 in place of the true 5*2^(2^32)).
+  if (e_min > kSembWaPoolMaxAbsEMin || e_min < -kSembWaPoolMaxAbsEMin) {
+    return kSembEMinDomainExceeded;
+  }
 
   const size_t first = 1;
   const size_t P = n - first;  // the POOLED count, never n
