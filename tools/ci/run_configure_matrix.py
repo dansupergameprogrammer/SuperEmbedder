@@ -552,6 +552,88 @@ def c33_leg_g_unowned_workdir_refused(pin_tool: Path, lock_path_template: Path):
     })
 
 
+def c33_leg_i_preexisting_build_survives(pin_tool: Path, lock_path_template: Path):
+    """TE-73 R-1 (Critical). configure_engine() used to delete a
+    PRE-EXISTING workdir/build with a bare, unconditional rmtree -- no
+    guard at all -- the third of the tool's three deletion sites and the
+    only one no round had ever reached (F-11/N-11/P-4/TE-71's Q-1 each
+    guarded a DIFFERENT site: --prefix, clone_engine's dest, and the final
+    cleanup, in that order, over three rounds). A --workdir carrying
+    build/PRECIOUS.txt and build/my_cache/deep.txt (files this run did not
+    create) plus keepme.txt beside them, run via --reuse-clone -- both
+    WITH and WITHOUT --keep-workdir, since the deletion used to happen in
+    configure_engine itself, before final cleanup is even reached, so
+    --keep-workdir (which every other leg in this matrix passes) never
+    protected the caller. All three files, and workdir itself, must
+    survive both runs; the tool must refuse (SEMB_PIN_UNSAFE_BUILD_DIR)
+    rather than silently proceed. No real engine build is needed for the
+    fixed tool's own run -- it refuses before configure_engine ever calls
+    cmake -- but --reuse-clone still needs a real clone for resolve_commit
+    to read a tag from."""
+    tag = None
+    for line in lock_path_template.read_text(encoding="utf-8").splitlines():
+        if line.startswith("tag="):
+            tag = line.split("=", 1)[1]
+    assert tag, "could not read tag from superslm.lock"
+    clone_dir = SCRATCH / "c33i_clone"
+    rmtree(clone_dir)
+    subprocess.run(
+        ["git", "clone", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.longpaths=true",
+         "--branch", tag, "--single-branch",
+         DEFAULT_REMOTE, str(clone_dir)],
+        check=True, capture_output=True, text=True,
+    )
+    lock = SCRATCH / "c33i_lock" / "superslm.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(lock_path_template.read_text(encoding="utf-8"), encoding="utf-8")
+
+    def _construct_and_run(workdir: Path, keep_workdir: bool, prefix: Path):
+        rmtree(workdir)
+        (workdir / "build" / "my_cache").mkdir(parents=True)
+        (workdir / "build" / "PRECIOUS.txt").write_text(
+            "R-1: not this run's own build output\n", encoding="utf-8")
+        (workdir / "build" / "my_cache" / "deep.txt").write_text(
+            "R-1: nested, also not this run's\n", encoding="utf-8")
+        keepme = workdir / "keepme.txt"
+        keepme.write_text("R-1: beside build, also not this run's\n", encoding="utf-8")
+        rmtree(prefix)
+        pin_cmd = [
+            PYEXE, str(pin_tool),
+            "--lock", str(lock),
+            "--prefix", str(prefix),
+            "--workdir", str(workdir),
+            "--reuse-clone", str(clone_dir),
+            "--cmake", CMAKE, "--ninja", NINJA, "--generator", GENERATOR,
+        ]
+        if keep_workdir:
+            pin_cmd.append("--keep-workdir")
+        proc = subprocess.run(pin_cmd, capture_output=True, text=True)
+        survival = {
+            "precious": (workdir / "build" / "PRECIOUS.txt").exists(),
+            "deep": (workdir / "build" / "my_cache" / "deep.txt").exists(),
+            "keepme": keepme.exists(),
+        }
+        return proc.returncode, proc.stdout + proc.stderr, survival
+
+    rc1, out1, surv1 = _construct_and_run(SCRATCH / "c33i_workdir_nokeep", False, SCRATCH / "c33i_prefix1")
+    rc2, out2, surv2 = _construct_and_run(SCRATCH / "c33i_workdir_keep", True, SCRATCH / "c33i_prefix2")
+
+    all_survived = all(surv1.values()) and all(surv2.values())
+    both_refused = rc1 != 0 and rc2 != 0
+    both_named = "SEMB_PIN_UNSAFE_BUILD_DIR" in out1 and "SEMB_PIN_UNSAFE_BUILD_DIR" in out2
+    passed = all_survived and both_refused and both_named
+    RESULTS.append({
+        "leg": "C33(i) pre-existing workdir/build survives configure_engine (R-1)",
+        "expected": "SEMB_PIN_UNSAFE_BUILD_DIR",
+        "returncode": [rc1, rc2],
+        "want_fail": True,
+        "found_expected_string": both_named,
+        "passed": passed,
+        "output_tail": f"no-keep-workdir survival={surv1}\n" + "\n".join(out1.splitlines()[-6:]) + f"\nkeep-workdir survival={surv2}\n" + "\n".join(out2.splitlines()[-6:]),
+    })
+
+
+
 def c33_leg_f_label_mismatch():
     src = copy_repo(SCRATCH / "c33f_src")
     prefix = copy_prefix(SCRATCH / "c33f_prefix")
@@ -562,15 +644,23 @@ def c33_leg_f_label_mismatch():
 
 def c33_leg_h_final_cleanup_preserves_user_files(pin_tool: Path, lock_path_template: Path):
     """TE-71 Q-1 (Critical). The final-cleanup rmtree site -- distinct from
-    C33(g)'s pre-clone guard (N-11's own site; this one is the site P-4
-    touched and Q-1 found broken). A real --reuse-clone run against a
-    --workdir that ALREADY holds a file this tool did not create, sitting
-    directly in workdir (not under workdir/build or workdir/src) -- the
-    exact shape a person pointing --workdir at a directory of their own
-    would produce. The tool must delete only what it made this run
-    (workdir/build; workdir/src is never created on the --reuse-clone path
-    at all) and leave the caller's file and workdir itself standing.
-    Requires a real engine clone+configure+build+install, like C33(e)."""
+    C33(g)'s pre-clone guard (N-11's own site) and C33(i)'s
+    configure_engine site (R-1's own site, TE-73). A real --reuse-clone run
+    against a --workdir that ALREADY holds a file this tool did not
+    create, sitting directly in workdir (not under workdir/build or
+    workdir/src) -- the exact shape a person pointing --workdir at a
+    directory of their own would produce. The tool must delete only what
+    it made this run and leave the caller's file and workdir itself
+    standing.
+
+    TE-73, per the round's own item 5: `build_removed=True` below asserts
+    OWNERSHIP-SCOPED removal, not an unconditional "the directory is gone"
+    -- this leg's own construction starts workdir/build ABSENT, so
+    configure_engine creates it fresh and _own()s it in the same run that
+    later removes it via _remove_owned(); nothing about this leg's outcome
+    depends on workdir/build having pre-existed, which is the exact
+    scenario C33(i) covers instead and this leg does not. Requires a real
+    engine clone+configure+build+install, like C33(e)."""
     clone_dir = SCRATCH / "c33h_clone"
     rmtree(clone_dir)
     tag = None
@@ -1222,6 +1312,7 @@ def main() -> int:
     _run_leg(c33_leg_e3_deleted_manifest_field, pin_tool, REPO_ROOT / "superslm.lock")
     _run_leg(c33_leg_g_unowned_workdir_refused, pin_tool, REPO_ROOT / "superslm.lock")
     _run_leg(c33_leg_h_final_cleanup_preserves_user_files, pin_tool, REPO_ROOT / "superslm.lock")
+    _run_leg(c33_leg_i_preexisting_build_survives, pin_tool, REPO_ROOT / "superslm.lock")
     _run_leg(c33_leg_f_label_mismatch)
 
     _run_leg(c34_leg_a_cache_override)
