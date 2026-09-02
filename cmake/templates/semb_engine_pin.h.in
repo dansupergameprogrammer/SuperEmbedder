@@ -5,3 +5,10 @@
 #define SEMB_ENGINE_PIN_TAG "@SEMB_LOCK_TAG@"
 #define SEMB_ENGINE_PIN_COMMIT "@SEMB_LOCK_COMMIT@"
 #define SEMB_ENGINE_PIN_TREE_SHA "@SEMB_LOCK_TREE@"
+
+// TE-79 F-11 (TE-76 review): sec 4.3's engine_path_sha -- a content digest
+// of the one selected interim-adapter TU's own committed bytes -- used to
+// be computed and message(STATUS)-printed at configure and reach no
+// generated header, target, or manifest. It now reaches this one, the
+// same generated artifact the other three pin fields already reach.
+#define SEMB_ENGINE_PATH_SHA "@SEMB_ENGINE_PATH_SHA@"
