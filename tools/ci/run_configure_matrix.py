@@ -104,6 +104,29 @@ def record(leg: str, expected: str, rc: int, output: str, want_fail: bool = True
     RESULTS.append(entry)
 
 
+def record_infra_failure(leg: str, expected: str, rc: int, reason: str, output: str) -> None:
+    """TE-65 F-6: a leg's OWN baseline setup (a configure or build that is
+    supposed to succeed before the real construction is applied) failing is
+    not a pass under any reading -- the leg never reached its construction,
+    so nothing about `expected` was exercised. The prior code called
+    record(..., rc=0, want_fail=False) here, which hardcoded a fabricated
+    zero return code regardless of the real (nonzero) one, so
+    passed_shape = (0 == 0) was always true and the leg silently read as
+    green. This records the REAL rc and an explicit, unconditional
+    passed=False, distinguishable in the report from both a normal pass and
+    a normal (want_fail) refusal."""
+    RESULTS.append({
+        "leg": leg,
+        "expected": expected,
+        "returncode": rc,
+        "want_fail": None,
+        "found_expected_string": False,
+        "passed": False,
+        "infra_failure": reason,
+        "output_tail": "\n".join(output.splitlines()[-15:]),
+    })
+
+
 def edit_lock_field(lock_path: Path, field: str, value: str) -> None:
     lines = lock_path.read_text(encoding="utf-8").splitlines()
     out = []
@@ -271,8 +294,8 @@ def c34_leg_c_engine_path_changed():
     build = SCRATCH / "c34c_build"
     rc1, out1 = run_cmake_configure(src, build, prefix1)
     if rc1 != 0:
-        record("C34(c) SEMB_ENGINE_PATH changed", "SEMB_ENGINE_PATH_CHANGED", 0,
-               "baseline configure (against prefix1) unexpectedly failed:\n" + out1, want_fail=False)
+        record_infra_failure("C34(c) SEMB_ENGINE_PATH changed", "SEMB_ENGINE_PATH_CHANGED", rc1,
+                              "baseline configure (against prefix1) unexpectedly failed", out1)
         return
     # Re-configure the SAME build dir against a different-path (but content-
     # identical) prefix. superslm_DIR is cached by the first find_package()
@@ -291,13 +314,14 @@ def c34_leg_d_source_added_after_digest(ninja: str):
     build = SCRATCH / "c34d_build"
     rc1, out1 = run_cmake_configure(src, build, ENGINE_PREFIX)
     if rc1 != 0:
-        record("C34(d) source added after digest computed", "SEMB_SOURCE_SET_DRIFT", 0,
-               "baseline configure unexpectedly failed:\n" + out1, want_fail=False)
+        record_infra_failure("C34(d) source added after digest computed", "SEMB_SOURCE_SET_DRIFT", rc1,
+                              "baseline configure unexpectedly failed", out1)
         return
     build_proc = subprocess.run([CMAKE, "--build", str(build)], capture_output=True, text=True)
     if build_proc.returncode != 0:
-        record("C34(d) source added after digest computed", "SEMB_SOURCE_SET_DRIFT", 0,
-               "baseline build unexpectedly failed:\n" + build_proc.stdout + build_proc.stderr, want_fail=False)
+        record_infra_failure("C34(d) source added after digest computed", "SEMB_SOURCE_SET_DRIFT",
+                              build_proc.returncode, "baseline build unexpectedly failed",
+                              build_proc.stdout + build_proc.stderr)
         return
 
     # Add a new header a FRESH configure's preprocessor pass would resolve,
