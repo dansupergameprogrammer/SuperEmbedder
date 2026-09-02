@@ -2,9 +2,25 @@
 // sec 4.4's named edge sets crossed with the full legal parameter range
 // (`Claude/Plans/SuperEmbedder_Plan.md` sec 4.4b), calling the library's
 // own semb_wa_pool_run (ps1_pool.cpp) over the population and folding
-// every case's inputs, status, and (on SEMB_OK) emitted bits into one
+// every case's PARAMETER TUPLE (hidden, n, spread, ebase, the m-edge
+// rotation index), status, and (on SEMB_OK) emitted bits into one
 // SHA-256 -- the engine's own portable routine (superslm/sha256.h), sec
 // 4.4b's own "one hash function, not two."
+//
+// TE-79 F-23 (Observation, TE-76 review) -- CORRECTED CLAIM, was "every
+// case's inputs": the actual `codes`/`m`/`e` arrays built per case are
+// NOT digested, only the five scalars that parameterise their
+// construction plus the outcome. For the 1,029 refused cases only the
+// status STRING is digested (per sec 4.4's own "every refusal's STATUS
+// digested"), so a change to the construction (the code-edge placement,
+// the m-rotation, the e-alternation) that leaves every case's status
+// unchanged is invisible to this digest -- it would still move the
+// oracle's own w_a_population.py comparison (tests/, outside this seat's
+// scope), but not this witness component. The population is transcribed
+// independently in two places (this file and w_a_population.py) with
+// nothing comparing them at the construction level; both were read
+// side by side this round and agree (crossing order, m rotation, e
+// alternation, code-edge placement, the shared splitmix64 stream).
 //
 // THE POPULATION IS SEC 4.4'S OWN PROSE, TRANSCRIBED DIRECTLY -- not
 // derived from any test file or oracle: "hidden in {1,2,7,64}, n in
@@ -25,6 +41,20 @@
 // SAME population through THIS project's own corrected epilogue
 // (semb_wa_pool_run, which does carry both corner refusals).
 #include "superembedder/witness_abi.h"
+//
+// TE-79 F-9 (Significant, TE-76 review) -- QUARANTINE NOTICE
+// (StandardsDocument.md sec 5.4: "an instrument is commissioned before
+// its verdicts are load-bearing -- and never by its own maker"). W-A's
+// digest is a DECIDING instrument (it decides, via witness_sha, whether
+// C36(b)'s epilogue-edit construction is caught) and this file -- AND
+// both constructions shown to move it (C36(b)'s kExpBias mutant,
+// C36(a)'s engine-side perturbation, D-SLM6072/D-SLM6075) -- were
+// authored by the same seat (TE-78/TE-79's own builder). Its readings
+// are QUARANTINED: recorded, exercised, and real, but not yet
+// independently commissioned. The commissioning constructions (a
+// must-accept and a must-reject, producible by this verb's own real
+// data path) are owed to a seat independent of this one -- routed to the
+// coverage auditor's rung, per this round's own brief.
 
 #include <cstdint>
 #include <cstring>
