@@ -1,0 +1,77 @@
+name: ci
+
+# TE-61 (U0 slice A): pin the engine, configure, build, and run the
+# negative-configure matrix (C33's seven legs, C34's five legs, C14's
+# flag-strip proof) on three OSes. Deliberately excludes eval/k1/tests
+# (TE-43: those cells fail rather than skip on a GPU-less runner).
+#
+# AUTHORED AND VALIDATED AS FAR AS A LOCAL RUN ALLOWS — this workflow has not
+# been executed by GitHub Actions as of this commit (the build seat that
+# wrote it never pushes). Every step it runs was executed locally on Windows
+# during the same session that authored it; the ubuntu/macos legs are the
+# identical steps run through cross-platform-portable tools (Ninja via
+# seanmiddleditch/gha-setup-ninja, system GCC/Clang/AppleClang) and have not
+# themselves been executed anywhere. The three-OS green this workflow would
+# produce is recorded as authored, not executed, and lands when this is
+# pushed.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up MSVC dev environment (Windows only)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up Ninja
+        uses: seanmiddleditch/gha-setup-ninja@master
+
+      - name: Pin the SuperSLM engine
+        shell: bash
+        run: |
+          python tools/pin-superslm/pin_superslm.py \
+            --lock superslm.lock \
+            --prefix build/_engine_install \
+            --cmake cmake \
+            --ninja ninja \
+            --generator Ninja
+
+      - name: Configure SuperEmbedder
+        shell: bash
+        run: |
+          cmake -G Ninja -S . -B build/semb \
+            -DCMAKE_PREFIX_PATH="$(pwd)/build/_engine_install"
+
+      - name: Build
+        shell: bash
+        run: cmake --build build/semb
+
+      - name: Run the smoke CLI
+        shell: bash
+        run: |
+          if [ -f build/semb/semb.exe ]; then
+            build/semb/semb.exe
+          else
+            build/semb/semb
+          fi
+
+      - name: Run the negative-configure / build-flag matrix (C33, C34, C14)
+        shell: bash
+        run: ctest --test-dir build/semb --output-on-failure
