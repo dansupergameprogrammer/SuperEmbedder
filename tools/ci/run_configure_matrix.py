@@ -199,10 +199,29 @@ def _run_leg(fn, *args, **kwargs) -> None:
     recorded as an infra failure (passed=False, the real exception type,
     message and traceback in output_tail) and the matrix continues to the
     next leg, rather than the whole run terminating in a bare traceback
-    with no leg table at all."""
+    with no leg table at all.
+
+    TE-73 O-1: this used to catch `Exception`, which does NOT include
+    `SystemExit` -- and `SystemExit` is how BOTH tools this matrix drives
+    report every one of their own errors (pin_superslm.py's own `run()`
+    and every SEMB_PIN_* guard; tools/semb_source_hash.py's own
+    preprocess-failure raises). Latent, not live, at the time it was found
+    (the only in-process call into that code path, C33(e2)'s
+    git_clean_check, passes check=False on both its own subprocess.run
+    calls, so nothing in the suite could actually trigger it) -- but a leg
+    written to call pin_superslm's own functions in-process, the way
+    C33(e2) already does for one of them, would silently escape this
+    wrapper entirely on any SEMB_PIN_* refusal. Catches `BaseException`
+    now, with `KeyboardInterrupt` (and `SystemExit` raised with no message,
+    which this codebase never does but a future caller might) re-raised
+    rather than swallowed -- a real interrupt or a deliberate top-level
+    exit must still stop the run; only the "this leg's own construction
+    failed" class is caught and recorded."""
     try:
         fn(*args, **kwargs)
-    except Exception as exc:
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:
         record_infra_failure(f"<leg raised an unhandled exception> {fn.__name__}",
                               "<no exception -- the leg was expected to run its own construction>",
                               1, f"{type(exc).__name__}: {exc}", traceback.format_exc())
@@ -631,7 +650,6 @@ def c33_leg_i_preexisting_build_survives(pin_tool: Path, lock_path_template: Pat
         "passed": passed,
         "output_tail": f"no-keep-workdir survival={surv1}\n" + "\n".join(out1.splitlines()[-6:]) + f"\nkeep-workdir survival={surv2}\n" + "\n".join(out2.splitlines()[-6:]),
     })
-
 
 
 def c33_leg_f_label_mismatch():
