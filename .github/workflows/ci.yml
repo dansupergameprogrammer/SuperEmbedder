@@ -1,8 +1,9 @@
 name: ci
 
 # TE-61 (U0 slice A): pin the engine, configure, build, and run the
-# negative-configure matrix (C33's seven legs, C34's five legs, C14's
-# flag-strip proof) on three OSes. Deliberately excludes eval/k1/tests
+# negative-configure matrix (C33's provenance legs, C34's source-provenance
+# legs, and C14's build-configuration legs) on three OSes. Deliberately
+# excludes eval/k1/tests
 # (TE-43: those cells fail rather than skip on a GPU-less runner).
 #
 # AUTHORED AND VALIDATED AS FAR AS A LOCAL RUN ALLOWS — this workflow has not

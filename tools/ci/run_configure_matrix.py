@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """tools/ci/run_configure_matrix.py — the negative-configure test matrix for
-§8 C33 (engine provenance integrity, 7 legs), C34 (SuperEmbedder-side
-provenance, legs a/b/c/d/f), and C14's build-configuration assertion (the
-flag-strip proof). One positive configure is also run and must succeed.
+§8 C33 (engine provenance integrity), C34 (SuperEmbedder-side provenance,
+legs a/b/c/d/f), and C14's build-configuration assertion (multiple legs,
+each one construction the assertion must catch). One positive configure is
+also run and must succeed.
 
 Every leg is a REAL `cmake -S ... -B ...` invocation against a deliberately
 constructed source/prefix variant; nothing here asserts a string, it drives
@@ -292,9 +293,17 @@ def c33_leg_e_dirty_clone(pin_tool: Path, lock_path_template: Path):
     ]
     pin_proc = subprocess.run(pin_cmd, capture_output=True, text=True, cwd=src)
     if pin_proc.returncode != 0:
-        record("C33(e) dirty-clone install", "SEMB_ENGINE_INSTALL_DIVERGED", 1,
-               "pin tool itself failed unexpectedly:\n" + pin_proc.stdout + pin_proc.stderr,
-               extra={"pin_tool_rc": pin_proc.returncode})
+        # TE-67 N-10: the third infra-failure-shaped early return F-6 missed
+        # -- fabricated rc=1 regardless of the pin tool's real exit code,
+        # and used record()'s default want_fail=True instead of
+        # record_infra_failure(). It happened to read red only because
+        # want_fail=True ALSO requires the expected string to appear, which
+        # a genuine pin-tool failure's own error text is unlikely to
+        # contain by coincidence -- the shape F-6 named (a baseline failure
+        # is not a pass) was intact here, just not yet triggered by luck.
+        record_infra_failure("C33(e) dirty-clone install", "SEMB_ENGINE_INSTALL_DIVERGED",
+                              pin_proc.returncode, "pin tool itself failed unexpectedly",
+                              pin_proc.stdout + pin_proc.stderr)
         return
     rc, out = run_cmake_configure(src, SCRATCH / "c33e_build", prefix)
     record("C33(e) dirty-clone install", "SEMB_ENGINE_INSTALL_DIVERGED", rc, out)
@@ -360,9 +369,9 @@ def c33_leg_e2_added_file_no_edit(pin_tool: Path, lock_path_template: Path):
     ]
     pin_proc = subprocess.run(pin_cmd, capture_output=True, text=True, cwd=src)
     if pin_proc.returncode != 0:
-        record("C33(e2) added-file no-edit install", "SEMB_ENGINE_INSTALL_DIVERGED", 1,
-               "pin tool itself failed unexpectedly:\n" + pin_proc.stdout + pin_proc.stderr,
-               extra={"pin_tool_rc": pin_proc.returncode})
+        record_infra_failure("C33(e2) added-file no-edit install", "SEMB_ENGINE_INSTALL_DIVERGED",
+                              pin_proc.returncode, "pin tool itself failed unexpectedly",
+                              pin_proc.stdout + pin_proc.stderr)
         return
     # The lock the tool wrote already agrees with this dirty install's own
     # tree (pin_superslm.py always writes both together); configuring the

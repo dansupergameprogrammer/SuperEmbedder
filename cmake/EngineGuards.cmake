@@ -181,8 +181,24 @@ endif()
 #     git's own tag content is a dirty install, refused here regardless of
 #     what provenance.json's own `clean`/`dirty_paths` fields (still written
 #     for diagnostics) claim.
+#
+#     TE-67 N-13: a read ERROR on this key used to be treated as "nothing to
+#     check" (the `if` guarding the refusal never entered), while the
+#     adjacent recomputed_engine_tree_sha read three lines below already
+#     treated its own read error as FATAL. Two checks reading the SAME JSON
+#     object handled a missing key oppositely -- a gate whose presence
+#     depends on which key happens to be readable is F-2's own class,
+#     restored here. A read error now refuses by the same rule an honest
+#     zero-length list does not: absence of evidence is not evidence of
+#     cleanliness.
 string(JSON _semb_dirty_member_count ERROR_VARIABLE _semb_dm_err LENGTH "${_semb_verify_json}" "dirty_members")
-if(NOT _semb_dm_err AND _semb_dirty_member_count GREATER 0)
+if(_semb_dm_err)
+	message(FATAL_ERROR "SEMB_ENGINE_INSTALL_DIVERGED: could not read 'dirty_members' from "
+		"verify_provenance.py's own output (${_semb_dm_err}). A key this configure depends on to "
+		"decide whether the install is clean is missing or malformed; refused rather than treated "
+		"as nothing to check. Output: ${_semb_verify_json}")
+endif()
+if(_semb_dirty_member_count GREATER 0)
 	string(JSON _semb_dirty_member_0 GET "${_semb_verify_json}" "dirty_members" 0)
 	message(FATAL_ERROR "SEMB_ENGINE_INSTALL_DIVERGED: ${_semb_dirty_member_count} compiled-closure "
 		"member(s) currently on disk under ${SEMB_ENGINE_PREFIX} disagree with what tag "

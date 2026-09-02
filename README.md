@@ -22,10 +22,11 @@ The three are developed as separate, linked repositories.
 
 ## Build
 
-Requires CMake >= 3.21, a C++20 compiler, Python 3, and Ninja (the CMake
-consumption surface needs the Ninja generator for the provenance
-re-verification steps below to run; other generators still configure and
-build, with those checks skipped and a warning printed).
+Requires CMake >= 3.21, a C++20 compiler, Python 3, and Ninja. The Ninja
+generator is a hard requirement, not merely a recommendation: configure
+refuses (`SEMB_SOURCE_DRIFT_CHECK_UNAVAILABLE`) on any other generator or
+when no `ninja` executable is resolvable, rather than silently building
+without the provenance re-verification steps below.
 
 ```sh
 # 1. Pin and install the engine this checkout builds against. superslm.lock's

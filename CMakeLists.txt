@@ -59,8 +59,9 @@ target_include_directories(semb PRIVATE "${CMAKE_BINARY_DIR}/generated")
 semb_assert_precise_fp()
 
 # ---------------------------------------------------------------------------
-# Tests: the negative-configure matrix (C33's seven legs, C34's five legs,
-# C14's flag-strip proof) and the positive-configure smoke.
+# Tests: the negative-configure matrix (C33's provenance legs, C34's
+# source-provenance legs, and C14's build-configuration legs) and the
+# positive-configure smoke.
 # ---------------------------------------------------------------------------
 enable_testing()
 add_test(
