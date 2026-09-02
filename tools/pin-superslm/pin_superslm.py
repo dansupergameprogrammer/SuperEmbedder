@@ -215,6 +215,31 @@ def ninja_query(build: Path, ninja: str, target: str) -> str:
 
 def ninja_deps(build: Path, ninja: str, obj: str) -> list[str]:
     proc = run([ninja, "-t", "deps", obj], cwd=build, capture=True, check=False)
+    # TE-65 F-14: this used to be swallowed (check=False, no inspection of
+    # the result at all) -- a missing or stale deps database silently reads
+    # as "this object has no headers", indistinguishable from a genuine
+    # header-free translation unit, which would narrow engine_tree_sha to
+    # the source files alone with no error anywhere. Two distinct failure
+    # shapes were found by execution and both are checked: an unknown
+    # target exits nonzero ("ninja: error: unknown target ..."); a present-
+    # but-undeps'd target (reproduced by deleting .ninja_deps and re-
+    # querying a real, previously-built object) exits ZERO and prints
+    # "<obj>: deps not found" instead of the normal "#deps N, deps mtime
+    # ... (VALID)" header -- a return-code check alone does not catch this
+    # second shape, so the output is inspected too.
+    if proc.returncode != 0:
+        raise SystemExit(
+            f"SEMB_ENGINE_DEPS_UNAVAILABLE: 'ninja -t deps {obj}' exited {proc.returncode} in {build}; "
+            f"the dependency database the engine's compile closure is derived from is missing or "
+            f"stale. stdout:\n{proc.stdout}"
+        )
+    if "deps not found" in proc.stdout:
+        raise SystemExit(
+            f"SEMB_ENGINE_DEPS_UNAVAILABLE: 'ninja -t deps {obj}' in {build} reports 'deps not "
+            f"found' (exit 0) -- the object exists but carries no recorded dependency entry, "
+            f"typically a missing or deleted .ninja_deps. Rebuild from clean rather than trusting "
+            f"an empty header list."
+        )
     headers = []
     for line in proc.stdout.splitlines():
         line = line.rstrip("\n")

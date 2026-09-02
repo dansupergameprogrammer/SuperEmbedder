@@ -206,15 +206,28 @@ def _parse_query_inputs(text: str) -> list[str]:
 
 def _ninja_deps(build: Path, ninja: str, obj: str) -> list[str]:
     proc = subprocess.run([ninja, "-t", "deps", obj], cwd=build, capture_output=True, text=True)
+    # F-14 (TE-65): a missing/broken deps database must not be read as
+    # "zero headers" -- that reading is indistinguishable from a genuinely
+    # header-free translation unit and would silently narrow
+    # semb_source_sha to the source files alone. Two failure shapes,
+    # confirmed by execution against the twin engine-side function
+    # (tools/pin-superslm/pin_superslm.py's ninja_deps): an unknown target
+    # exits nonzero; a present-but-undeps'd target (e.g. a deleted
+    # .ninja_deps) exits ZERO and prints "<obj>: deps not found" instead of
+    # the normal "#deps N, ..." header -- a return-code check alone misses
+    # this second shape.
     if proc.returncode != 0:
-        # F-14 (TE-65): a missing/broken deps database must not be read as
-        # "zero headers" -- that reading is indistinguishable from a
-        # genuinely header-free translation unit and would silently narrow
-        # engine_tree_sha to the source files alone. Fail loudly instead.
         raise SystemExit(
             f"SEMB_SOURCE_DEPS_UNAVAILABLE: 'ninja -t deps {obj}' exited {proc.returncode}; "
             f"the dependency database this closure is derived from is missing or stale. "
             f"stderr:\n{proc.stderr}"
+        )
+    if "deps not found" in proc.stdout:
+        raise SystemExit(
+            f"SEMB_SOURCE_DEPS_UNAVAILABLE: 'ninja -t deps {obj}' reports 'deps not found' (exit "
+            f"0) -- the object exists but carries no recorded dependency entry, typically a "
+            f"missing or deleted .ninja_deps. Rebuild from clean rather than trusting an empty "
+            f"header list."
         )
     headers = []
     for line in proc.stdout.splitlines():
