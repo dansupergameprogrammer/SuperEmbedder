@@ -472,6 +472,51 @@ def c33_leg_e3_deleted_manifest_field(pin_tool: Path, lock_path_template: Path):
     record("C33(e3) deleted manifest field", "SEMB_ENGINE_INSTALL_DIVERGED", rc, out)
 
 
+def c33_leg_g_unowned_workdir_refused(pin_tool: Path, lock_path_template: Path):
+    """TE-69 P-3, a permanent leg for N-11's own (pre-clone) construction --
+    distinct from P-4's leg (e2/e3's --reuse-clone path never creates
+    workdir/src at all). Here workdir/src pre-exists with a file the tool
+    did not create and carries no ".git" marker; clone_engine() must refuse
+    to wipe it (SEMB_PIN_UNSAFE_WORKDIR) before it ever calls `git clone`,
+    and the caller's file must still be there afterward. No network access:
+    the refusal fires at clone_engine()'s own first check, before the `git
+    clone` subprocess is built."""
+    workdir = SCRATCH / "c33g_workdir"
+    rmtree(workdir)
+    (workdir / "src").mkdir(parents=True)
+    keepme = workdir / "src" / "keepme.txt"
+    keepme.write_text("N-11: not this tool's own clone\n", encoding="utf-8")
+
+    lock = SCRATCH / "c33g_lock" / "superslm.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(lock_path_template.read_text(encoding="utf-8"), encoding="utf-8")
+    prefix = SCRATCH / "c33g_prefix"
+    rmtree(prefix)
+
+    pin_cmd = [
+        PYEXE, str(pin_tool),
+        "--lock", str(lock),
+        "--prefix", str(prefix),
+        "--workdir", str(workdir),
+        "--cmake", CMAKE,
+        "--ninja", NINJA,
+        "--generator", GENERATOR,
+    ]
+    pin_proc = subprocess.run(pin_cmd, capture_output=True, text=True)
+    out = pin_proc.stdout + pin_proc.stderr
+    survived = keepme.exists() and keepme.read_text(encoding="utf-8").startswith("N-11")
+    passed = pin_proc.returncode != 0 and "SEMB_PIN_UNSAFE_WORKDIR" in out and survived
+    RESULTS.append({
+        "leg": "C33(g) unowned --workdir/src refused before clone (N-11)",
+        "expected": "SEMB_PIN_UNSAFE_WORKDIR",
+        "returncode": pin_proc.returncode,
+        "want_fail": True,
+        "found_expected_string": "SEMB_PIN_UNSAFE_WORKDIR" in out,
+        "passed": passed,
+        "output_tail": "\n".join(out.splitlines()[-10:]) + f"\nkeepme_survived={survived}",
+    })
+
+
 def c33_leg_f_label_mismatch():
     src = copy_repo(SCRATCH / "c33f_src")
     prefix = copy_prefix(SCRATCH / "c33f_prefix")
@@ -947,6 +992,7 @@ def main() -> int:
     c33_leg_e_dirty_clone(pin_tool, REPO_ROOT / "superslm.lock")
     c33_leg_e2_added_file_no_edit(pin_tool, REPO_ROOT / "superslm.lock")
     c33_leg_e3_deleted_manifest_field(pin_tool, REPO_ROOT / "superslm.lock")
+    c33_leg_g_unowned_workdir_refused(pin_tool, REPO_ROOT / "superslm.lock")
     c33_leg_f_label_mismatch()
 
     c34_leg_a_cache_override()
