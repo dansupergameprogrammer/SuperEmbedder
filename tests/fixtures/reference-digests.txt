@@ -10,21 +10,30 @@
 # forbids a field computed from a description of an input, which a
 # transcribed digest would be here).
 #
-# COMMISSIONED, TE-63, 2026-09-02. `semb_encode_document_for_witness` +
-# `semb_seam_serialize_document` (src/superembedder/engine_adapter_interim.cpp,
+# COMMISSIONED, TE-63, 2026-09-02; RECOMPOSED, TE-78, 2026-09-02.
+# `semb_encode_document_for_witness` + `semb_seam_serialize_document`
+# (src/superembedder/engine_adapter_interim.cpp,
 # src/superembedder/seam_serialize.cpp) ran against the regenerated
 # synthetic artifact `build/_scratch/synthetic_te62_c39.sslm` (pinned tag
 # v1.3.0, `tests/fixtures/regenerate_synthetic_artifact.py`'s own output),
 # on `tests/c39_seam_digest_test.cpp`'s own committed 5-token document
 # (kTokenIds = {3, 17, 42, 5, 90}) at chunk_budget=0 (one whole-document
-# call). The seam digest is SHA-256 over `semb_seam_serialize_document`'s
-# own output bytes (superslm/sha256.h, the engine's own portable routine),
-# via `semb_witness --model build/_scratch/synthetic_te62_c39.sslm
-# --tokens 3,17,42,5,90 --chunk-budget 0`, run TWICE as two independent
-# process invocations — both runs produced this exact digest, byte for
-# byte.
+# call).
 #
-# Line format: "<artifact-fingerprint>  <seam-digest-hex>"
+# TE-78: the value below is no longer W-B's own seam digest alone -- it is
+# the FULL COMPOSED `witness_sha` sec 4.4b specifies (SHA-256 over W-A's
+# digest || W-B's digest || W-Q's placeholder digest; D-SLM6072,
+# D-SLM6073). `semb_wa_digest` (src/superembedder/wa_digest.cpp) is now
+# wired into the witness, so the anchor moved from TE-63's
+# `994b433e418082340ee6dcb460fcba458dbf67e10b4fad9d2cccc78c1f0564cd`
+# (W-B only) to the value below -- an expected move under sec 4.4b's own
+# composition, not a regression. Via `semb_witness --model
+# build/_scratch/synthetic_te62_c39.sslm --tokens 3,17,42,5,90
+# --chunk-budget 0`, run TWICE as two independent process invocations --
+# both runs produced this exact digest, byte for byte, reproduced again
+# under Clang (this seat's own build log).
+#
+# Line format: "<artifact-fingerprint>  <witness_sha-hex>"
 # artifact-fingerprint: SHA-256 of the regenerated .sslm file's own bytes
 # (independently computed via Python hashlib against the file on disk,
 # not read from any field this build emits) — the same value
@@ -32,4 +41,4 @@
 # --verify-determinism run and this seat's own hashlib check both agree
 # on for the pinned tag's hermetic regeneration.
 
-a8f88ab9e82f220bf5fdffa68d4fac4cf248d0158a4ae9dc557eeedd51df8097  994b433e418082340ee6dcb460fcba458dbf67e10b4fad9d2cccc78c1f0564cd
+a8f88ab9e82f220bf5fdffa68d4fac4cf248d0158a4ae9dc557eeedd51df8097  6ba6be802d35eb08bec63e9812f83a9b14cfe8ca9c9367b848661416ea221610
