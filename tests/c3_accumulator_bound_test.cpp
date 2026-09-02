@@ -140,6 +140,24 @@ void CheckPosition0IsInertToAlignment() {
 // NOT refuse with that status AT the bound itself -- the same
 // at-the-bound / one-past-the-bound pair CheckBoundIsRefusedByName
 // already uses for the spread check, above.
+//
+// TE-83 (TE-81 review N-11, Observation): COST, ACKNOWLEDGED. The
+// at-the-bound case (e_min = kSembWaPoolMaxAbsEMin, ~10^6) forces the
+// accumulator's own big-integer path to shift and divide a
+// one-million-bit BigUInt; executed (TE-81 review sec 6), this moved the
+// whole suite from 0.03s to 11.82s (MSVC) / 18.50s (Clang) -- correct and
+// deliberate (the bound must be exercised at its own real magnitude, not
+// a smaller stand-in that would leave the true boundary unchecked), and
+// worth noting because sec 8's C13 multiplies it across four CI
+// toolchains. `hidden = 1` here is ALREADY the cheapest mitigation
+// available from this seat's own writable scope: every array below scales
+// with `hidden`, and this cell already uses the smallest value that still
+// exercises a real accumulation (hidden=0 would pool nothing). A smaller
+// bound than kSembWaPoolMaxAbsEMin itself would buy speed but stop
+// proving the boundary this cell exists to prove; kSembWaPoolMaxAbsEMin
+// is defined in product code (src/**), outside this seat's scope to
+// change. Recorded so a future round with product-side scope can weigh
+// a smaller bound against this cost with the number in hand.
 void CheckEMinDomainIsRefused() {
   const int8_t codes[3] = {0, 5, 5};
   const int64_t m[3] = {1 << 30, 1 << 30, 1 << 30};
