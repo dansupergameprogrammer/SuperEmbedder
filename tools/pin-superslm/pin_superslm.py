@@ -46,7 +46,16 @@ USAGE
   python tools/pin-superslm/pin_superslm.py \\
       --lock superslm.lock --prefix build/_engine_install [--source <path-or-url>] \\
       [--workdir build/_engine_src] [--cmake <path>] [--ninja <path>] [--generator Ninja] \\
-      [--keep-workdir]
+      [--keep-workdir] [--fresh-build]
+
+  --fresh-build: authorize wiping a PRE-EXISTING --workdir/build this run did not
+      create (TE-73 R-1 / TE-75 S-4). Without it, a non-empty leftover build
+      directory refuses by name (SEMB_PIN_UNSAFE_BUILD_DIR) rather than being
+      silently deleted -- the ordinary way this directory is left behind is an
+      earlier run raising before it reached its own cleanup step (an interrupted
+      run, a failed engine build, a refused dirty clone), not misuse; pass this
+      flag to reclaim it, or point --workdir at an empty or different directory
+      if the leftover was not this tool's own.
 
 Exit codes: 0 success; 1 usage/environment error; 2 clone/build/install failure.
 """
@@ -306,6 +315,29 @@ def _assert_safe_to_wipe(path: Path, markers: tuple[str, ...], what: str, error_
     if resolved.exists():
         has_marker = any((resolved / m).exists() for m in markers)
         if not has_marker and any(resolved.iterdir()):
+            # TE-75 S-4: markers=() (configure_engine's own call, for
+            # --workdir/build -- no legitimate marker exists for "an old
+            # CMake build directory" the way ".git" or
+            # "share/superslm-provenance" do for the other two callers)
+            # used to fall into the marker-list message below, which named
+            # an EMPTY parenthetical and prescribed "one this tool already
+            # owns" -- unreachable advice, since markers=() means no marker
+            # can ever qualify. This is also not a misuse path: every
+            # SEMB_PIN_* refusal in this tool raises SystemExit before the
+            # cleanup block runs, so an interrupted run, a failed engine
+            # build, or the dirty-clone refusal all leave workdir/build
+            # populated, and the NEXT default run -- which would have
+            # succeeded before this guard existed -- meets this message.
+            if not markers:
+                raise SystemExit(
+                    f"{error_code}: refusing to wipe {what} at {resolved} — it already exists "
+                    f"and is non-empty. This is most often this tool's own leftover build state "
+                    f"from an earlier run that did not reach its own cleanup step (an interrupted "
+                    f"run, a failed engine build, or a refused dirty clone all raise before that "
+                    f"point) rather than misuse -- pass --fresh-build to authorize wiping it, or "
+                    f"point --workdir at an empty or different directory if this was not this "
+                    f"tool's own output."
+                )
             raise SystemExit(
                 f"{error_code}: refusing to wipe {what} at {resolved} — it already exists, is "
                 f"non-empty, and carries none of this tool's own markers ({', '.join(markers)}). "
@@ -733,8 +765,6 @@ def main() -> int:
         _remove_owned(build)
         if created_src_this_run:
             _remove_owned(workdir / "src")
-
-    return 0
 
     return 0
 
