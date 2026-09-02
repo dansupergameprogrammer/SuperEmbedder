@@ -80,6 +80,22 @@ void RunCase(const char* label, const std::vector<std::vector<int8_t>>& codes,
     ++g_failures;
     return;
   }
+  // TE-80 (TE-76 review F-21, Minor): the poison tail (0xEE beyond
+  // expected.size()) was filled but never CHECKED -- a serialiser
+  // writing past its own reported length was invisible to the memcmp
+  // below, which only ever inspected expected.size() bytes. Checked
+  // here, before the byte-layout comparison, so an out-of-bounds write
+  // is caught by name rather than by accident (e.g. ASan) elsewhere.
+  for (size_t i = expected.size(); i < product_buf.size(); ++i) {
+    if (product_buf[i] != 0xEE) {
+      std::fprintf(stderr, "W-B [%s] FAIL: byte %zu beyond the reported length (%zu) was "
+                            "overwritten (0x%02x, expected untouched poison 0xEE) -- the "
+                            "serialiser wrote past product_len.\n",
+                   label, i, expected.size(), product_buf[i]);
+      ++g_failures;
+      return;
+    }
+  }
   if (std::memcmp(product_buf.data(), expected.data(), expected.size()) != 0) {
     std::fprintf(stderr, "W-B [%s] FAIL: byte layout diverges from sec 4.4b's own spec\n", label);
     ++g_failures;

@@ -109,5 +109,33 @@ int main() {
 
   std::printf("w_a_pool_population_test: %zu cases (%zu ok / %zu refused expected), %zu mismatch(es)\n",
              total, ok_count, refused_count, mismatches);
-  return mismatches == 0 ? 0 : 1;
+
+  // TE-80 (TE-76 review F-10, Significant): the prior version gated only
+  // on `mismatches == 0` -- an oracle emitting `{"cases": []}` (a silent
+  // population collapse on the --emit-cases path) would print
+  // "0 cases ... 0 mismatch(es)" and PASS, even though this cell's whole
+  // subject is the 2,592-case population sec 4.4 pins. `total` is now
+  // asserted against that pinned size directly, and `ok_count`/
+  // `refused_count` against w_a_population.py's own executed split
+  // (1,563/1,029 -- Claude/Curie/te62-u0b-red-suite-2026-09-02.md sec4.1's
+  // routed finding, not the withdrawn probe's 1,968/624) so a change to
+  // the oracle's own construction that preserves the total but silently
+  // shifts the split is caught too, not only a collapse to zero.
+  constexpr size_t kExpectedTotal = 2592;
+  constexpr size_t kExpectedOk = 1563;
+  constexpr size_t kExpectedRefused = 1029;
+  bool population_ok = true;
+  if (total != kExpectedTotal) {
+    std::fprintf(stderr, "w_a_pool_population_test FAIL: %zu cases emitted, expected %zu -- the "
+                          "population itself collapsed or grew; this cell's own mismatch count "
+                          "is meaningless over the wrong population.\n", total, kExpectedTotal);
+    population_ok = false;
+  }
+  if (ok_count != kExpectedOk || refused_count != kExpectedRefused) {
+    std::fprintf(stderr, "w_a_pool_population_test FAIL: split %zu ok / %zu refused, expected "
+                          "%zu ok / %zu refused (the oracle's own executed reading).\n", ok_count,
+                         refused_count, kExpectedOk, kExpectedRefused);
+    population_ok = false;
+  }
+  return (mismatches == 0 && population_ok) ? 0 : 1;
 }

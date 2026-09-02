@@ -47,6 +47,7 @@
 // five-budget comparison is trusted.
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -56,13 +57,23 @@
 
 namespace {
 
+std::string EngineSourceArg() {
+  // TE-80 F-19: no hardcoded local path in committed test source -- an
+  // optional override for this seat's own local runs, defaulting to
+  // regenerate_synthetic_artifact.py's own DEFAULT_REMOTE (a public URL
+  // reachable from any of sec 8 C13's four CI toolchains) when unset.
+  const char* env = std::getenv("SEMB_TEST_ENGINE_SOURCE");
+  if (env && *env) return std::string(" --source \"") + env + "\"";
+  return "";
+}
+
 std::string EnsureSyntheticArtifact() {
   const std::string path = "build/_scratch/synthetic_te62_c40.sslm";
   std::ifstream probe(path, std::ios::binary);
   if (probe.good()) return path;
   const std::string cmd = semb_test::PythonExecutable() +
                            " tests/fixtures/regenerate_synthetic_artifact.py --lock "
-                           "superslm.lock --out " + path + " --source \"D:\\SuperSLM\"";
+                           "superslm.lock --out " + path + EngineSourceArg();
   semb_test::RunCaptureStdout(cmd);
   return path;
 }
@@ -130,6 +141,12 @@ int main() {
     return 1;
   }
 
+  // TE-80: this cell's own n=64 run, at budget=64 (one whole-document
+  // call), is also the exact buffer-size boundary TE-76 review F-8
+  // named (witness_main.cpp's prior `n*hidden+4096` allocation ran out
+  // above n=255; TE-79 sized it exactly instead) -- no separate cell is
+  // owed for F-8; this run already covers the corrected formula at the
+  // fixture's own ceiling.
   // TE-77 repair: n shrinks to the fixture's own context_cap (64); the
   // budget mapping is stated in full in this file's own header comment.
   const size_t n = 64;

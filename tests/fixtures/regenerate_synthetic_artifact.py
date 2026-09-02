@@ -123,16 +123,31 @@ def main(argv: list) -> int:
         return 2
 
     if args.verify_determinism:
-        out_path2 = out_path.with_suffix(out_path.suffix + ".verify")
-        data2 = generate(clone / "tools", out_path2)
+        # TE-80 (TE-76 review F-12, Significant): the prior version called
+        # generate() a SECOND TIME IN THIS SAME PROCESS -- every module was
+        # already imported, and per-process state (PYTHONHASHSEED, set/dict
+        # iteration order, interned module globals) is fixed for the life of
+        # a process, which is exactly the dominant nondeterminism class for a
+        # Python artifact generator and exactly what an in-process second call
+        # cannot see. This now spawns a GENUINELY SEPARATE process -- a fresh
+        # `python this_script.py` invocation, its own interpreter, its own
+        # clone, its own workdir -- and compares the file it writes to disk,
+        # never a value passed back in memory.
+        out_path2 = out_path.with_suffix(out_path.suffix + '.verify')
+        workdir2 = workdir.parent / (workdir.name + '_verify2')
+        verify_cmd = [sys.executable, str(Path(__file__).resolve()),
+                      '--lock', args.lock, '--out', str(out_path2),
+                      '--source', args.source, '--workdir', str(workdir2)]
+        subprocess.run(verify_cmd, check=True)
+        data2 = out_path2.read_bytes()
         h1, h2 = hashlib.sha256(data1).hexdigest(), hashlib.sha256(data2).hexdigest()
         out_path2.unlink(missing_ok=True)
         if h1 != h2:
-            print(f"SEMB_FIXTURE_NOT_DETERMINISTIC: {h1} != {h2} across two runs of the same "
-                  f"pinned generator.", file=sys.stderr)
+            print(f'SEMB_FIXTURE_NOT_DETERMINISTIC: {h1} != {h2} across two independent '
+                  f'process invocations of the same pinned generator.', file=sys.stderr)
             rmtree(workdir)
             return 3
-        print(f"determinism verified: two independent runs both hash to {h1}")
+        print(f'determinism verified: two independent PROCESSES both hash to {h1}')
 
     rmtree(workdir)
     return 0

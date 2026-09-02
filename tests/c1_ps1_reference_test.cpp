@@ -203,7 +203,7 @@ Case OverflowCorner() {
   c.hidden = 1;
   c.n = 3;
   c.codes = {{0}, {127}, {127}};
-  c.m = {1 << 30, (1 << 31) - 1, (1 << 31) - 1};
+  c.m = {1 << 30, (int64_t{1} << 31) - 1, (int64_t{1} << 31) - 1};
   c.e = {0, 100, 100};  // spread 0 (both pooled positions share e=100) -- no accumulator-bound refusal
   return c;
 }
@@ -227,7 +227,7 @@ Case DocumentArmOrdinary() {
       {50, -50, 100},
       {-100, 30, -30},
   };
-  c.m = {1 << 30, (1 << 30) + 7, (1 << 31) - 100, ((1 << 30) + (1 << 29)), (1 << 30) + 3};
+  c.m = {1 << 30, (1 << 30) + 7, (int64_t{1} << 31) - 100, ((1 << 30) + (1 << 29)), (1 << 30) + 3};
   // e_min = -33, spread 3: positions alternate -33 / -30, matching the
   // measured regime's own reading (sec 3.2's own "3 bits on every leg").
   c.e = {-33, -33, -30, -33, -30};

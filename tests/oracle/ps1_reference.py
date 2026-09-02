@@ -292,16 +292,22 @@ def _selftest() -> int:
         expect_status = SEMB_OK
         check(f"dyadic {val}", val, expect_status, expect)
 
-    # A genuine ties-to-even case: 2^23 + 0.5 in units of 2^-1 at exponent
-    # 23 -- i.e. the value (2^24 + 1) * 2^-1 = 8388608.5, representable
-    # exactly as a Fraction, NOT exactly as a float32 (24-bit significand
-    # cap at exponent 23 caps integers at 2^24). The even mantissa
-    # (8388608, LSB 0) is even; ties-to-even keeps it there.
-    tie_down = Fraction(2 * 8388608 + 1, 2)  # 8388608.5, exponent E=23 (2^23<=v<2^24)
-    check("tie-to-even (down)", tie_down, SEMB_OK, 0x4B000000)  # 8388608.0
-    # And a case that should round UP to the next even mantissa:
-    tie_up = Fraction(2 * 8388610 + 1, 2)  # 8388610.5
-    check("tie-to-even (up)", tie_up, SEMB_OK, 0x4B000002)  # 8388610.0 -> rounds toward even 8388610? verify below
+    # Two genuine ties-to-even cases, each verified independently via
+    # struct.pack('<f', float(x)) on the exact half-integer value (float()
+    # is exact here; no double-rounding). 8388608.5's neighbours are
+    # 8388608 (even) and 8388609 (odd) -- ties-to-even rounds DOWN, to the
+    # even neighbour. 8388609.5's neighbours are 8388609 (odd) and 8388610
+    # (even) -- ties-to-even rounds UP, to the even neighbour. (The prior
+    # version's second case, 8388610.5, ALSO rounds down to its own even
+    # neighbour 8388610 and was mislabelled '(up)' -- both of the prior
+    # cases exercised the round-DOWN branch of the tie rule; no case here
+    # exercised round-UP until this correction. TE-76 review F-16.)
+    tie_round_down = Fraction(2 * 8388608 + 1, 2)  # 8388608.5
+    check("tie-to-even (rounds down, to even neighbour 8388608)", tie_round_down, SEMB_OK,
+          0x4B000000)  # 8388608.0
+    tie_round_up = Fraction(2 * 8388609 + 1, 2)  # 8388609.5
+    check("tie-to-even (rounds up, to even neighbour 8388610)", tie_round_up, SEMB_OK,
+          0x4B000002)  # 8388610.0 -- independently confirmed via struct.pack
 
     # Smallest normal, exactly: 2^-126.
     check("smallest normal", Fraction(1, 2 ** 126), SEMB_OK, 0x00800000)
