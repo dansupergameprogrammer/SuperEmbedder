@@ -128,10 +128,67 @@ bool SelfTestMismatchDetectionCanFail() {
   return true;
 }
 
+
+// TE-83 (N-2): the boundary TE-76 review F-8 actually named -- n=256,
+// where the OLD formula (`n*hidden+4096`) falls 16 bytes short of
+// `seam_serialize.cpp`'s own real requirement (`16 + n*(hidden+16)`).
+// This fixture's own context_cap=64 cannot reach n=256 through a real
+// encode call, so this check drives `semb_seam_serialize_document`
+// directly on SYNTHETIC codes/m/e -- the same construction
+// `w_b_serialization_test.cpp` already uses for byte-layout checks,
+// applied here to the ALLOCATION boundary instead. MUST-REJECT: the
+// old formula's own buffer size must be reported too small. MUST-
+// ACCEPT: the query-derived size (the same pattern now used in the
+// real per-budget loop above) must succeed.
+bool CheckBufferSizingAtOverflowBoundary() {
+  const size_t n = 256;
+  const size_t hidden = 32;  // the real fixture's own hidden_size (F-13)
+  std::vector<int8_t> codes(n * hidden, 0x11);
+  std::vector<int64_t> m(n, 1 << 30), e(n, -20);
+
+  // MUST-REJECT: the OLD formula, shown red.
+  const size_t old_formula_size = n * hidden + 4096;
+  std::vector<uint8_t> old_buf(old_formula_size);
+  size_t old_len = 0;
+  const SembSerializeStatus old_st = semb_seam_serialize_document(
+      codes.data(), m.data(), e.data(), n, hidden, old_buf.data(), old_buf.size(), &old_len);
+  if (old_st != kSembSerializeBufferTooSmall) {
+    std::fprintf(stderr, "C40 FAIL: the OLD formula (n*hidden+4096=%zu) did NOT report "
+                          "kSembSerializeBufferTooSmall at n=256 (status=%d, out_len=%zu) -- "
+                          "the boundary this check exists to prove is not where expected.\n",
+                 old_formula_size, static_cast<int>(old_st), old_len);
+    return false;
+  }
+  const size_t real_needed = 16 + n * (hidden + 16);
+  if (old_len != real_needed) {
+    std::fprintf(stderr, "C40 FAIL: the query's own reported required size (%zu) does not "
+                          "match seam_serialize.cpp's own formula (%zu) -- the two have "
+                          "drifted apart.\n", old_len, real_needed);
+    return false;
+  }
+
+  // MUST-ACCEPT: the query-derived size, sized exactly.
+  std::vector<uint8_t> real_buf(old_len);
+  size_t real_len = 0;
+  const SembSerializeStatus real_st = semb_seam_serialize_document(
+      codes.data(), m.data(), e.data(), n, hidden, real_buf.data(), real_buf.size(),
+      &real_len);
+  if (real_st != kSembSerializeOk) {
+    std::fprintf(stderr, "C40 FAIL: the query-derived buffer size (%zu bytes) did NOT "
+                          "succeed at n=256 (status=%d) -- the fix itself is broken.\n",
+                 old_len, static_cast<int>(real_st));
+    return false;
+  }
+  std::printf("C40: buffer-sizing boundary check passed -- old formula (%zu bytes) refused "
+              "kSembSerializeBufferTooSmall at n=256 (needed %zu), query-derived sizing "
+              "succeeds.\n", old_formula_size, real_needed);
+  return true;
+}
 }  // namespace
 
 int main() {
   if (!SelfTestMismatchDetectionCanFail()) return 1;
+  if (!CheckBufferSizingAtOverflowBoundary()) return 1;
 
   std::string artifact_path;
   try {
@@ -141,12 +198,25 @@ int main() {
     return 1;
   }
 
-  // TE-80: this cell's own n=64 run, at budget=64 (one whole-document
-  // call), is also the exact buffer-size boundary TE-76 review F-8
-  // named (witness_main.cpp's prior `n*hidden+4096` allocation ran out
-  // above n=255; TE-79 sized it exactly instead) -- no separate cell is
-  // owed for F-8; this run already covers the corrected formula at the
-  // fixture's own ceiling.
+  // TE-83 (TE-81 review N-2, Significant): this cell's OWN buffer
+  // allocation, below, previously used `n * hidden_out + 4096` --
+  // VERBATIM the heuristic TE-76 review F-8 condemned (16 bytes short
+  // at n=256) -- while a comment here and D-SLM6088 item 4 falsely
+  // claimed this run "already covers the corrected formula." It does
+  // not: the correction (`16 + n*(hidden+16)`, seam_serialize.cpp:25)
+  // lives in witness_main.cpp and c39_seam_digest_test.cpp; this file
+  // never used it. Fixed below by querying the ABI's own required
+  // size (semb_seam_serialize_document's own documented contract: a
+  // call with an undersized buffer reports the exact byte count
+  // needed via *out_len, before touching out_buf at all) rather than
+  // re-transcribing the formula a third time. CheckBufferSizingAt
+  // OverflowBoundary(), below, exercises n=256 -- the boundary F-8
+  // actually named, which this fixture's own context_cap=64 cannot
+  // reach through a real encode call -- against synthetic codes/m/e,
+  // the same construction w_b_serialization_test.cpp already uses,
+  // proving the OLD formula fails there (shown red) and the QUERY-
+  // based sizing succeeds. D-SLM6088 item 4 is superseded by a new
+  // decision entry, not edited.
   // TE-77 repair: n shrinks to the fixture's own context_cap (64); the
   // budget mapping is stated in full in this file's own header comment.
   const size_t n = 64;
@@ -166,7 +236,22 @@ int main() {
                    static_cast<int>(st));
       return 1;
     }
-    std::vector<uint8_t> buf(n * hidden_out + 4096);
+    // TE-83 (N-2): sized by the ABI's own required-size query --
+    // call once with no buffer to learn the exact byte count via
+    // *out_len (semb_seam_serialize_document's own documented
+    // contract: kSembSerializeBufferTooSmall reports the size
+    // needed before touching out_buf at all), then allocate exactly
+    // that. Never a re-transcription of the formula.
+    size_t required_len = 0;
+    const SembSerializeStatus query_st = semb_seam_serialize_document(
+        codes.data(), m.data(), e.data(), n, hidden_out, nullptr, 0, &required_len);
+    if (query_st != kSembSerializeBufferTooSmall) {
+      std::fprintf(stderr, "C40: budget=%zu the required-size query did not report "
+                            "kSembSerializeBufferTooSmall (status=%d) -- the query contract "
+                            "itself did not hold.\n", budget, static_cast<int>(query_st));
+      return 1;
+    }
+    std::vector<uint8_t> buf(required_len);
     size_t len = 0;
     const SembSerializeStatus sst = semb_seam_serialize_document(
         codes.data(), m.data(), e.data(), n, hidden_out, buf.data(), buf.size(), &len);
