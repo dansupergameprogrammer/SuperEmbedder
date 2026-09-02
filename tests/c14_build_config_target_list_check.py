@@ -114,6 +114,17 @@ def run_fresh_configure(build_dir: Path) -> str:
 
 
 def main(argv: list) -> int:
+    # TE-83 (TE-81 review N-6, Minor): the USAGE line below documented
+    # [--build-dir <scratch build dir>] while this function never read
+    # argv at all -- a document claiming what the code does not deliver
+    # (StandardsDocument.md sec 5.6). Implemented for real: an explicit
+    # --build-dir overrides the scratch directory the fresh configure
+    # below runs into; omitted, it defaults to the same path as before.
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--build-dir", default=None)
+    args = ap.parse_args(argv)
+
     # Commissioning: the defective (pre-F-4) list must be REJECTED.
     defective_line = extract_target_list_line(DEFECTIVE_LIST_LINE)
     if not defective_line:
@@ -129,7 +140,8 @@ def main(argv: list) -> int:
           "semb_witness]) is correctly rejected -- proceeding to the real configure.")
 
     # The real thing: a fresh configure of the real tree, graded for real.
-    build_dir = REPO_ROOT / "build" / "_scratch" / "c14_target_list_check"
+    build_dir = (Path(args.build_dir) if args.build_dir else
+                 REPO_ROOT / "build" / "_scratch" / "c14_target_list_check")
     try:
         output = run_fresh_configure(build_dir)
     except Exception as ex:  # noqa: BLE001
