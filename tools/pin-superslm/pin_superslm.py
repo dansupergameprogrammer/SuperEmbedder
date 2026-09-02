@@ -357,10 +357,26 @@ _EXCLUDED_INSTALL_SUFFIXES = {".lib", ".a", ".so", ".dylib", ".dll", ".exe", ".o
 # mechanism (write_basic_package_version_file) and bakes CMAKE_SIZEOF_VOID_P
 # in as a literal (read at source: "8" on this 64-bit build) -- the same
 # class F-7 named for the Targets files, not fully swept there. Inert across
-# this project's own three 64-bit CI runners, excluded anyway so the
-# exclusion covers the CLASS ("generated CMake files embedding a
-# platform-specific value") rather than only the two members that happened
-# to be checked by hand.
+# this project's own three 64-bit CI runners, excluded anyway.
+#
+# TE-69 P-10: this is a MEMBER LIST, not a class exclusion, and is named as
+# one -- the exact shape F-7's own finding was about. There is a THIRD
+# generated CMake file in the install: superslmConfig.cmake. Read at
+# source, it is deliberately NOT excluded and does not belong in this list:
+# its @PACKAGE_INIT@ block (CMakePackageConfigHelpers) resolves the install
+# prefix RELATIVELY from its own location
+# (get_filename_component(_IMPORT_PREFIX "${CMAKE_CURRENT_LIST_FILE}" PATH)
+# chained three times), carrying no absolute path, no toolchain name and no
+# platform-specific literal -- it is genuinely portable, checked at every
+# repin by being left in engine_tree_sha rather than assumed. Excluding it
+# would trade one covering check (the digest) for none, and this project's
+# own C33(d) legs already double as the version guard's coverage of the
+# sibling file this trade would apply to (see the two doctored-
+# superslmConfigVersion.cmake legs) -- a trade worth STATING, not implying.
+# The pattern below names exactly the two files that need it, not "every
+# generated CMake file": a fourth one, if SuperSLM ever adds it, is a new
+# member to evaluate on its own merits, not something this regex covers by
+# accident.
 _EXCLUDED_INSTALL_NAME_RE = re.compile(r"^superslmTargets(-[A-Za-z0-9_]+)?\.cmake$|^superslmConfigVersion\.cmake$")
 
 

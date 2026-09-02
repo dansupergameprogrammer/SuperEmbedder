@@ -41,19 +41,27 @@ function(semb_compute_source_provenance target)
 		endif()
 	endforeach()
 
-	# Leg (c): SEMB_ENGINE_PATH is recorded on first configure and is an input
-	# to semb_source_sha (it identifies which engine install the library was
-	# hashed against). Changing it on a LATER configure of the same build
-	# directory without a clean reconfigure would leave a stale digest
-	# standing for a new engine path — refused rather than silently accepted.
+	# Leg (c): SEMB_ENGINE_PATH is recorded on first configure. TE-69 P-9
+	# (the comment corrected; the check's own behavior was already right):
+	# TE-65 F-8 deliberately made SEMB_ENGINE_PATH NOT an input to
+	# semb_source_sha, so the digest is path-invariant like engine_tree_sha
+	# is (tools/semb_source_hash.py's own comment already states this in the
+	# same tree this file lives in) -- this comment kept saying the opposite
+	# of what the code two files over does. This check's own reason to exist
+	# is independent of the digest: SEMB_ENGINE_PATH_RECORDED tracks which
+	# engine install a build directory was LAST configured against, and a
+	# later reconfigure resolving a DIFFERENT engine path in the same build
+	# directory is refused because reusing incremental build state across an
+	# engine change is not something this project has verified is safe, not
+	# because the digest itself would go stale.
 	if(DEFINED CACHE{SEMB_ENGINE_PATH_RECORDED} AND NOT "${SEMB_ENGINE_PREFIX}" STREQUAL "${SEMB_ENGINE_PATH_RECORDED}")
 		message(FATAL_ERROR "SEMB_ENGINE_PATH_CHANGED: this build directory recorded engine path "
 			"'${SEMB_ENGINE_PATH_RECORDED}' on an earlier configure; this configure resolves "
-			"'${SEMB_ENGINE_PREFIX}' instead. semb_source_sha was computed against the recorded path — "
-			"remove the build directory and reconfigure from clean rather than changing the engine "
-			"path in place.")
+			"'${SEMB_ENGINE_PREFIX}' instead. Reusing this build directory's incremental state across "
+			"an engine-path change is unverified — remove the build directory and reconfigure from "
+			"clean rather than changing the engine path in place.")
 	endif()
-	set(SEMB_ENGINE_PATH_RECORDED "${SEMB_ENGINE_PREFIX}" CACHE INTERNAL "engine path semb_source_sha was last computed against")
+	set(SEMB_ENGINE_PATH_RECORDED "${SEMB_ENGINE_PREFIX}" CACHE INTERNAL "engine path this build directory was last configured against")
 
 	set(_sidecar "${CMAKE_CURRENT_BINARY_DIR}/generated/semb_source_provenance.json")
 	get_filename_component(_out_header_dir "${ARG_OUT_HEADER}" DIRECTORY)
