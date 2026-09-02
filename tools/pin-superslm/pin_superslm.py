@@ -82,8 +82,73 @@ def _rmtree_onerror(func, path, exc_info):
     func(path)
 
 
-def rmtree(path: Path) -> None:
-    shutil.rmtree(path, onerror=_rmtree_onerror)
+# TE-73: R-1 was configure_engine's own bare rmtree(build) -- an unguarded
+# THIRD delete idiom in a file that already had two ("rmtree()" the local
+# helper, and a raw "shutil.rmtree(..., ignore_errors=True)" at final
+# cleanup, R-2's own bug). Three consecutive rounds each guarded the ONE
+# site a reviewer had just named and left a sibling site, written with a
+# different idiom, untouched -- the class StandardsDocument.md Sec4 names:
+# a rule enforced by a person remembering every call site is a rule that
+# has already failed. This module now has exactly ONE function permitted
+# to call a real deletion primitive anywhere in it --
+# tests/pin_superslm_delete_ast_check.py asserts this by walking the
+# module's own AST, not by grep, so a renamed import cannot dodge it.
+_OWNED_PATHS: set[Path] = set()
+
+
+def _own(path: Path) -> None:
+    """Record that this run created `path`, or was explicitly authorized
+    (by an existing-marker check that already ran, or by an explicit CLI
+    override like --fresh-build) to treat it as its own. The ONLY way a
+    path becomes eligible for _remove_owned() -- called at the moment
+    ownership is established, in the caller's own code, never inferred
+    afterward from what merely exists on disk. Every caller below is
+    responsible for its own judgment about what counts as "this run's";
+    this function only records the answer, and _remove_owned only reads
+    it."""
+    _OWNED_PATHS.add(path.resolve())
+
+
+def _remove_owned(path: Path) -> None:
+    """TE-73: the ONE function in this module permitted to call a real
+    deletion primitive. Refuses unless `path` was explicitly recorded via
+    _own() first -- no marker, no heuristic, no "own_this_run" bypass
+    parameter (TE-69 P-4's own shape, which TE-71 Q-1 found had been aimed
+    at the wrong path and TE-73's R-1 found had a sibling site with no
+    guard at all): ownership is now established once, explicitly, by the
+    caller, before this function ever runs, and this function's only job
+    is to check the ledger and then delete correctly.
+
+    TE-71 R-2, closed here rather than reintroduced: `shutil.rmtree(path,
+    onerror=_rmtree_onerror, ignore_errors=True)` silently does nothing to
+    a read-only file -- CPython's shutil.rmtree installs a no-op `onexc`
+    when `ignore_errors` is true and never consults `onerror` at all (read
+    at source, CPython 3.13.6), which is exactly what let 11+ MB of git's
+    own read-only pack files survive a "successful" cleanup. This function
+    never passes ignore_errors; onerror alone -- the correct idiom the
+    module's own retired `rmtree()` helper already used -- runs every
+    time, for the reason that helper's own docstring gave: clearing the
+    read-only bit and retrying once is the standard fix for a git checkout
+    on Windows. A delete through here either removes everything or raises;
+    it never reports success while leaving bytes behind."""
+    resolved = path.resolve()
+    if len(resolved.parts) <= 2:
+        raise SystemExit(
+            f"SEMB_PIN_REFUSES_TO_DELETE_UNOWNED: refusing to delete {resolved} — too close "
+            f"to a filesystem root to safely wipe, regardless of ownership."
+        )
+    if resolved not in _OWNED_PATHS:
+        raise SystemExit(
+            f"SEMB_PIN_REFUSES_TO_DELETE_UNOWNED: refusing to delete {resolved} — this run "
+            f"did not record creating it. Only a path this run itself created, or was explicitly "
+            f"authorized to treat as its own, can be removed."
+        )
+    if not resolved.exists():
+        return
+    if resolved.is_dir():
+        shutil.rmtree(resolved, onerror=_rmtree_onerror)
+    else:
+        resolved.unlink()
 
 
 def run(cmd, cwd=None, check=True, capture=False, env=None):
@@ -142,10 +207,15 @@ def clone_engine(source: str, tag: str, workdir: Path) -> Path:
         # --prefix guard could only run after all three had already
         # completed. Marker is ".git" -- a prior run's own clone -- rather
         # than the provenance marker, which does not apply to a scratch
-        # clone directory.
+        # clone directory. TE-73: judging (is this safe to claim) and
+        # deleting are now two separate steps -- _assert_safe_to_wipe only
+        # judges; _own() records the verdict; _remove_owned() is the one
+        # function in this module that deletes.
         _assert_safe_to_wipe(dest, markers=(".git",), what="--workdir/src", error_code="SEMB_PIN_UNSAFE_WORKDIR")
-        rmtree(dest)
+        _own(dest)
+        _remove_owned(dest)
     workdir.mkdir(parents=True, exist_ok=True)
+    _own(dest)  # this run is about to create it fresh via git clone, below
     run([
         "git", "clone",
         "-c", "core.autocrlf=false",
@@ -162,10 +232,34 @@ def resolve_commit(clone: Path, tag: str) -> str:
     return proc.stdout.strip().splitlines()[-1].strip()
 
 
-def configure_engine(clone: Path, build: Path, cmake: str, ninja: str, generator: str) -> None:
+def configure_engine(clone: Path, build: Path, cmake: str, ninja: str, generator: str,
+                      fresh_build: bool = False) -> None:
+    # TE-73 R-1 (Critical): this used to be a bare `if build.exists():
+    # rmtree(build)` -- no guard, no marker check, no depth check, the ONE
+    # of the tool's three deletion sites its own N-11 comment enumerated
+    # that neither F-11, N-11, P-4 nor TE-71's Q-1 ever reached, because
+    # each of those rounds guarded the site a reviewer had just named
+    # (clone_engine's dest, the final cleanup) and this one sat ten lines
+    # away, untouched, through all of them. A pre-existing build/ is no
+    # longer assumed to be this run's just because this run is about to
+    # configure into it: refused by name unless the caller passes
+    # --fresh-build, matching the design's own refuse-by-default posture
+    # for every other unowned path (SEMB_PIN_UNSAFE_WORKDIR,
+    # SEMB_PIN_UNSAFE_PREFIX). markers=() means _assert_safe_to_wipe's
+    # marker branch can never pass here -- there is no legitimate marker
+    # for "an old CMake build directory", unlike a git clone (".git") or a
+    # prior install ("share/superslm-provenance") -- so a NON-EMPTY
+    # pre-existing build/ is always refused without --fresh-build; an
+    # EMPTY one (e.g. left by an interrupted prior run) passes through,
+    # since there is nothing in it to lose.
     if build.exists():
-        rmtree(build)
+        if not fresh_build:
+            _assert_safe_to_wipe(build, markers=(), what="--workdir/build",
+                                  error_code="SEMB_PIN_UNSAFE_BUILD_DIR")
+        _own(build)
+        _remove_owned(build)
     build.mkdir(parents=True, exist_ok=True)
+    _own(build)  # this run just created it (or was explicitly authorized to replace it)
     cmd = [
         cmake, "-G", generator,
         "-S", str(clone), "-B", str(build),
@@ -181,12 +275,19 @@ def build_engine_library(build: Path, cmake: str, target: str = "superslm") -> N
     run([cmake, "--build", str(build), "--target", target])
 
 
-def _assert_safe_to_wipe(path: Path, markers: tuple[str, ...], what: str, error_code: str = "SEMB_PIN_UNSAFE_PREFIX", own_this_run: bool = False) -> None:
-    """Guards every recursive delete this tool performs on a user-supplied
-    path. TE-65 F-11 added this for --prefix; TE-67 N-11 generalizes it and
-    applies it to --workdir too, which had the identical unguarded rmtree
-    shape one level earlier in the pipeline (clone_engine() deletes
-    workdir/src before the clone, configure or build even start).
+def _assert_safe_to_wipe(path: Path, markers: tuple[str, ...], what: str, error_code: str = "SEMB_PIN_UNSAFE_PREFIX") -> None:
+    """Judges whether `path` is safe to claim as this run's own -- raises if
+    not, returns silently if so. TE-65 F-11 added this for --prefix; TE-67
+    N-11 generalized it to --workdir. TE-73: this function no longer
+    deletes anything itself (it never did, but used to be paired one-to-one
+    with an adjacent rmtree call at each site, which is what let R-1's
+    sibling site go unguarded -- a fourth call site simply never got a
+    pairing). It is now purely a judgment: raise, or don't. The caller
+    decides what "safe" means for its own site by the `markers` it passes
+    (empty markers = never safe on a non-empty path, configure_engine's own
+    choice for --workdir/build), calls _own() on a pass, and
+    _remove_owned() does the actual deletion -- the one function in this
+    module permitted to.
 
     (1) A path resolving to two or fewer components (a drive root, or one
         level below it, e.g. a home directory) is refused outright,
@@ -194,16 +295,7 @@ def _assert_safe_to_wipe(path: Path, markers: tuple[str, ...], what: str, error_
     (2) An EXISTING, non-empty path carrying none of `markers` (each a
         relative path checked for existence under `path`) is refused,
         because this tool did not create it and has no basis for deciding
-        it is safe to erase -- UNLESS `own_this_run` is True, meaning the
-        caller has independent, in-process proof that THIS run already
-        used `path` successfully (TE-69 P-4: --reuse-clone skips
-        clone_engine() entirely, so workdir/src -- the marker's own
-        assumed shape -- is never created; only workdir/build is, and only
-        by this same process, in this same run. The marker heuristic
-        cannot see that, and reaching the final cleanup at all already
-        proves it more directly than any marker could -- every earlier
-        step that could have failed already returned nonzero and exited
-        before this point)."""
+        it is safe to erase."""
     resolved = path.resolve()
     if len(resolved.parts) <= 2:
         raise SystemExit(
@@ -211,7 +303,7 @@ def _assert_safe_to_wipe(path: Path, markers: tuple[str, ...], what: str, error_
             f"root to safely wipe and recreate. Pass a path at least two directories deep (e.g. "
             f"build/_engine_install, not C:\\ or a home directory)."
         )
-    if resolved.exists() and not own_this_run:
+    if resolved.exists():
         has_marker = any((resolved / m).exists() for m in markers)
         if not has_marker and any(resolved.iterdir()):
             raise SystemExit(
@@ -224,8 +316,16 @@ def _assert_safe_to_wipe(path: Path, markers: tuple[str, ...], what: str, error_
 def install_engine(build: Path, cmake: str, prefix: Path) -> None:
     _assert_safe_to_wipe(prefix, markers=("share/superslm-provenance",), what="--prefix")
     if prefix.exists():
-        rmtree(prefix)
+        # TE-73: same split as clone_engine's -- _assert_safe_to_wipe above
+        # already judged this prefix safe to claim (empty, or carrying this
+        # tool's own marker from a prior successful install, which is the
+        # normal re-pin lifecycle this tool exists to support); _own() +
+        # _remove_owned() do the actual deletion, through the one function
+        # in the module allowed to.
+        _own(prefix)
+        _remove_owned(prefix)
     prefix.mkdir(parents=True, exist_ok=True)
+    _own(prefix)  # this run just created it (or reclaimed it, per the marker check above)
     run([cmake, "--install", str(build), "--prefix", str(prefix)])
 
 
@@ -465,6 +565,12 @@ def main() -> int:
     ap.add_argument("--ninja", default="ninja")
     ap.add_argument("--generator", default="Ninja")
     ap.add_argument("--keep-workdir", action="store_true")
+    ap.add_argument("--fresh-build", action="store_true",
+                     help="TE-73 R-1: authorize wiping a PRE-EXISTING --workdir/build directory this "
+                          "run did not create. Without it, configure_engine refuses by name "
+                          "(SEMB_PIN_UNSAFE_BUILD_DIR) rather than deleting a build directory it does "
+                          "not own -- point --workdir at an empty or different directory instead if "
+                          "you did not mean to reuse an old one.")
     ap.add_argument("--reuse-clone", default=None, type=Path,
                      help="skip the clone step and use this existing checkout directly (test-only: "
                           "used to build C33 leg (e) from a clone that already carries an uncommitted "
@@ -494,7 +600,7 @@ def main() -> int:
     log(f"resolved commit: {commit}")
 
     build = workdir / "build"
-    configure_engine(clone, build, args.cmake, args.ninja, args.generator)
+    configure_engine(clone, build, args.cmake, args.ninja, args.generator, fresh_build=args.fresh_build)
     build_engine_library(build, args.cmake)
 
     prefix = args.prefix.resolve()
@@ -604,34 +710,22 @@ def main() -> int:
     log(f"updated {args.lock}")
 
     if not args.keep_workdir:
-        # TE-71 Q-1 (Critical, corrects TE-69 P-4): the marker-based guard
-        # from the pre-clone site does not apply here unchanged, but the
-        # prior fix answered that by disabling the ONLY guard between a
-        # caller-supplied --workdir and shutil.rmtree, then wiping the
-        # whole directory -- including whatever the caller had already put
-        # there. Reaching this line proves this run's OWN steps succeeded;
-        # it proves nothing about what existed in `workdir` before this run
-        # started, which is the only question a wipe of `workdir` itself
-        # asks. The rule for every rmtree in this tool: delete only what
-        # this run created, by name, never the directory that held it.
-        # This run always creates workdir/build (configure_engine and
-        # build_engine_library both write into it, on every path). It
-        # creates workdir/src only when clone_engine() ran this run --
-        # --reuse-clone points `clone` at a caller-owned checkout, inside
-        # `workdir` or not, and workdir/src is never touched either way.
-        # own_this_run=True is correct HERE because ownership is now
-        # established structurally (this run's own control flow), not by
-        # the marker heuristic reading the directory after the fact --
-        # applied to the two specific by-name paths this run made, never
-        # to `workdir` as a whole. `workdir` itself is left standing.
-        _assert_safe_to_wipe(build, markers=(), what="--workdir/build",
-                              error_code="SEMB_PIN_UNSAFE_WORKDIR", own_this_run=True)
-        shutil.rmtree(build, onerror=_rmtree_onerror, ignore_errors=True)
+        # TE-73: build and (when this run created it) src are both already
+        # recorded in _OWNED_PATHS by configure_engine() and clone_engine()
+        # respectively, at the moment each was created or explicitly
+        # reclaimed (--fresh-build). _remove_owned() is the one function
+        # permitted to delete anything in this module, and it re-checks the
+        # ledger itself -- nothing here re-derives "is this safe" from the
+        # directory's own contents, which is what let TE-71's own
+        # own_this_run=True bypass and the class it was patching over both
+        # exist in the first place. `workdir` itself is never passed to
+        # _remove_owned -- it was never recorded as owned, and is left
+        # standing regardless of what it held before this run started.
+        _remove_owned(build)
         if created_src_this_run:
-            src = workdir / "src"
-            _assert_safe_to_wipe(src, markers=(), what="--workdir/src",
-                                  error_code="SEMB_PIN_UNSAFE_WORKDIR", own_this_run=True)
-            shutil.rmtree(src, onerror=_rmtree_onerror, ignore_errors=True)
+            _remove_owned(workdir / "src")
+
+    return 0
 
     return 0
 
