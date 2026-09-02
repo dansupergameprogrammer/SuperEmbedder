@@ -1,0 +1,28 @@
+# tests/fixtures/reference-digests.txt -- TE-62 (U0 slice B): C39's anchor.
+#
+# One value per (artifact, corpus), computed by the SHIPPED encoder's own
+# timed call, in the same process, at whole-document chunk budget --
+# never a value this seat (Curie) fabricates or transcribes from the
+# fold-4 probe's own reference-digests.txt (which was measured against a
+# DIFFERENT engine pin, v1.2.0, and PS-1's pre-fold-11 seam shape -- read
+# as an anchor's SHAPE and provenance discipline, never copied as a value:
+# `Claude/Plans/SuperEmbedder_Plan.md` sec 3.3's own producer-identity rule
+# forbids a field computed from a description of an input, which a
+# transcribed digest would be here).
+#
+# THIS FILE IS PENDING. `semb_encode_document_for_witness`
+# (tests/semb_seam_abi_contract.h) does not exist until TE-63 lands the
+# encoder TU; there is no encoder to run to COMPUTE this anchor, and per
+# StandardsDocument sec 5.4 ("every numeric claim carries an execution...
+# or is marked explicitly underived"), a placeholder digest here would be
+# indistinguishable from a real one to a future reader. The commissioning
+# event that fills this in is named in
+# `Claude/Curie/te62-u0b-red-suite-2026-09-02.md`'s handoff: once TE-63's
+# encoder links, run it once against `tests/fixtures/regenerate_synthetic_
+# artifact.py`'s output, record the digest here under the line format
+# below, and `tests/c39_seam_digest_test.cpp` starts comparing against a
+# real value instead of refusing to link.
+#
+# Line format (once populated): "<artifact-fingerprint>  <seam-digest-hex>"
+#
+# PENDING -- no entry yet.
