@@ -90,9 +90,20 @@ def main() -> int:
             continue
         content = actual.read_bytes()
         members.append((root, relpath, content))
-        expected = m.get("tag_content_sha256")
-        if root == "compiled" and expected is not None:
-            if hashlib.sha256(content).hexdigest() != expected:
+        if root == "compiled":
+            # TE-67 N-1: a missing KEY (a hand-deleted manifest field) and a
+            # null VALUE (a file the clone added that the tag has no
+            # content for) are now the SAME refusal, not two different
+            # readings -- "cannot be verified against the tag" is the
+            # condition, and both shapes produce it. The prior code's
+            # `expected is not None` treated a missing/null field as
+            # nothing to check, which a hand-edit could produce by deleting
+            # one JSON key, and which an ordinary uncommitted new file
+            # produced with no edit at all (git_clean_check never recorded
+            # a tag_content_sha256 for a path the tag doesn't have).
+            if "tag_content_sha256" not in m or m["tag_content_sha256"] is None:
+                dirty_members.append(relpath)
+            elif hashlib.sha256(content).hexdigest() != m["tag_content_sha256"]:
                 dirty_members.append(relpath)
 
     result["member_read_errors"] = errors

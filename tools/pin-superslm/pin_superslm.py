@@ -463,7 +463,19 @@ def main() -> int:
     # can recompute the digest without the clone.
     snapshot_root = prefix / "share" / "superslm-provenance" / "compiled"
     members = []
-    compiled_tag_content_sha256: dict[str, str] = {}
+    # TE-67 N-1: every compiled member gets an ENTRY in this dict, even when
+    # git has no content for that path at the tag (None) -- the prior code
+    # only inserted an entry when tag_content_sha256 succeeded, so a file
+    # ADDED to the clone (present in the compile closure, absent from the
+    # tag) produced a members_index entry with NO tag_content_sha256 KEY AT
+    # ALL, indistinguishable on the reading end from a key that was simply
+    # never written for an unrelated reason. A verifier using `.get(...) is
+    # not None` to decide whether to check a member treated "no key" as
+    # "nothing to verify, skip" rather than "cannot be verified against the
+    # tag, refuse" -- exactly the added-file leg the review reproduced with
+    # no edit at all. Recording None explicitly makes the gap a value the
+    # verifier must handle, not an absence it can silently pass over.
+    compiled_tag_content_sha256: dict[str, str | None] = {}
     for p in sorted(compile_closure):
         try:
             rel = p.relative_to(clone)
@@ -476,8 +488,7 @@ def main() -> int:
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(content)
         members.append(("compiled", relposix, content))
-        if relposix in tag_content_sha256:
-            compiled_tag_content_sha256[relposix] = tag_content_sha256[relposix]
+        compiled_tag_content_sha256[relposix] = tag_content_sha256.get(relposix)  # None if absent at the tag
 
     for p in sorted(install_closure):
         try:
@@ -509,15 +520,18 @@ def main() -> int:
         # digest, without re-deriving the closure itself (that derivation
         # needs the engine's build graph, which no longer exists once the
         # scratch workdir is removed).
-        # TE-65 F-3: compiled-root members additionally carry
-        # tag_content_sha256, computed from git's OWN tag content, never
-        # from the working tree -- a downstream configure re-derives
-        # dirtiness per member from this against the CURRENT on-disk bytes,
-        # rather than trusting the single `clean` flag above.
+        # TE-65 F-3 / TE-67 N-1: compiled-root members ALWAYS carry the
+        # tag_content_sha256 KEY (value null when git has no content for
+        # that path at the tag -- an added file), computed from git's OWN
+        # tag content, never from the working tree -- a downstream configure
+        # re-derives dirtiness per member from this against the CURRENT
+        # on-disk bytes, rather than trusting the single `clean` flag above,
+        # and a member whose value is null or whose key is missing is
+        # refused rather than skipped (see verify_provenance.py).
         "members_index": [
             {"root": root, "path": relpath, **(
-                {"tag_content_sha256": compiled_tag_content_sha256[relpath]}
-                if root == "compiled" and relpath in compiled_tag_content_sha256 else {}
+                {"tag_content_sha256": compiled_tag_content_sha256.get(relpath)}
+                if root == "compiled" else {}
             )}
             for root, relpath, _ in members
         ],

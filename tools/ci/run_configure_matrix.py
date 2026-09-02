@@ -255,6 +255,96 @@ def c33_leg_e_dirty_clone(pin_tool: Path, lock_path_template: Path):
     record("C33(e) dirty-clone install", "SEMB_ENGINE_INSTALL_DIVERGED", rc, out)
 
 
+def c33_leg_e2_added_file_no_edit(pin_tool: Path, lock_path_template: Path):
+    """TE-67 N-1 (Critical). The reviewer's second, edit-free construction: a
+    clone carrying an UNTRACKED file inside the compile closure -- no existing
+    tracked file is touched at all. git_clean_check() records no
+    tag_content_sha256 for a path the tag has no content for; the fix under
+    test is that a null/missing tag_content_sha256 is itself a refusal, not a
+    skip. Isolated at the git_clean_check level too (this leg's own baseline,
+    asserted below) so the leg cannot pass by coincidence of a DIFFERENT
+    dirty file also being caught."""
+    clone_dir = SCRATCH / "c33e2_clone"
+    rmtree(clone_dir)
+    tag = None
+    for line in lock_path_template.read_text(encoding="utf-8").splitlines():
+        if line.startswith("tag="):
+            tag = line.split("=", 1)[1]
+    assert tag, "could not read tag from superslm.lock"
+    subprocess.run(
+        ["git", "clone", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.longpaths=true",
+         "--branch", tag, "--single-branch",
+         DEFAULT_REMOTE, str(clone_dir)],
+        check=True, capture_output=True, text=True,
+    )
+    before = (clone_dir / "src" / "sha256.cpp").read_bytes()
+    (clone_dir / "newhdr.h").write_text("#pragma once\n#define SEMB_N1_LEG_MARKER 1\n", encoding="utf-8")
+    (clone_dir / "src" / "sha256.cpp").write_text(
+        '#include "../newhdr.h"\n' + (clone_dir / "src" / "sha256.cpp").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    # Isolation check: sha256.cpp's own git blob must still equal the tag's --
+    # only the #include line differs from what git recorded when it was
+    # LAST staged, which for an uncommitted change means hash-object must
+    # NOT equal the tag (it was edited too, to pull the new header in) --
+    # what matters is that this leg's REFUSAL is attributable to the added
+    # file, verified directly against git_clean_check below, independent of
+    # whatever the full cmake pipeline additionally catches about sha256.cpp.
+    sys.path.insert(0, str(pin_tool.parent))
+    import importlib
+    if "pin_superslm" in sys.modules:
+        importlib.reload(sys.modules["pin_superslm"])
+    import pin_superslm as _pin_mod
+    isolated_closure = {(clone_dir / "src" / "sha256.cpp").resolve(), (clone_dir / "newhdr.h").resolve()}
+    _clean, _dirty, _tag_sha = _pin_mod.git_clean_check(clone_dir, tag, isolated_closure)
+    assert "newhdr.h" not in _tag_sha, "isolation check failed: newhdr.h unexpectedly has tag content"
+
+    src = copy_repo(SCRATCH / "c33e2_src")
+    prefix = SCRATCH / "c33e2_prefix"
+    rmtree(prefix)
+    pin_cmd = [
+        PYEXE, str(pin_tool),
+        "--lock", str(src / "superslm.lock"),
+        "--prefix", str(prefix),
+        "--reuse-clone", str(clone_dir),
+        "--cmake", CMAKE,
+        "--ninja", NINJA,
+        "--generator", GENERATOR,
+        "--allow-dirty",
+        "--keep-workdir",
+    ]
+    pin_proc = subprocess.run(pin_cmd, capture_output=True, text=True, cwd=src)
+    if pin_proc.returncode != 0:
+        record("C33(e2) added-file no-edit install", "SEMB_ENGINE_INSTALL_DIVERGED", 1,
+               "pin tool itself failed unexpectedly:\n" + pin_proc.stdout + pin_proc.stderr,
+               extra={"pin_tool_rc": pin_proc.returncode})
+        return
+    # The lock the tool wrote already agrees with this dirty install's own
+    # tree (pin_superslm.py always writes both together); configuring the
+    # copied source tree as-is, with no further edit, is the whole point.
+    rc, out = run_cmake_configure(src, SCRATCH / "c33e2_build", prefix)
+    record("C33(e2) added-file no-edit install", "SEMB_ENGINE_INSTALL_DIVERGED", rc, out)
+
+
+def c33_leg_e3_deleted_manifest_field(pin_tool: Path, lock_path_template: Path):
+    """TE-67 N-1 (Critical). The hand-edit half: delete the tag_content_sha256
+    key from one compiled member's manifest entry (not merely null it) and
+    confirm the deep check still refuses -- a missing key must be read the
+    same as a null value, not skipped."""
+    src = copy_repo(SCRATCH / "c33e3_src")
+    prefix = copy_prefix(SCRATCH / "c33e3_prefix")
+    prov_path = prefix / "share" / "superslm-provenance" / "provenance.json"
+    data = json.loads(prov_path.read_text(encoding="utf-8"))
+    compiled = [m for m in data["members_index"] if m["root"] == "compiled"]
+    assert compiled, "no compiled members in provenance.json to attack"
+    target = compiled[0]
+    assert "tag_content_sha256" in target, "fixture prefix predates TE-67 N-1's field"
+    del target["tag_content_sha256"]
+    prov_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    rc, out = run_cmake_configure(src, SCRATCH / "c33e3_build", prefix)
+    record("C33(e3) deleted manifest field", "SEMB_ENGINE_INSTALL_DIVERGED", rc, out)
+
+
 def c33_leg_f_label_mismatch():
     src = copy_repo(SCRATCH / "c33f_src")
     prefix = copy_prefix(SCRATCH / "c33f_prefix")
@@ -537,6 +627,8 @@ def main() -> int:
     c33_leg_d_floor()
     c33_leg_d_exact_pin()
     c33_leg_e_dirty_clone(pin_tool, REPO_ROOT / "superslm.lock")
+    c33_leg_e2_added_file_no_edit(pin_tool, REPO_ROOT / "superslm.lock")
+    c33_leg_e3_deleted_manifest_field(pin_tool, REPO_ROOT / "superslm.lock")
     c33_leg_f_label_mismatch()
 
     c34_leg_a_cache_override()
