@@ -49,14 +49,22 @@ EXECUTED INTO A DIFFERENT, MORE PRECISE MISSING-PREREQUISITE FINDING:
 
   C31(iii) -- TU-local inline-primitive driver. MUST-ACCEPT: dumpbin over
   the TIP's own built objects shows `ReadCarriedScale` (the reproducible
-  path's sole inline installed-header call) DEFINED in the library's own
-  object (`engine_adapter_interim.cpp.obj`) and referenced NOWHERE in the
-  witness's own object (`witness_main.cpp.obj`). MUST-REJECT: a scratch
-  COPY of the tree with one line added to `witness_main.cpp` (taking
-  `ReadCarriedScale`'s own address, forcing MSVC to emit a local
-  definition under ODR) is reconfigured and rebuilt, and dumpbin over
-  THAT witness object now finds it defined there too -- proving the check
-  can see the hazard it exists to catch.
+  path's sole inline installed-header call) referenced NOWHERE in the
+  witness's own object (`witness_main.cpp.obj`) -- the property the claim
+  is actually about. (Whether the LIBRARY's own object still carries a
+  standalone out-of-line symbol for it is read and reported, but NOT
+  gated on -- TE-80, discovered under Clang: an optimizer may legitimately
+  inline the primitive away entirely at its one call site with no
+  standalone symbol left in EITHER object, observed under clang-cl -O2
+  where MSVC's own -O2 build retains one; that difference is ordinary
+  compiler behaviour, not a defect in either build.) MUST-REJECT: a
+  scratch COPY of the tree with one line added to `witness_main.cpp`
+  (taking `ReadCarriedScale`'s own address, which ODR-uses it and forces
+  a local definition to exist under BOTH compilers, address-of being
+  something no optimizer can inline away) is reconfigured and rebuilt,
+  and dumpbin over THAT witness object now finds it defined there too --
+  proving the check can see the hazard it exists to catch, on both
+  toolchains.
 
   C31(v) -- the positive construction. The TIP's own `semb_witness`,
   already built, run against the hermetically-regenerated synthetic
@@ -92,14 +100,25 @@ import os
 import shutil
 import stat
 import subprocess
+import argparse
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-BUILD_MSVC = REPO_ROOT / "build" / "msvc"
 ENGINE_PREFIX = REPO_ROOT / "build" / "_engine_install"
 SCRATCH_ROOT = REPO_ROOT / "build" / "_scratch" / "witness_matrix"
+
+# TE-80 (TE-76 review F-6, Significant): the build directory this matrix
+# grades is no longer a hardcoded "build/msvc" -- it is set from
+# --build-dir, which tests/CMakeLists.txt passes as CMake's own
+# CMAKE_BINARY_DIR (the REAL directory ctest is actually configured and
+# run from), so a run from build/clang grades build/clang's own objects
+# and binaries, never silently substituting MSVC's. The fallback below
+# (REPO_ROOT/build/msvc) exists only for a manual, standalone invocation
+# with no --build-dir given (e.g. this file run directly rather than via
+# ctest) and is never what a registered ctest target uses.
+BUILD_DIR = REPO_ROOT / "build" / "msvc"
 
 RESULTS: List[Dict] = []
 
@@ -218,11 +237,17 @@ def ensure_synthetic_artifact() -> Path:
     if path.exists():
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [sys.executable, str(REPO_ROOT / "tests" / "fixtures" / "regenerate_synthetic_artifact.py"),
-         "--lock", "superslm.lock", "--out", str(path), "--source", "D:\\SuperSLM"],
-        check=True, cwd=str(REPO_ROOT),
-    )
+    # TE-80 F-19: no hardcoded local path in committed test source -- an
+    # optional override (SEMB_TEST_ENGINE_SOURCE) for this seat's own
+    # local runs; unset, regenerate_synthetic_artifact.py falls back to
+    # its own DEFAULT_REMOTE (a public URL reachable from any of sec 8
+    # C13's four CI toolchains).
+    cmd = [sys.executable, str(REPO_ROOT / "tests" / "fixtures" / "regenerate_synthetic_artifact.py"),
+           "--lock", "superslm.lock", "--out", str(path)]
+    engine_source = os.environ.get("SEMB_TEST_ENGINE_SOURCE")
+    if engine_source:
+        cmd += ["--source", engine_source]
+    subprocess.run(cmd, check=True, cwd=str(REPO_ROOT))
     return path
 
 
@@ -246,13 +271,26 @@ def eval_c31_iii():
         leg_missing(name, "dumpbin.exe not found -- run under the Community developer shell")
         return
     try:
-        lib_obj = BUILD_MSVC / "CMakeFiles" / "superembedder.dir" / "src" / "superembedder" / \
+        lib_obj = BUILD_DIR / "CMakeFiles" / "superembedder.dir" / "src" / "superembedder" / \
             "engine_adapter_interim.cpp.obj"
-        witness_obj = BUILD_MSVC / "CMakeFiles" / "semb_witness.dir" / "src" / "witness" / \
+        witness_obj = BUILD_DIR / "CMakeFiles" / "semb_witness.dir" / "src" / "witness" / \
             "witness_main.cpp.obj"
         lib_has_it = obj_defines_symbol(dumpbin, lib_obj, "ReadCarriedScale")
         witness_has_it_tip = obj_defines_symbol(dumpbin, witness_obj, "ReadCarriedScale")
-        must_accept_ok = lib_has_it and not witness_has_it_tip
+        # TE-80: discovered by execution under Clang (this seat's own
+        # cross-compiler run) -- requiring `lib_has_it == True` is NOT
+        # toolchain-robust. An optimizer is free to fully inline
+        # ReadCarriedScale at its one call site and leave NO standalone
+        # out-of-line symbol in the LIBRARY's own object either (observed:
+        # MSVC's build retains one; clang-cl's -O2 build does not) --
+        # that is correct, unremarkable compiler behaviour, not a defect,
+        # and is not what C31(iii)/C38's own claim is ABOUT: the claim is
+        # that the primitive is never compiled into the WITNESS's own TU,
+        # which `witness_has_it_tip` checks directly and robustly (the
+        # witness never calls the function AT ALL under normal build, so
+        # there is nothing there for any optimizer to inline FROM).
+        # `lib_has_it` is retained as an informational reading only.
+        must_accept_ok = not witness_has_it_tip
 
         # MUST-REJECT: a scratch copy whose witness_main.cpp takes
         # ReadCarriedScale's own address, forcing MSVC to emit a local
@@ -285,11 +323,13 @@ def eval_c31_iii():
         must_reject_ok = witness_has_it_mutant  # the hazard MUST be visible in the mutant
 
         passed = must_accept_ok and must_reject_ok
-        observed = (f"tip: library defines it={lib_has_it}, witness references it={witness_has_it_tip} "
-                    f"(must_accept={'OK' if must_accept_ok else 'FAIL'}); "
+        observed = (f"tip: witness references it={witness_has_it_tip} "
+                    f"(must_accept={'OK' if must_accept_ok else 'FAIL'}; library defines it="
+                    f"{lib_has_it}, informational only -- an optimizer may legitimately inline "
+                    f"it away entirely, toolchain-dependent, observed False under Clang -O2); "
                     f"mutant witness defines it={witness_has_it_mutant} "
                     f"(must_reject={'OK' if must_reject_ok else 'FAIL'})")
-        leg_result(name, "must-accept: library-only; must-reject: hazard visible in mutant",
+        leg_result(name, "must-accept: witness TU clean; must-reject: hazard visible in mutant",
                   observed, passed)
     except Exception as ex:  # noqa: BLE001 -- reported as the leg's own observed state
         leg_result(name, "must-accept: library-only; must-reject: hazard visible in mutant",
@@ -299,7 +339,7 @@ def eval_c31_iii():
 def eval_c31_v():
     name = "C31(v) a correctly-built witness must NOT refuse (the positive construction)"
     try:
-        exe = BUILD_MSVC / "semb_witness.exe"
+        exe = BUILD_DIR / "semb_witness.exe"
         if not exe.exists():
             leg_missing(name, f"{exe} does not exist -- build it first")
             return
@@ -313,10 +353,62 @@ def eval_c31_v():
                   f"EXCEPTION: {ex}", False)
 
 
+def _c36b_verdict(tip_digest: str, mutant_digest: str):
+    """The decision C36(b) grades on, factored out so it can be
+    commissioned directly (TE-80's own discipline, StandardsDocument.md
+    sec 5.4): equal digests -> a real FAIL (never MISSING_PREREQUISITE,
+    once the construction has actually run); different digests -> PASS.
+    Returns (passed, message)."""
+    if mutant_digest == tip_digest:
+        return (False, f"FAIL: tip digest {tip_digest} == mutant digest {mutant_digest} after "
+                        f"kExpBias 127->126 -- witness_sha did NOT move when the pooling "
+                        f"epilogue's own arithmetic changed. semb_wa_digest IS wired into "
+                        f"witness_sha as of TE-78 (confirmed present in witness_main.cpp); an "
+                        f"unchanged digest here is a real must-reject failure, not a missing "
+                        f"prerequisite.")
+    return (True, f"PASS: tip={tip_digest} mutant={mutant_digest} -- witness_sha moved when the "
+                  f"pooling epilogue's own arithmetic changed.")
+
+
+def _selftest_c36b_verdict_can_fail() -> bool:
+    """TE-80's own commissioning of _c36b_verdict, before the real,
+    expensive scratch-rebuild construction is trusted: two identical
+    digests must verdict FAIL; two different digests must verdict PASS."""
+    same = "a" * 64
+    other = "b" * 64
+    passed_same, _ = _c36b_verdict(same, same)
+    passed_diff, _ = _c36b_verdict(same, other)
+    if passed_same:
+        print("C36(b) SELFTEST FAIL: _c36b_verdict(same, same) reported PASS -- the decision "
+              "cannot fail, which is F-5's own defect one level removed.", file=sys.stderr)
+        return False
+    if not passed_diff:
+        print("C36(b) SELFTEST FAIL: _c36b_verdict(same, different) reported FAIL -- a genuine "
+              "digest change is being misreported.", file=sys.stderr)
+        return False
+    return True
+
+
 def eval_c36_b():
+    # TE-80 (TE-76 review F-5, Significant): TE-78 wired semb_wa_digest
+    # (W-A's own digest) into witness_sha, so this construction CAN now
+    # be evaluated for real -- confirmed by grep (witness_main.cpp DOES
+    # call semb_wa_digest, unlike when this leg was first written). The
+    # prior version reported ANY digest-equal outcome as
+    # MISSING_PREREQUISITE unconditionally, which was correct while the
+    # wiring genuinely did not exist and became a silent escape hatch the
+    # moment it landed: a REGRESSION that unwires W-A again would produce
+    # the identical digest-equal observation and be reported as "nothing
+    # to evaluate" rather than a failed must-reject. The fix separates
+    # the two causes structurally: an EXCEPTION while attempting the
+    # construction (the scratch build itself could not be configured,
+    # built, or run) is the only case reported MISSING_PREREQUISITE --
+    # genuinely could not attempt it. Once the mutant is built and run
+    # successfully, ANY outcome is a real, evaluated result: digest moved
+    # -> PASS; digest unchanged -> FAIL, never missing.
     name = "C36(b) our own epilogue edited, superslm.lib standing, must refuse (witness_sha must move)"
     try:
-        exe = BUILD_MSVC / "semb_witness.exe"
+        exe = BUILD_DIR / "semb_witness.exe"
         if not exe.exists():
             leg_missing(name, f"{exe} does not exist -- build it first")
             return
@@ -334,35 +426,32 @@ def eval_c36_b():
         mutant_exe = build_witness_in(scratch, scratch / "build")
         mutant_artifact = ensure_synthetic_artifact()  # same input artifact, built engine unaffected
         mutant_digest = run_witness(mutant_exe, mutant_artifact)
+    except Exception as ex:  # noqa: BLE001 -- genuinely could not attempt the construction
+        leg_missing(name, f"could not attempt the construction (scratch configure/build/run "
+                          f"failed): {ex}")
+        return
 
-        if mutant_digest == tip_digest:
-            # Executed, not assumed: this round's semb_witness computes
-            # ONLY W-B's digest (semb_encode_document_for_witness +
-            # semb_seam_serialize_document -- the seam, upstream of
-            # pooling). It never calls semb_wa_pool_run (grepped both
-            # witness_main.cpp and engine_adapter_interim.cpp: zero
-            # hits), so an edit confined to ps1_pool.cpp's own arithmetic
-            # cannot move witness_sha as currently computed -- not a
-            # failure of this construction, but sec 4.4b's own
-            # three-component design (W-A ‖ W-B ‖ W-Q) not yet being
-            # wired past its first component.
-            leg_missing(name,
-                       f"witness_sha (as this round's semb_witness computes it) is W-B's digest "
-                       f"alone -- it never calls semb_wa_pool_run (confirmed by grep), so editing "
-                       f"the pooling epilogue cannot move it yet. Executed: tip digest "
-                       f"{tip_digest} == mutant digest {mutant_digest} after kExpBias 127->126. "
-                       f"Wiring W-A's own digest into witness_sha is owed (sec 4.4b's three-"
-                       f"component design), not this seat's to build")
-            return
-
-        leg_result(name, "the edited-epilogue build's own digest differs from the tip's",
-                  f"tip={tip_digest} mutant={mutant_digest}", True)
-    except Exception as ex:  # noqa: BLE001
-        leg_result(name, "the edited-epilogue build's own digest differs from the tip's",
-                  f"EXCEPTION: {ex}", False)
+    # The construction was attempted for real and produced a real result
+    # -- from here, the outcome is PASS or FAIL, never MISSING_PREREQUISITE,
+    # decided by _c36b_verdict (commissioned above, before this function
+    # is ever called -- see main()).
+    passed, message = _c36b_verdict(tip_digest, mutant_digest)
+    leg_result(name, "the edited-epilogue build's own digest differs from the tip's", message,
+              passed)
 
 
 def main(argv: List[str]) -> int:
+    global BUILD_DIR
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--build-dir", default=None,
+                     help="TE-80 F-6: the real build directory to grade (CMake's own "
+                          "CMAKE_BINARY_DIR, passed by tests/CMakeLists.txt). Falls back to "
+                          "REPO_ROOT/build/msvc only for a manual, non-ctest invocation.")
+    args = ap.parse_args(argv)
+    if args.build_dir:
+        BUILD_DIR = Path(args.build_dir).resolve()
+    print(f"witness_structural_matrix: grading build directory {BUILD_DIR}", file=sys.stderr)
+
     leg_missing("C31(i) second-configure witness must refuse (SEMB_WITNESS_FOREIGN_BUILD)",
                 "no runtime detection of 'which configure built this witness' exists anywhere in "
                 "this build (grepped, zero hits) -- building one is product code, outside this "
@@ -380,6 +469,11 @@ def main(argv: List[str]) -> int:
                 "needs an edit to D:\\SuperSLM's own compiled .cpp source -- the engine repository "
                 "is read-only to this seat (Claude/Bach/briefs/te77-u0b-cell-fixes.md's own "
                 "Contract)")
+    if not _selftest_c36b_verdict_can_fail():
+        print("witness_structural_matrix: C36(b)'s own decision function failed its "
+              "commissioning -- refusing to run the real (expensive) construction against an "
+              "unproven decision.", file=sys.stderr)
+        sys.exit(1)
     eval_c36_b()
     leg_missing("C36(e) any reading served from outside the process must refuse",
                 "the witness has no external-reading code path at all (same finding as C31(iv)) "
