@@ -66,6 +66,7 @@ function(semb_compute_source_provenance target)
 		--compiler-id "${CMAKE_CXX_COMPILER_ID}"
 		--std "c++${CMAKE_CXX_STANDARD}"
 		--engine-path "${SEMB_ENGINE_PREFIX}"
+		--build-dir "${CMAKE_BINARY_DIR}"
 		--out-header "${ARG_OUT_HEADER}"
 		--out-json "${_sidecar}"
 	)

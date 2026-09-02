@@ -73,7 +73,13 @@ def _msvc_closure(compiler: str, source: Path, include_dirs: list[str], std: str
         m = _INCLUDE_NOTE_RE.match(line)
         if m:
             headers.append(Path(m.group(1)))
-    if proc.returncode != 0 and not headers:
+    if proc.returncode != 0:
+        # TE-67 N-5: raising only when BOTH the compiler failed AND zero
+        # headers were parsed let a failure partway through a translation
+        # unit (some /showIncludes lines already emitted, then a fatal
+        # error) fall through with a TRUNCATED closure silently accepted as
+        # complete. Any nonzero exit means this call's own output cannot be
+        # trusted, whether or not it produced partial output first.
         raise SystemExit(
             f"SEMB_SOURCE_PREPROCESS_FAILED: {compiler} could not preprocess {source} "
             f"(exit {proc.returncode}). stdout/stderr:\n{proc.stdout}\n{proc.stderr}"
@@ -117,7 +123,8 @@ def cmd_configure(args: argparse.Namespace) -> int:
         return 1
 
     covered: set[Path] = set()
-    per_source_closure: dict[str, set[Path]] = {}
+    per_source_resolver_output: dict[str, set[Path]] = {}
+    per_source_text: dict[str, str] = {}
     for s in args.source:
         src_path = (root / s).resolve()
         closure = _resolve_closure(args.compiler_id, args.compiler, src_path, args.include_dir, args.std)
@@ -127,23 +134,71 @@ def cmd_configure(args: argparse.Namespace) -> int:
                 resolved.add(h.resolve())
             except OSError:
                 continue
-        resolved.add(src_path)  # the source itself is always a member of its own closure
-        per_source_closure[s] = resolved
+        # TE-67 N-6, first half: the resolver's OWN raw output is kept
+        # separate from the covered set that gets digested. The prior code
+        # added src_path to `resolved` unconditionally BEFORE the subset
+        # assertion below tested it, so the check tested a set it had just
+        # inserted the source into -- unable to fail on any input.
+        per_source_resolver_output[s] = resolved
+        try:
+            per_source_text[s] = src_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            per_source_text[s] = ""
         covered |= resolved
+        covered.add(src_path)  # the source itself is always digested
 
-    # Sec4.4's stated subset property: every declared SOURCE is a member of
-    # the covered set the preprocessor actually resolved for it. A source
-    # that fails this (e.g. one the preprocessor silently skipped) is a
-    # configuration defect, not a normal state.
-    for s, closure in per_source_closure.items():
-        if (root / s).resolve() not in closure:
-            print(json.dumps({"error": "SEMB_SOURCE_NOT_IN_OWN_CLOSURE", "source": s}))
+    # TE-67 N-6, second half: what this assertion tests is corrected, not
+    # only how it is wired. MSVC's own /showIncludes NEVER lists the source
+    # file being compiled -- only the headers it pulls in -- so "the source
+    # path is a member of the resolver's raw output" is false on every
+    # correct MSVC run, not only a broken one; that framing cannot be the
+    # check. What Sec4.4's subset property can mean, checkably: a source
+    # whose own text visibly names at least one #include must not come back
+    # from a real, zero-exit compiler run with an EMPTY closure -- two
+    # independent producers (the compiler's own preprocessor, and a plain
+    # text scan of the source neither producer wrote) disagreeing is real
+    # signal, not a re-statement of one producer's output. Reproduced: a
+    # resolver hardcoded to return [] against this project's real sources
+    # (which do have #include lines) is caught; a genuinely header-free
+    # source with an empty resolver result is accepted, because both
+    # producers agree there is nothing to find.
+    _include_re = re.compile(r'^\s*#\s*include\b', re.MULTILINE)
+    for s, resolver_output in per_source_resolver_output.items():
+        text_says_includes = bool(_include_re.search(per_source_text.get(s, "")))
+        if text_says_includes and not resolver_output:
+            print(json.dumps({
+                "error": "SEMB_SOURCE_NOT_IN_OWN_CLOSURE",
+                "source": s,
+                "reason": "source text contains #include directives but the compiler's own resolved "
+                          "closure for it is empty",
+            }))
             return 1
+
+    # TE-67 N-8: a file under the build directory used to be classified by
+    # whether CMAKE_BINARY_DIR happened to be NESTED inside the source root
+    # -- in scope and digested when -B pointed inside root (this project's
+    # own documented "-B build/semb"), silently excluded when -B pointed
+    # anywhere else, for byte-identical source and an identical configure-
+    # time digest either way. Build-directory content (generated headers
+    # included) is now excluded from the covered set UNCONDITIONALLY, by
+    # checking against build_dir before the root-relative classification,
+    # so membership no longer depends on where the caller happened to point
+    # -B. No source under `root` this project ships today lives under
+    # build_dir, so this narrows nothing real; it removes the layout
+    # dependence the reviewer's X-5 measured.
+    build_dir = Path(args.build_dir).resolve() if getattr(args, "build_dir", None) else None
 
     members = []
     file_list = []
     out_of_root = []
     for p in sorted(covered):
+        if build_dir is not None:
+            try:
+                p.relative_to(build_dir)
+                out_of_root.append(str(p))  # a build-directory file, excluded regardless of -B's placement
+                continue
+            except ValueError:
+                pass
         try:
             rel = p.relative_to(root).as_posix()
         except ValueError:
@@ -265,9 +320,19 @@ def cmd_verify(args: argparse.Namespace) -> int:
         for h in _ninja_deps(build, args.ninja, obj):
             real_files.add((build / h).resolve())
 
+    # TE-67 N-8: the same build-directory exclusion cmd_configure now
+    # applies, using the -B path this subcommand already receives as
+    # `build`, so the post-build closure is classified the identical way
+    # regardless of where -B pointed.
     members = []
     out_of_root = []
     for p in sorted(real_files):
+        try:
+            p.relative_to(build)
+            out_of_root.append(str(p))
+            continue
+        except ValueError:
+            pass
         try:
             rel = p.relative_to(root).as_posix()
         except ValueError:
@@ -305,6 +370,9 @@ def main() -> int:
                     help="CMAKE_CXX_COMPILER_ID")
     c.add_argument("--std", default="c++20")
     c.add_argument("--engine-path", required=True)
+    c.add_argument("--build-dir", default=None,
+                    help="CMAKE_BINARY_DIR -- excluded from the covered set unconditionally (TE-67 N-8), "
+                         "regardless of whether it sits inside or outside --root")
     c.add_argument("--out-header", required=True)
     c.add_argument("--out-json", required=True)
     c.set_defaults(func=cmd_configure)
