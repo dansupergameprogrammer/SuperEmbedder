@@ -105,7 +105,6 @@ if(_semb_prov_err)
 endif()
 string(JSON _semb_prov_commit GET "${_semb_provenance_json}" "commit")
 string(JSON _semb_prov_tree GET "${_semb_provenance_json}" "engine_tree_sha")
-string(JSON _semb_prov_clean GET "${_semb_provenance_json}" "clean")
 
 # 4a. Lock/provenance label agreement (leg f) — the lock's tag/commit must be
 #     what the tool actually resolved when it built THIS prefix.
@@ -127,18 +126,6 @@ if(NOT SEMB_LOCK_TREE STREQUAL _semb_prov_tree)
 		"was hand-edited, or the lock was not re-derived after the pin last changed.")
 endif()
 
-# 4c. clean=false (leg e) — the tool recorded that the clone carried an
-#     uncommitted edit to a compile-closure member when this install was
-#     built. This is the leg §8/C33 requires be built for real (an install
-#     from a dirty clone) rather than constructed by editing a string.
-if(NOT _semb_prov_clean)
-	string(JSON _semb_prov_dirty_count ERROR_VARIABLE _semb_dirty_err LENGTH "${_semb_provenance_json}" "dirty_paths")
-	message(FATAL_ERROR "SEMB_ENGINE_INSTALL_DIVERGED: the installed engine's own provenance records "
-		"clean=false — the clone tools/pin-superslm built this install from carried an uncommitted "
-		"edit to a file inside the compile+install closure (${_semb_prov_dirty_count} file(s)), so "
-		"what got compiled disagrees with what tag ${_semb_prov_tag} says should be there.")
-endif()
-
 # ---------------------------------------------------------------------------
 # 5. The deep check: recompute engine_tree_sha fresh from whatever is
 #    CURRENTLY on disk under the prefix, via tools/pin-superslm/verify_provenance.py,
@@ -147,6 +134,18 @@ endif()
 #    (§4.1) — it catches drift the two label/digest-agreement checks above
 #    cannot see, because those only compare two DECLARED strings against each
 #    other; this one re-reads real bytes.
+#
+#    TE-65 F-3: leg (e) (an install built from a clone carrying an
+#    uncommitted edit) used to be decided by reading `clean` straight out of
+#    provenance.json — a single boolean the SAME producer that wrote
+#    engine_tree_sha also wrote, so a construction that hand-edited only
+#    `clean` to true (clearing `dirty_paths`) defeated the whole leg without
+#    touching anything the digest covers. verify_provenance.py now
+#    independently recomputes dirtiness PER COMPILED MEMBER, on every
+#    configure, from that member's tag_content_sha256 (computed by
+#    pin_superslm.py from git's own tag content, never from the working
+#    tree) against the bytes actually on disk right now — `dirty_members`
+#    below, not the manifest's own self-reported flag.
 # ---------------------------------------------------------------------------
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 execute_process(
@@ -158,6 +157,20 @@ if(NOT _semb_verify_rc EQUAL 0)
 	message(FATAL_ERROR "SEMB_ENGINE_PROVENANCE_VERIFY_FAILED: verify_provenance.py exited "
 		"${_semb_verify_rc}. Output: ${_semb_verify_json}")
 endif()
+
+# 5a. Leg (e), by name: any compiled member whose current bytes disagree with
+#     git's own tag content is a dirty install, refused here regardless of
+#     what provenance.json's own `clean`/`dirty_paths` fields (still written
+#     for diagnostics) claim.
+string(JSON _semb_dirty_member_count ERROR_VARIABLE _semb_dm_err LENGTH "${_semb_verify_json}" "dirty_members")
+if(NOT _semb_dm_err AND _semb_dirty_member_count GREATER 0)
+	string(JSON _semb_dirty_member_0 GET "${_semb_verify_json}" "dirty_members" 0)
+	message(FATAL_ERROR "SEMB_ENGINE_INSTALL_DIVERGED: ${_semb_dirty_member_count} compiled-closure "
+		"member(s) currently on disk under ${SEMB_ENGINE_PREFIX} disagree with what tag "
+		"${_semb_prov_tag} records for that path (first: ${_semb_dirty_member_0}) — the clone this "
+		"install was built from carried an uncommitted edit inside the compile+install closure.")
+endif()
+
 string(JSON _semb_recomputed_tree ERROR_VARIABLE _semb_rt_err GET "${_semb_verify_json}" "recomputed_engine_tree_sha")
 if(_semb_rt_err OR _semb_recomputed_tree STREQUAL "" OR _semb_recomputed_tree STREQUAL "NOTFOUND")
 	message(FATAL_ERROR "SEMB_ENGINE_INSTALL_DIVERGED: could not recompute engine_tree_sha from the "

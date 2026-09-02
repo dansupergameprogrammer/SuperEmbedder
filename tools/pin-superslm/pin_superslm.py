@@ -53,6 +53,7 @@ Exit codes: 0 success; 1 usage/environment error; 2 clone/build/install failure.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -287,15 +288,26 @@ def derive_install_closure(build: Path, prefix: Path) -> set[Path]:
     return out
 
 
-def git_clean_check(clone: Path, tag: str, compile_closure: set[Path]) -> tuple[bool, list[str]]:
+def git_clean_check(clone: Path, tag: str, compile_closure: set[Path]) -> tuple[bool, list[str], dict[str, str]]:
     """The independent witness for SEMB_ENGINE_INSTALL_DIVERGED: for every
     compile-closure member that lives inside the clone, compare the blob hash
     of what is ACTUALLY on disk (what got compiled) against the blob hash git
     recorded for that path AT THE TAG. Two producers: git's own content-
     addressed object store (tamper-evident short of rewriting history) and the
     literal bytes the compiler read. A dirty_paths entry means the clone
-    carried an uncommitted edit to that file when it was built."""
+    carried an uncommitted edit to that file when it was built.
+
+    Also returns tag_content_sha256: for every compiled member, the SHA-256 of
+    the content git records for that path AT THE TAG (`git show <tag>:<path>`
+    read as raw bytes, never through the working tree) -- independent of
+    whatever the clone actually contains. TE-65 F-3: a downstream configure
+    recomputes this per member from the bytes on disk right now and compares
+    to the RECORDED value here, rather than trusting a single 'clean' boolean
+    this same producer also writes -- the fix for a defect the code review
+    found (flipping clean:false to true and clearing dirty_paths defeated the
+    check entirely, because nothing independently re-derived it)."""
     dirty = []
+    tag_content_sha256: dict[str, str] = {}
     for p in sorted(compile_closure):
         try:
             rel = p.relative_to(clone)
@@ -308,7 +320,13 @@ def git_clean_check(clone: Path, tag: str, compile_closure: set[Path]) -> tuple[
         tagged_hash = tagged.stdout.strip().splitlines()[-1].strip() if tagged.returncode == 0 else None
         if actual_hash is None or tagged_hash is None or actual_hash != tagged_hash:
             dirty.append(relposix)
-    return (len(dirty) == 0, dirty)
+        show = subprocess.run(
+            ["git", "-C", str(clone), "show", f"{tag}:{relposix}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+        if show.returncode == 0:
+            tag_content_sha256[relposix] = hashlib.sha256(show.stdout).hexdigest()
+    return (len(dirty) == 0, dirty, tag_content_sha256)
 
 
 def main() -> int:
@@ -357,7 +375,7 @@ def main() -> int:
     install_closure = derive_install_closure(build, prefix)
     log(f"compile closure: {len(compile_closure)} files; install closure: {len(install_closure)} files")
 
-    clean, dirty_paths = git_clean_check(clone, tag, compile_closure)
+    clean, dirty_paths, tag_content_sha256 = git_clean_check(clone, tag, compile_closure)
     if not clean:
         log(f"CLONE IS DIRTY relative to {tag} — {len(dirty_paths)} closure file(s) differ from the tag's own tree:")
         for d in dirty_paths:
@@ -373,6 +391,7 @@ def main() -> int:
     # can recompute the digest without the clone.
     snapshot_root = prefix / "share" / "superslm-provenance" / "compiled"
     members = []
+    compiled_tag_content_sha256: dict[str, str] = {}
     for p in sorted(compile_closure):
         try:
             rel = p.relative_to(clone)
@@ -385,6 +404,8 @@ def main() -> int:
         dst.parent.mkdir(parents=True, exist_ok=True)
         dst.write_bytes(content)
         members.append(("compiled", relposix, content))
+        if relposix in tag_content_sha256:
+            compiled_tag_content_sha256[relposix] = tag_content_sha256[relposix]
 
     for p in sorted(install_closure):
         try:
@@ -416,7 +437,18 @@ def main() -> int:
         # digest, without re-deriving the closure itself (that derivation
         # needs the engine's build graph, which no longer exists once the
         # scratch workdir is removed).
-        "members_index": [{"root": root, "path": relpath} for root, relpath, _ in members],
+        # TE-65 F-3: compiled-root members additionally carry
+        # tag_content_sha256, computed from git's OWN tag content, never
+        # from the working tree -- a downstream configure re-derives
+        # dirtiness per member from this against the CURRENT on-disk bytes,
+        # rather than trusting the single `clean` flag above.
+        "members_index": [
+            {"root": root, "path": relpath, **(
+                {"tag_content_sha256": compiled_tag_content_sha256[relpath]}
+                if root == "compiled" and relpath in compiled_tag_content_sha256 else {}
+            )}
+            for root, relpath, _ in members
+        ],
     }
     manifest_path = prefix / "share" / "superslm-provenance" / "provenance.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)

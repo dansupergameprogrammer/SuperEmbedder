@@ -23,9 +23,17 @@ Fields on success:
   member_read_errors:      paths a member claimed to cover but that are not
                             currently readable on disk (§8 C34-style "covered
                             file missing")
+  dirty_members:            compiled-root members (TE-65 F-3) whose CURRENT
+                             on-disk SHA-256 disagrees with the
+                             tag_content_sha256 pin_superslm.py recorded from
+                             git's own tag content at pin time -- computed
+                             fresh on every call, never read from the
+                             manifest's own `clean` flag, which a hand-edit
+                             could otherwise satisfy trivially
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -46,6 +54,7 @@ def main() -> int:
         "provenance": None,
         "recomputed_engine_tree_sha": None,
         "member_read_errors": [],
+        "dirty_members": [],
     }
 
     if not manifest_path.exists():
@@ -65,6 +74,7 @@ def main() -> int:
 
     members = []
     errors = []
+    dirty_members = []
     for m in provenance.get("members_index", []):
         root = m["root"]
         relpath = m["path"]
@@ -78,9 +88,15 @@ def main() -> int:
         if not actual.exists():
             errors.append(f"{root}:{relpath} (missing at {actual})")
             continue
-        members.append((root, relpath, actual.read_bytes()))
+        content = actual.read_bytes()
+        members.append((root, relpath, content))
+        expected = m.get("tag_content_sha256")
+        if root == "compiled" and expected is not None:
+            if hashlib.sha256(content).hexdigest() != expected:
+                dirty_members.append(relpath)
 
     result["member_read_errors"] = errors
+    result["dirty_members"] = dirty_members
     if not errors and members:
         result["recomputed_engine_tree_sha"] = digest_members(members)
 
