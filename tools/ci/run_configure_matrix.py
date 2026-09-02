@@ -360,27 +360,104 @@ def c34_leg_f_header_edit_moves_digest():
 
 
 # ---------------------------------------------------------------------------
-# C14 leg
+# C14 legs (TE-65 F-4/F-5 rewrite: BuildFlags.cmake no longer has a per-target
+# registry to strip a flag from -- the directive is directory-wide and the
+# assertion enumerates CMake's own BUILDSYSTEM_TARGETS. The legs below match
+# the new mechanism's own two must-reject constructions plus F-4's exact
+# reproduction as a positive proof.)
 # ---------------------------------------------------------------------------
 
-def c14_flag_strip():
-    src = copy_repo(SCRATCH / "c14_src")
-    rc, out = run_cmake_configure(src, SCRATCH / "c14_build", ENGINE_PREFIX,
-                                   extra_defines={"SEMB_TEST_STRIP_FP_FLAG_FROM": "superembedder"})
-    record("C14 flag stripped from one target", "SEMB_FP_CONTRACTION_UNGUARDED", rc, out)
+def c14_directive_withheld():
+    """The directory-wide directive itself absent -- SEMB_FP_FLAG_ASSERTION's
+    own must-reject, proving it can fail at all."""
+    src = copy_repo(SCRATCH / "c14a_src")
+    rc, out = run_cmake_configure(src, SCRATCH / "c14a_build", ENGINE_PREFIX,
+                                   extra_defines={"SEMB_TEST_SKIP_FP_DIRECTIVE": "1"})
+    record("C14 directory-wide directive withheld", "SEMB_FP_CONTRACTION_UNGUARDED", rc, out)
 
-    src2 = copy_repo(SCRATCH / "c14_pos_src")
-    rc2, out2 = run_cmake_configure(src2, SCRATCH / "c14_pos_build", ENGINE_PREFIX)
-    passed = rc2 == 0 and "C14 build-configuration assertion" in out2
+
+def c14_cxx_flags_fastmath():
+    """The reviewer's E-8 construction: -DCMAKE_CXX_FLAGS=/fp:fast, which used
+    to be invisible to a check that only read target COMPILE_OPTIONS."""
+    src = copy_repo(SCRATCH / "c14b_src")
+    rc, out = run_cmake_configure(src, SCRATCH / "c14b_build", ENGINE_PREFIX,
+                                   extra_defines={"CMAKE_CXX_FLAGS": "/fp:fast"})
+    record("C14 CMAKE_CXX_FLAGS carries fast-math", "SEMB_FP_FASTMATH_PRESENT", rc, out)
+
+
+def c14_positive():
+    src = copy_repo(SCRATCH / "c14_pos_src")
+    rc, out = run_cmake_configure(src, SCRATCH / "c14_pos_build", ENGINE_PREFIX)
+    passed = rc == 0 and "C14 build-configuration assertion" in out
     RESULTS.append({
         "leg": "C14 flag present (positive)",
-        "expected": "C14 build-configuration assertion: ... all carry",
-        "returncode": rc2,
+        "expected": "C14 build-configuration assertion: ... carries",
+        "returncode": rc,
         "want_fail": False,
         "found_expected_string": passed,
         "passed": passed,
-        "output_tail": "\n".join(out2.splitlines()[-8:]),
+        "output_tail": "\n".join(out.splitlines()[-8:]),
     })
+
+
+def c14_unregistered_target():
+    """F-4's exact reproduction: add_library(semb_extra ...) the ordinary way,
+    with no incantation of any kind, before semb_assert_precise_fp() runs.
+    Positive proof the fix is structural: configure must succeed AND the new
+    target's real compile line, read back from compile_commands.json, must
+    carry the required flag -- not merely "the assertion did not complain"."""
+    src = copy_repo(SCRATCH / "c14d_src")
+    extra_cpp = src / "src" / "extra.cpp"
+    extra_cpp.write_text("int semb_extra_symbol() { return 0; }\n", encoding="utf-8")
+    cmakelists = src / "CMakeLists.txt"
+    text = cmakelists.read_text(encoding="utf-8")
+    # Anchor on the real call site specifically -- "semb_assert_precise_fp()"
+    # alone also appears inside a comment earlier in the file (the include()
+    # line), and a bare substring replace landed there first, corrupting the
+    # file (found by execution: a CMake parse error, not a green false pass).
+    anchor = "\nsemb_assert_precise_fp()\n"
+    assert text.count(anchor) == 1, f"expected exactly one real call site, found {text.count(anchor)}"
+    text = text.replace(
+        anchor,
+        '\nadd_library(semb_extra STATIC src/extra.cpp)\n\nsemb_assert_precise_fp()\n',
+        1,
+    )
+    cmakelists.write_text(text, encoding="utf-8")
+    build = SCRATCH / "c14d_build"
+    cmd = [
+        CMAKE, "-G", GENERATOR, "-S", str(src), "-B", str(build),
+        f"-DCMAKE_PREFIX_PATH={ENGINE_PREFIX}", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+    ]
+    if GENERATOR == "Ninja" and NINJA:
+        cmd.append(f"-DCMAKE_MAKE_PROGRAM={NINJA}")
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    out = proc.stdout + proc.stderr
+    flag_in_real_command = False
+    if proc.returncode == 0:
+        cc_path = build / "compile_commands.json"
+        if cc_path.exists():
+            entries = json.loads(cc_path.read_text(encoding="utf-8"))
+            for e in entries:
+                if e.get("file", "").replace("\\", "/").endswith("src/extra.cpp"):
+                    cmd_line = e.get("command", "") or " ".join(e.get("arguments", []))
+                    flag_in_real_command = "/fp:precise" in cmd_line if GENERATOR == "Ninja" else "-ffp-contract=off" in cmd_line
+    passed = proc.returncode == 0 and flag_in_real_command
+    RESULTS.append({
+        "leg": "C14 unregistered target (F-4 reproduction)",
+        "expected": "configure succeeds AND semb_extra's real compile_commands.json entry carries the required flag",
+        "returncode": proc.returncode,
+        "want_fail": False,
+        "found_expected_string": flag_in_real_command,
+        "passed": passed,
+        "output_tail": "\n".join(out.splitlines()[-8:]) + f"\nflag_in_real_command={flag_in_real_command}",
+    })
+
+
+def c14_flag_strip():
+    c14_directive_withheld()
+    c14_cxx_flags_fastmath()
+    c14_positive()
+    c14_unregistered_target()
 
 
 def main() -> int:

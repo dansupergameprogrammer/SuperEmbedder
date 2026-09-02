@@ -13,7 +13,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 include(EngineGuards)   # find_package(superslm), the two version guards, provenance (C33)
-include(BuildFlags)     # semb_require_precise_fp()/semb_assert_precise_fp() (C14)
+include(BuildFlags)     # the precise-FP flag (directory-wide) + semb_assert_precise_fp() (C14)
 include(SourceProvenance)  # semb_source_sha (C34)
 
 # The pinned engine's tag/commit/tree baked in for the CLI to report and for
@@ -42,7 +42,6 @@ target_include_directories(superembedder
 	PRIVATE
 		"${CMAKE_BINARY_DIR}/generated"
 )
-semb_require_precise_fp(superembedder)
 semb_verify_source_provenance(superembedder SIDECAR "${SEMB_SOURCE_PROVENANCE_SIDECAR}")
 
 # ---------------------------------------------------------------------------
@@ -52,10 +51,11 @@ semb_verify_source_provenance(superembedder SIDECAR "${SEMB_SOURCE_PROVENANCE_SI
 add_executable(semb src/main.cpp)
 target_link_libraries(semb PRIVATE superembedder)
 target_include_directories(semb PRIVATE "${CMAKE_BINARY_DIR}/generated")
-semb_require_precise_fp(semb)
 
-# All targets are registered above; assert the whole set now, once, after
-# nothing else can add or remove a target.
+# Both targets above (and any future target this file declares) inherit the
+# precise-FP flag from BuildFlags.cmake's directory-wide add_compile_options()
+# automatically — there is no per-target call left to make. Assert the whole
+# set now, once, after nothing else can add or remove a target.
 semb_assert_precise_fp()
 
 # ---------------------------------------------------------------------------
