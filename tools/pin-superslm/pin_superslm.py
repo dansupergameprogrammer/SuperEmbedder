@@ -459,13 +459,13 @@ _EXCLUDED_INSTALL_SUFFIXES = {".lib", ".a", ".so", ".dylib", ".dll", ".exe", ".o
 # class F-7 named for the Targets files, not fully swept there. Inert across
 # this project's own three 64-bit CI runners, excluded anyway.
 #
-# TE-69 P-10, corrected TE-71 Q-5: this is a MEMBER LIST, not a class
-# exclusion, and is named as one -- the exact shape F-7's own finding was
-# about. There is a THIRD generated CMake file in the install:
-# superslmConfig.cmake. Read at source, it is deliberately NOT excluded and
-# does not belong in this list: its own mechanism (CMakePackageConfigHelpers'
-# @PACKAGE_INIT@ block) resolves the install prefix RELATIVELY from its own
-# location via ONE call --
+# TE-69 P-10, corrected TE-71 Q-5, corrected again TE-73 R-4: this is a
+# MEMBER LIST, not a class exclusion, and is named as one -- the exact
+# shape F-7's own finding was about. There is a THIRD generated CMake file
+# in the install: superslmConfig.cmake. Read at source, it is deliberately
+# NOT excluded and does not belong in this list: its own mechanism
+# (CMakePackageConfigHelpers' @PACKAGE_INIT@ block) resolves the install
+# prefix RELATIVELY from its own location via
 # get_filename_component(PACKAGE_PREFIX_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../" ABSOLUTE)
 # -- carrying no absolute path, no toolchain name and no platform-specific
 # literal. [Q-5: P-10's own comment here previously attributed a FOUR-call
@@ -473,14 +473,23 @@ _EXCLUDED_INSTALL_SUFFIXES = {".lib", ".a", ".so", ".dylib", ".dll", ".exe", ".o
 # superslmTargets.cmake (get_filename_component(_IMPORT_PREFIX ...), four
 # calls, one of the two files this pattern DOES exclude, read at source) --
 # a different file from the one this paragraph is about. superslmConfig.cmake
-# itself carries zero _IMPORT_PREFIX calls.] It is genuinely portable,
-# checked at every repin by being left in engine_tree_sha rather than
-# assumed. Excluding it would trade one covering check (the digest) for
-# none, and this project's own C33(d) legs already double as the version
-# guard's coverage of the sibling file this trade would apply to (see the
-# two doctored-superslmConfigVersion.cmake legs) -- a trade worth STATING,
-# not implying. The pattern below names exactly the two files that need it,
-# not "every
+# itself carries zero _IMPORT_PREFIX calls.] [R-4: this paragraph then
+# stated the PACKAGE_PREFIX_DIR call above appears "via ONE call" -- read at
+# source in the installed prefix, it appears TWICE (lines 6 and 53), because
+# the engine's own cmake/superslmConfig.cmake.in at v1.3.0 contains a
+# literal "@PACKAGE_INIT@" inside a COMMENT at its own line 24, and
+# configure_package_config_file() substitutes every occurrence of that
+# token, comment or not, splicing the whole init block in twice. Engine-
+# side, not fixable here (filed as an engine finding, not this project's
+# code); the count is dropped from this comment rather than corrected a
+# third time, since the paragraph's conclusion never depended on it.] It is
+# genuinely portable, checked at every repin by being left in
+# engine_tree_sha rather than assumed. Excluding it would trade one
+# covering check (the digest) for none, and this project's own C33(d) legs
+# already double as the version guard's coverage of the sibling file this
+# trade would apply to (see the two doctored-superslmConfigVersion.cmake
+# legs) -- a trade worth STATING, not implying. The pattern below names
+# exactly the two files that need it, not "every
 # generated CMake file": a fourth one, if SuperSLM ever adds it, is a new
 # member to evaluate on its own merits, not something this regex covers by
 # accident.
