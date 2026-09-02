@@ -1,41 +1,60 @@
-// src/witness/witness_main.cpp -- TE-63 (U0 slice B): the witness
+// src/witness/witness_main.cpp -- TE-63/TE-78 (U0 slice B): the witness
 // executable (`Claude/Plans/SuperEmbedder_Plan.md` sec 4.4b, "the
 // structural law": "1. The witness is a target of the build being
 // fingerprinted... 4. The witness's own translation unit contains no
 // arithmetic on the reproducible path -- it is a loop and a serialiser").
 //
 // This TU calls the library's own exported C ABI verbs
-// (semb_encode_document_for_witness, semb_seam_serialize_document) and
-// digests their output with the engine's own portable SHA-256
-// (superslm/sha256.h, sec 4.4b: "the same routine model_sha uses, so the
-// fingerprint contains one hash function and not two"). It performs no
-// arithmetic of its own on the reproducible path -- clause 4's own
-// requirement, and the reason W-A's driver (ps1_pool.cpp) and the
-// interim adapter (engine_adapter_interim.cpp) live in the LIBRARY rather
-// than here (C38: an `inline` engine primitive called from this TU would
-// compile under the WITNESS's own invocation, not the library's, and a
-// definition on the library target would move nothing).
+// (semb_wa_digest, semb_encode_document_for_witness,
+// semb_seam_serialize_document) and digests their output with the
+// engine's own portable SHA-256 (superslm/sha256.h, sec 4.4b: "the same
+// routine model_sha uses, so the fingerprint contains one hash function
+// and not two"). It performs no arithmetic of its own on the
+// reproducible path -- clause 4's own requirement, and the reason W-A's
+// driver (ps1_pool.cpp, wa_digest.cpp) and the interim adapter
+// (engine_adapter_interim.cpp) live in the LIBRARY rather than here (C38:
+// an `inline` engine primitive called from this TU would compile under
+// the WITNESS's own invocation, not the library's, and a definition on
+// the library target would move nothing).
 //
-// WHAT THIS ROUND BUILDS AND WHAT IT DOES NOT. The brief's item 5 asks
-// for this executable as "a target of the same build, linking the real
-// library" so that C31's four structural clauses and C38's construction
-// "go green." The full C31 matrix (a second-configure build, a
-// detached-link build, a TU-local driver variant, a foreign-process
-// reading) is a set of independent CMake configure/build/link
-// CONSTRUCTIONS this executable's own existence does not perform by
-// itself -- `tests/witness_structural_matrix.py` (outside this seat's
-// writable scope) is where those constructions would be driven and
-// graded, and its own code (read in full before this file was written)
-// unconditionally reports every leg `MISSING PREREQUISITE` / `passed:
-// false` with no dynamic invocation of anything, so building this
-// executable does not and cannot move any of its ten legs to a real
-// reading -- filed as a routed finding in this seat's build log rather
-// than resolved by editing a file outside this seat's writable scope.
-// What this executable DOES demonstrate, real and executable today: a
-// target of this build linking the real `superembedder` library and the
+// TE-78: `witness_sha` COMPOSED per sec 4.4b -- SHA-256 over W-A's digest
+// || W-B's digest || W-Q's digest, three fixed-width 32-byte components
+// concatenated (no length prefix needed; sec 4.4b's own text: "three
+// fixed-width (32-byte) SHA-256 digests concatenated need no length-
+// prefix to stay injective"). W-A is `semb_wa_digest` (library code, the
+// plan's own population). W-B is this TU's existing seam digest -- SHA-256
+// over `semb_seam_serialize_document`'s own output bytes, unchanged from
+// TE-63. **W-Q's own leg is not yet buildable at U0** (sec 4.4c: W-Q
+// executes `semb_query_encode`, which does not exist until a real,
+// converted artifact exists post Ask 5/E0b) -- its 32-byte slot is filled
+// with a FIXED, DOCUMENTED PLACEHOLDER digest (SHA-256 of the literal
+// string below), never zero bytes (indistinguishable from an
+// uninitialized buffer) and never omitted from the concatenation (which
+// would silently change witness_sha's own byte WIDTH the day W-Q lands,
+// rather than only its VALUE). Decision recorded: D-SLM6073 (see this
+// seat's own build log) -- U1's builder replaces this placeholder with
+// W-Q's real digest and does not need to change witness_sha's shape to do
+// it.
+//
+// The printed key `witness_seam_sha256=` is preserved BYTE-FOR-BYTE from
+// TE-63 (outside this seat's writable scope to rename:
+// `tests/witness_structural_matrix.py`'s own `run_witness()` parses this
+// exact token) and now carries the FULL COMPOSED witness_sha, not only
+// W-B's own seam digest -- the old name undersells what the value now is;
+// a second, correctly-named `witness_sha=` field is also printed, byte-
+// identical, for any future reader who wants the honestly-named key.
+//
+// WHAT THIS ROUND BUILDS AND WHAT IT DOES NOT. This executable is a
+// target of this build, linking the real `superembedder` library and the
 // real installed `superslm` library, calling the library's own entry
-// points for the seam and the digest, with zero arithmetic in its own
-// translation unit.
+// points for W-A's digest, the seam, and its digest, with zero arithmetic
+// in its own translation unit. The full C31 second-configure/detached-
+// link/foreign-reading machinery remains outside this seat's own build
+// (see this seat's build log's own disposition, D-SLM6074) --
+// `tests/witness_structural_matrix.py` (outside this seat's writable
+// scope) is where those constructions are driven and graded, and it now
+// gives two of its ten legs (C31(iii), C31(v)) real, executed evaluation,
+// with C36(b) now able to evaluate for real too now that W-A is wired in.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -44,6 +63,8 @@
 
 #include "superembedder/seam_abi.h"
 #include "superslm/sha256.h"
+
+#include "superembedder/witness_abi.h"
 
 namespace {
 
@@ -64,6 +85,23 @@ std::vector<int32_t> ParseTokens(const std::string& csv) {
     start = comma + 1;
   }
   return out;
+}
+
+// sec 4.4c: W-Q is not yet buildable at U0 (no semb_query_encode entry
+// point exists until a real, converted artifact lands post Ask 5/E0b).
+// A FIXED, DOCUMENTED placeholder -- SHA-256 of this literal sentinel
+// string, computed by the same engine SHA-256 routine every other
+// component uses -- fills W-Q's own 32-byte slot in the concatenation so
+// witness_sha keeps sec 4.4b's own three-fixed-width-component SHAPE from
+// U0 forward; only its VALUE changes once U1 wires the real W-Q digest
+// in, which is the expected, ordinary way witness_sha is allowed to move.
+constexpr char kWQPlaceholderSentinel[] = "SEMB-W-Q-ABSENT-AT-U0-D-SLM6073-PLACEHOLDER";
+
+void ComputeWQPlaceholderDigest(uint8_t out[32]) {
+  superslm::Sha256 h;
+  h.Update(reinterpret_cast<const uint8_t*>(kWQPlaceholderSentinel),
+           sizeof(kWQPlaceholderSentinel) - 1);  // exclude the trailing NUL
+  h.Final(out);
 }
 
 }  // namespace
@@ -125,12 +163,40 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  superslm::Sha256 h;
-  h.Update(buf.data(), len);
-  uint8_t digest[32];
-  h.Final(digest);
+  // W-B's own digest: SHA-256 over the seam bytes, unchanged from TE-63.
+  uint8_t wb_digest[32];
+  {
+    superslm::Sha256 h;
+    h.Update(buf.data(), len);
+    h.Final(wb_digest);
+  }
 
-  std::printf("witness: n=%zu hidden=%zu seam_bytes=%zu witness_seam_sha256=%s\n", n, hidden, len,
-              superslm::ToHex(digest).c_str());
+  // W-A's own digest: the library's own driver over sec 4.4's population
+  // (wa_digest.cpp) -- compiled into the library, not this TU, per C38.
+  uint8_t wa_digest[32];
+  semb_wa_digest(wa_digest);
+
+  // W-Q's own slot: not yet buildable at U0 -- a fixed, documented
+  // placeholder (see the header comment and D-SLM6073).
+  uint8_t wq_digest[32];
+  ComputeWQPlaceholderDigest(wq_digest);
+
+  // witness_sha = SHA-256(W-A || W-B || W-Q), sec 4.4b's own formula.
+  uint8_t witness_sha[32];
+  {
+    superslm::Sha256 h;
+    h.Update(wa_digest, 32);
+    h.Update(wb_digest, 32);
+    h.Update(wq_digest, 32);
+    h.Final(witness_sha);
+  }
+
+  // The printed key `witness_seam_sha256=` is preserved for
+  // `tests/witness_structural_matrix.py`'s own parsing (outside this
+  // seat's writable scope to rename) and now carries the FULL composed
+  // witness_sha; `witness_sha=` is the same value under its honest name.
+  std::printf("witness: n=%zu hidden=%zu seam_bytes=%zu witness_seam_sha256=%s witness_sha=%s\n",
+              n, hidden, len, superslm::ToHex(witness_sha).c_str(),
+              superslm::ToHex(witness_sha).c_str());
   return 0;
 }

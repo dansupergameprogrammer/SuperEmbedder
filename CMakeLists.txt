@@ -37,6 +37,7 @@ set(SEMB_LIBRARY_SOURCES
 	src/version.cpp
 	src/superembedder/ps1_pool.cpp
 	src/superembedder/seam_serialize.cpp
+	src/superembedder/wa_digest.cpp
 	src/superembedder/engine_adapter_interim.cpp
 )
 
