@@ -252,14 +252,19 @@ def ensure_synthetic_artifact() -> Path:
 
 
 def run_witness(exe: Path, model_path: Path, tokens_csv: str = "3,17,42,5,90") -> str:
-    """Runs a built semb_witness and returns its own printed
-    `witness_seam_sha256`."""
+    """Runs a built semb_witness and returns its own printed `witness_sha`
+    -- the honestly-named field (TE-83, TE-81 review N-5: F-18's own
+    deferral -- "outside this seat's writable scope to rename" -- expired
+    the moment this file's own writable scope covered it; witness_main.cpp
+    has printed BOTH `witness_seam_sha256=` (kept for any external reader
+    still parsing it) and the honestly-named `witness_sha=` since TE-78,
+    and this reader now parses the latter)."""
     out = subprocess.run([str(exe), "--model", str(model_path), "--tokens", tokens_csv,
                           "--chunk-budget", "0"], capture_output=True, text=True, check=True).stdout
     for tok in out.split():
-        if tok.startswith("witness_seam_sha256="):
+        if tok.startswith("witness_sha="):
             return tok.split("=", 1)[1]
-    raise RuntimeError(f"witness ran but printed no witness_seam_sha256: {out!r}")
+    raise RuntimeError(f"witness ran but printed no witness_sha: {out!r}")
 
 
 # --------------------------------------------------------------- the legs --
@@ -346,10 +351,10 @@ def eval_c31_v():
         artifact = ensure_synthetic_artifact()
         digest = run_witness(exe, artifact)
         passed = len(digest) == 64  # a real SHA-256 hex digest was printed, not a refusal
-        leg_result(name, "the tip's own semb_witness completes and prints witness_seam_sha256",
-                  f"witness_seam_sha256={digest}", passed)
+        leg_result(name, "the tip's own semb_witness completes and prints witness_sha",
+                  f"witness_sha={digest}", passed)
     except Exception as ex:  # noqa: BLE001
-        leg_result(name, "the tip's own semb_witness completes and prints witness_seam_sha256",
+        leg_result(name, "the tip's own semb_witness completes and prints witness_sha",
                   f"EXCEPTION: {ex}", False)
 
 
@@ -391,31 +396,47 @@ def _selftest_c36b_verdict_can_fail() -> bool:
 
 def eval_c36_b():
     # TE-80 (TE-76 review F-5, Significant): TE-78 wired semb_wa_digest
-    # (W-A's own digest) into witness_sha, so this construction CAN now
-    # be evaluated for real -- confirmed by grep (witness_main.cpp DOES
-    # call semb_wa_digest, unlike when this leg was first written). The
-    # prior version reported ANY digest-equal outcome as
-    # MISSING_PREREQUISITE unconditionally, which was correct while the
-    # wiring genuinely did not exist and became a silent escape hatch the
-    # moment it landed: a REGRESSION that unwires W-A again would produce
-    # the identical digest-equal observation and be reported as "nothing
-    # to evaluate" rather than a failed must-reject. The fix separates
-    # the two causes structurally: an EXCEPTION while attempting the
-    # construction (the scratch build itself could not be configured,
-    # built, or run) is the only case reported MISSING_PREREQUISITE --
-    # genuinely could not attempt it. Once the mutant is built and run
-    # successfully, ANY outcome is a real, evaluated result: digest moved
-    # -> PASS; digest unchanged -> FAIL, never missing.
+    # into witness_sha, so this construction CAN now be evaluated for
+    # real. Once the mutant is built and run successfully, the outcome
+    # is a real PASS or FAIL, decided by _c36b_verdict (commissioned
+    # separately, before this function is ever called -- see main()).
+    #
+    # TE-83 (TE-81 review N-1, Significant): the PRIOR version wrapped
+    # copy_repo/patch_text/build_witness_in/run_witness in ONE try block
+    # and reported ANY exception -- from ANY of them -- as
+    # MISSING_PREREQUISITE. That conflated two categorically different
+    # conditions: "the scratch build genuinely could not be configured,
+    # built or run" (a real inability to attempt the construction) and
+    # "patch_text's own anchor text was not found in ps1_pool.cpp" (the
+    # MUTATION WAS NEVER APPLIED -- the leg then risked grading an
+    # UNMUTATED tree against itself and calling that MISSING rather than
+    # the dangerous silent non-event it is). Executed, TE-81's own
+    # reproduction: refactoring `constexpr int kExpBias = 127;` to
+    # `constexpr int32_t kExpBias = 127;` -- semantically identical, a
+    # plausible future edit unrelated to the property under test --
+    # defeated the anchor match and the matrix exited 0. `eval_c31_iii`,
+    # above, uses the identical patch_text mechanism for its own
+    # must-reject and reports ANY exception there (including a failed
+    # patch_text) as an evaluated FAIL -- this function now matches it:
+    # a failed MUTATION is its own try block, caught separately, and
+    # reported as FAIL, never MISSING_PREREQUISITE. Only a genuine
+    # configure/build/run failure, in the SECOND try block below, stays
+    # MISSING_PREREQUISITE.
     name = "C36(b) our own epilogue edited, superslm.lib standing, must refuse (witness_sha must move)"
+    exe = BUILD_DIR / "semb_witness.exe"
+    if not exe.exists():
+        leg_missing(name, f"{exe} does not exist -- build it first")
+        return
+
     try:
-        exe = BUILD_DIR / "semb_witness.exe"
-        if not exe.exists():
-            leg_missing(name, f"{exe} does not exist -- build it first")
-            return
         artifact = ensure_synthetic_artifact()
         tip_digest = run_witness(exe, artifact)
+    except Exception as ex:  # noqa: BLE001 -- genuinely could not establish the tip's own baseline
+        leg_missing(name, f"could not run the tip's own semb_witness to establish a baseline: {ex}")
+        return
 
-        scratch = SCRATCH_ROOT / "c36b_epilogue_edit"
+    scratch = SCRATCH_ROOT / "c36b_epilogue_edit"
+    try:
         copy_repo(scratch)
         patch_text(
             scratch / "src" / "superembedder" / "ps1_pool.cpp",
@@ -423,6 +444,16 @@ def eval_c36_b():
             "constexpr int kExpBias = 126;",
             "C36(b) epilogue edit",
         )
+    except Exception as ex:  # noqa: BLE001 -- the mutation itself was never applied
+        leg_result(name, "the edited-epilogue build's own digest differs from the tip's",
+                  f"FAIL: the mutation could not be applied to the scratch copy ({ex}) -- a leg "
+                  f"that cannot mutate the epilogue cannot prove witness_sha moves with it, and "
+                  f"reporting that as a non-failure would silence the only construction in this "
+                  f"suite proving sec 4.4b's own structural law for the pooling epilogue "
+                  f"(TE-81 review N-1).", False)
+        return
+
+    try:
         mutant_exe = build_witness_in(scratch, scratch / "build")
         mutant_artifact = ensure_synthetic_artifact()  # same input artifact, built engine unaffected
         mutant_digest = run_witness(mutant_exe, mutant_artifact)
@@ -432,9 +463,7 @@ def eval_c36_b():
         return
 
     # The construction was attempted for real and produced a real result
-    # -- from here, the outcome is PASS or FAIL, never MISSING_PREREQUISITE,
-    # decided by _c36b_verdict (commissioned above, before this function
-    # is ever called -- see main()).
+    # -- from here, the outcome is PASS or FAIL, never MISSING_PREREQUISITE.
     passed, message = _c36b_verdict(tip_digest, mutant_digest)
     leg_result(name, "the edited-epilogue build's own digest differs from the tip's", message,
               passed)
