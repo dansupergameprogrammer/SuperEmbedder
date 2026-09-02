@@ -606,7 +606,7 @@ def c33_leg_i_preexisting_build_survives(pin_tool: Path, lock_path_template: Pat
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_text(lock_path_template.read_text(encoding="utf-8"), encoding="utf-8")
 
-    def _construct_and_run(workdir: Path, keep_workdir: bool, prefix: Path):
+    def _construct_and_run(workdir: Path, keep_workdir: bool, prefix: Path, fresh_build: bool = False):
         rmtree(workdir)
         (workdir / "build" / "my_cache").mkdir(parents=True)
         (workdir / "build" / "PRECIOUS.txt").write_text(
@@ -626,6 +626,8 @@ def c33_leg_i_preexisting_build_survives(pin_tool: Path, lock_path_template: Pat
         ]
         if keep_workdir:
             pin_cmd.append("--keep-workdir")
+        if fresh_build:
+            pin_cmd.append("--fresh-build")
         proc = subprocess.run(pin_cmd, capture_output=True, text=True)
         survival = {
             "precious": (workdir / "build" / "PRECIOUS.txt").exists(),
@@ -641,14 +643,88 @@ def c33_leg_i_preexisting_build_survives(pin_tool: Path, lock_path_template: Pat
     both_refused = rc1 != 0 and rc2 != 0
     both_named = "SEMB_PIN_UNSAFE_BUILD_DIR" in out1 and "SEMB_PIN_UNSAFE_BUILD_DIR" in out2
     passed = all_survived and both_refused and both_named
+    # TE-75 O-4: `returncode` used to be [rc1, rc2] -- the only leg in the
+    # report whose returncode was a list where the other 27 (now 28) carry
+    # an int, breaking the schema for any reader of the field. Both
+    # sub-runs are expected to refuse identically under want_fail=True (the
+    # --keep-workdir arm never reaches the site that would make it
+    # differ -- R-1's own defect was in configure_engine, before cleanup is
+    # ever reached), so `returncode` is now a single int -- rc1, kept
+    # alongside the pair under its own explicitly-named fields.
     RESULTS.append({
         "leg": "C33(i) pre-existing workdir/build survives configure_engine (R-1)",
         "expected": "SEMB_PIN_UNSAFE_BUILD_DIR",
-        "returncode": [rc1, rc2],
+        "returncode": rc1,
+        "returncode_no_keep": rc1,
+        "returncode_keep_workdir": rc2,
         "want_fail": True,
         "found_expected_string": both_named,
         "passed": passed,
         "output_tail": f"no-keep-workdir survival={surv1}\n" + "\n".join(out1.splitlines()[-6:]) + f"\nkeep-workdir survival={surv2}\n" + "\n".join(out2.splitlines()[-6:]),
+    })
+
+
+def c33_leg_j_fresh_build_authorized_wipe(pin_tool: Path, lock_path_template: Path):
+    """TE-75 M-2 (Minor): --fresh-build was added by TE-73's own fix for R-1 but
+    documented in USAGE by nothing, driven by no leg, and verified only by an
+    ad hoc probe -- the sole escape hatch on the module's one
+    unconditional-wipe path, uncovered. A --workdir with the SAME pre-existing
+    build/PRECIOUS.txt and build/my_cache/deep.txt C33(i) constructs, run WITH
+    --fresh-build: this time the tool must actually wipe build/ (both files
+    gone), succeed (a real engine configure+build+install against the same
+    real clone C33(i) already fetched), and leave keepme.txt -- beside build/,
+    never touched by any of this -- standing."""
+    tag = None
+    for line in lock_path_template.read_text(encoding="utf-8").splitlines():
+        if line.startswith("tag="):
+            tag = line.split("=", 1)[1]
+    assert tag, "could not read tag from superslm.lock"
+    clone_dir = SCRATCH / "c33j_clone"
+    rmtree(clone_dir)
+    subprocess.run(
+        ["git", "clone", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.longpaths=true",
+         "--branch", tag, "--single-branch",
+         DEFAULT_REMOTE, str(clone_dir)],
+        check=True, capture_output=True, text=True,
+    )
+    lock = SCRATCH / "c33j_lock" / "superslm.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(lock_path_template.read_text(encoding="utf-8"), encoding="utf-8")
+
+    workdir = SCRATCH / "c33j_workdir"
+    rmtree(workdir)
+    (workdir / "build" / "my_cache").mkdir(parents=True)
+    (workdir / "build" / "PRECIOUS.txt").write_text(
+        "M-2: this run did not create it, but --fresh-build authorizes replacing it\n", encoding="utf-8")
+    (workdir / "build" / "my_cache" / "deep.txt").write_text(
+        "M-2: nested, also authorized away by --fresh-build\n", encoding="utf-8")
+    keepme = workdir / "keepme.txt"
+    keepme.write_text("M-2: beside build, never touched\n", encoding="utf-8")
+    prefix = SCRATCH / "c33j_prefix"
+    rmtree(prefix)
+
+    pin_cmd = [
+        PYEXE, str(pin_tool),
+        "--lock", str(lock),
+        "--prefix", str(prefix),
+        "--workdir", str(workdir),
+        "--reuse-clone", str(clone_dir),
+        "--fresh-build",
+        "--cmake", CMAKE, "--ninja", NINJA, "--generator", GENERATOR,
+    ]
+    proc = subprocess.run(pin_cmd, capture_output=True, text=True)
+    out = proc.stdout + proc.stderr
+    build_wiped = not (workdir / "build" / "PRECIOUS.txt").exists() and not (workdir / "build" / "my_cache" / "deep.txt").exists()
+    keepme_survived = keepme.exists() and keepme.read_text(encoding="utf-8").startswith("M-2")
+    passed = proc.returncode == 0 and build_wiped and keepme_survived
+    RESULTS.append({
+        "leg": "C33(j) --fresh-build authorizes wiping a pre-existing workdir/build (M-2)",
+        "expected": "exit 0, build/ wiped and rebuilt, keepme.txt beside it untouched",
+        "returncode": proc.returncode,
+        "want_fail": False,
+        "found_expected_string": build_wiped and keepme_survived,
+        "passed": passed,
+        "output_tail": "\n".join(out.splitlines()[-8:]) + f"\nbuild_wiped={build_wiped} keepme_survived={keepme_survived}",
     })
 
 
@@ -1331,6 +1407,7 @@ def main() -> int:
     _run_leg(c33_leg_g_unowned_workdir_refused, pin_tool, REPO_ROOT / "superslm.lock")
     _run_leg(c33_leg_h_final_cleanup_preserves_user_files, pin_tool, REPO_ROOT / "superslm.lock")
     _run_leg(c33_leg_i_preexisting_build_survives, pin_tool, REPO_ROOT / "superslm.lock")
+    _run_leg(c33_leg_j_fresh_build_authorized_wipe, pin_tool, REPO_ROOT / "superslm.lock")
     _run_leg(c33_leg_f_label_mismatch)
 
     _run_leg(c34_leg_a_cache_override)
