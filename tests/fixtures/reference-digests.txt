@@ -10,19 +10,26 @@
 # forbids a field computed from a description of an input, which a
 # transcribed digest would be here).
 #
-# THIS FILE IS PENDING. `semb_encode_document_for_witness`
-# (tests/semb_seam_abi_contract.h) does not exist until TE-63 lands the
-# encoder TU; there is no encoder to run to COMPUTE this anchor, and per
-# StandardsDocument sec 5.4 ("every numeric claim carries an execution...
-# or is marked explicitly underived"), a placeholder digest here would be
-# indistinguishable from a real one to a future reader. The commissioning
-# event that fills this in is named in
-# `Claude/Curie/te62-u0b-red-suite-2026-09-02.md`'s handoff: once TE-63's
-# encoder links, run it once against `tests/fixtures/regenerate_synthetic_
-# artifact.py`'s output, record the digest here under the line format
-# below, and `tests/c39_seam_digest_test.cpp` starts comparing against a
-# real value instead of refusing to link.
+# COMMISSIONED, TE-63, 2026-09-02. `semb_encode_document_for_witness` +
+# `semb_seam_serialize_document` (src/superembedder/engine_adapter_interim.cpp,
+# src/superembedder/seam_serialize.cpp) ran against the regenerated
+# synthetic artifact `build/_scratch/synthetic_te62_c39.sslm` (pinned tag
+# v1.3.0, `tests/fixtures/regenerate_synthetic_artifact.py`'s own output),
+# on `tests/c39_seam_digest_test.cpp`'s own committed 5-token document
+# (kTokenIds = {3, 17, 42, 5, 90}) at chunk_budget=0 (one whole-document
+# call). The seam digest is SHA-256 over `semb_seam_serialize_document`'s
+# own output bytes (superslm/sha256.h, the engine's own portable routine),
+# via `semb_witness --model build/_scratch/synthetic_te62_c39.sslm
+# --tokens 3,17,42,5,90 --chunk-budget 0`, run TWICE as two independent
+# process invocations — both runs produced this exact digest, byte for
+# byte.
 #
-# Line format (once populated): "<artifact-fingerprint>  <seam-digest-hex>"
-#
-# PENDING -- no entry yet.
+# Line format: "<artifact-fingerprint>  <seam-digest-hex>"
+# artifact-fingerprint: SHA-256 of the regenerated .sslm file's own bytes
+# (independently computed via Python hashlib against the file on disk,
+# not read from any field this build emits) — the same value
+# `tests/oracle/regenerate_synthetic_artifact.py`'s own
+# --verify-determinism run and this seat's own hashlib check both agree
+# on for the pinned tag's hermetic regeneration.
+
+a8f88ab9e82f220bf5fdffa68d4fac4cf248d0158a4ae9dc557eeedd51df8097  994b433e418082340ee6dcb460fcba458dbf67e10b4fad9d2cccc78c1f0564cd
