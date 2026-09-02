@@ -770,15 +770,24 @@ def c34_leg_g_preprocess_failure_raises():
     record("C34(g) preprocess failure raises, not truncates (N-5)", "SEMB_SOURCE_PREPROCESS_FAILED", rc, out)
 
 
-def c34_leg_h_empty_resolver_refused():
+def c34_leg_j_empty_resolver_refused():
     """TE-69 P-3, a permanent leg for N-6. SEMB_TEST_FORCE_EMPTY_CLOSURE
     drives the real cmd_configure() through a real `cmake -S -B` to its own
     must-reject: a resolver reporting nothing at all against this project's
-    real, #include-bearing src/version.cpp."""
-    src = copy_repo(SCRATCH / "c34h_src")
-    rc, out = run_cmake_configure(src, SCRATCH / "c34h_build", ENGINE_PREFIX,
+    real, #include-bearing src/version.cpp.
+
+    TE-71 Q-8: this leg claimed letter "h", which the plan's own C34 row
+    (Claude/Plans/SuperEmbedder_Plan.md Sec8) already allocates to a
+    different, specified leg -- SEMB_PS_VERSION_LABEL against ps_version,
+    one of the two manifest-honesty legs (not yet buildable, gated on
+    TE-63). Renamed to "j", a letter the plan does not use for C34 (the
+    plan's own C34 letters are a-f and h; the code's are a-d, f-g, i, now
+    j -- "e" is a historical gap on the code side, matching the plan's own
+    reservation of it for a different not-yet-built leg too)."""
+    src = copy_repo(SCRATCH / "c34j_src")
+    rc, out = run_cmake_configure(src, SCRATCH / "c34j_build", ENGINE_PREFIX,
                                    extra_env={"SEMB_TEST_FORCE_EMPTY_CLOSURE": "1"})
-    record("C34(h) empty resolver refused (N-6)", "SEMB_SOURCE_NOT_IN_OWN_CLOSURE", rc, out)
+    record("C34(j) empty resolver refused (N-6)", "SEMB_SOURCE_NOT_IN_OWN_CLOSURE", rc, out)
 
 
 def c34_leg_i_build_dir_placement_invariant():
@@ -822,7 +831,19 @@ def c34_leg_i_build_dir_placement_invariant():
     # reach for the leg to discriminate at all.
     build_in = src / "build" / "semb"
     rc_in, out_in = run_cmake_configure(src, build_in, ENGINE_PREFIX)
-    build_out = SCRATCH.parent / "c34i_build_out_of_root"  # a sibling of SCRATCH, outside src
+    # TE-71 Q-9: this used to be SCRATCH.parent/"c34i_build_out_of_root" --
+    # under the default scratch that is the system temp directory, and
+    # under an explicit --scratch it is that path's OWN parent (a drive
+    # root, for the short paths leg (e)'s own LNK1181 warning recommends).
+    # F-12's cleanup covers SCRATCH only, so this directory was left behind
+    # on any failing run or any exception before this function's own
+    # rmtree, and its fixed name collided across two matrix runs sharing a
+    # scratch parent. Still a sibling of `src` (out-of-root is the point of
+    # this half of the leg), now placed inside SCRATCH -- F-12 owns it, and
+    # SCRATCH's own name is unique per run (tempfile.mkdtemp, or the
+    # caller's explicit --scratch, either way a real leaf directory, not a
+    # shared parent).
+    build_out = SCRATCH / "c34i_build_out_of_root"  # a sibling of src, inside SCRATCH
     rc_out, out_out = run_cmake_configure(src, build_out, ENGINE_PREFIX)
 
     def extract(build_dir: Path):
@@ -1109,13 +1130,30 @@ def main() -> int:
     c34_leg_d_source_added_after_digest(NINJA)
     c34_leg_f_header_edit_moves_digest()
     c34_leg_g_preprocess_failure_raises()
-    c34_leg_h_empty_resolver_refused()
+    c34_leg_j_empty_resolver_refused()
     c34_leg_i_build_dir_placement_invariant()
 
     c14_run_all_legs()
 
     all_passed = all(r["passed"] for r in RESULTS)
-    print(json.dumps({"all_passed": all_passed, "results": RESULTS}, indent=2))
+
+    # TE-71 Q-4: the leg-count reconciliation has been wrong, in a way that
+    # cancelled to the right total, in three consecutive rounds (P-5,
+    # D-SLM5984, this casebook's own Q-4) -- every prior instance was a
+    # count someone typed by hand from reading main()'s own call list and
+    # miscounted. Derived here instead, from RESULTS itself -- the actual
+    # population every leg recorded into on this real run -- never from the
+    # source. A leg's family is the "C<n>" prefix of its own name (every
+    # leg name starts with one, with or without a following "(letter)"):
+    # C33(a)... and C34(a)... carry parens, C14's seven do not.
+    _family_re = re.compile(r"^(C\d+)")
+    family_counts: dict[str, int] = {}
+    for _r in RESULTS:
+        _m = _family_re.match(_r["leg"])
+        _fam = _m.group(1) if _m else "other"
+        family_counts[_fam] = family_counts.get(_fam, 0) + 1
+    leg_counts = {"total": len(RESULTS), "by_family": dict(sorted(family_counts.items()))}
+    print(json.dumps({"all_passed": all_passed, "leg_counts": leg_counts, "results": RESULTS}, indent=2))
 
     # TE-65 F-12: this used to leave the scratch tree behind unconditionally
     # -- leg (e) alone clones and builds the real engine (~100 MB, measured),
