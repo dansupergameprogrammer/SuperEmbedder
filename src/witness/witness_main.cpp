@@ -137,11 +137,12 @@ int main(int argc, char** argv) {
   }
 
   // Hidden size is not known until the model is open, inside the library's
-  // own entry point -- this TU allocates generously (the fixture's own
-  // vocab/hidden bounds are small) and lets the library report the real
-  // value via hidden_out.
-  constexpr size_t kMaxHidden = 4096;
-  std::vector<int8_t> codes(n * kMaxHidden);
+  // own entry point -- this TU allocates for seam_abi.h's own documented
+  // ceiling (TE-79 F-7: semb_encode_document_for_witness refuses
+  // kSembEncodeHiddenTooLarge, before writing anything, if the real
+  // hidden_size exceeds it) and lets the library report the real value
+  // via hidden_out.
+  std::vector<int8_t> codes(n * kSembWitnessMaxHidden);
   std::vector<int64_t> m(n), e(n);
   size_t hidden = 0;
 
@@ -153,7 +154,13 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  std::vector<uint8_t> buf(n * hidden + 4096);
+  // TE-79 F-8 (TE-76 review): sized EXACTLY per seam_serialize.cpp's own
+  // formula (16 + n * (hidden + 16): the two u64 header fields, then per
+  // position hidden code bytes plus two u64 scale fields) rather than a
+  // heuristic "+4096" pad, which silently ran out above n=255 (16 + 16n >
+  // 4096) and made every document above that length an unconditional
+  // kSembSerializeBufferTooSmall.
+  std::vector<uint8_t> buf(16 + n * (hidden + 16));
   size_t len = 0;
   const SembSerializeStatus sst = semb_seam_serialize_document(codes.data(), m.data(), e.data(), n,
                                                                  hidden, buf.data(), buf.size(),

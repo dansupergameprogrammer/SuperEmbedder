@@ -164,6 +164,16 @@ extern "C" SembEncodeStatus semb_encode_document_for_witness(const char* model_p
   if (!model) return kSembEncodeEngineRefused;
 
   const size_t hidden = model->hidden_size;
+  // TE-79 F-7 (Significant, TE-76 review): the real hidden_size is only
+  // known now, after the model has opened -- refused here, before
+  // *hidden_out, codes_out, m_out or e_out are touched, rather than
+  // writing n*hidden bytes into a codes_out buffer no caller could have
+  // sized correctly (this verb takes no capacity parameter; see
+  // seam_abi.h's own kSembWitnessMaxHidden comment for why).
+  if (hidden > kSembWitnessMaxHidden) {
+    semb::EncoderClose(model);
+    return kSembEncodeHiddenTooLarge;
+  }
   if (hidden_out) *hidden_out = hidden;
 
   std::vector<superslm::CarriedScale> scales(n);

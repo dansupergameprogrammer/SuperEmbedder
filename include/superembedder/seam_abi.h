@@ -19,7 +19,30 @@ enum SembSerializeStatus : int32_t {
 enum SembEncodeStatus : int32_t {
   kSembEncodeOk = 0,
   kSembEncodeEngineRefused = 1,
+  // TE-79 F-7 (Significant, TE-76 review): the real hidden_size, known
+  // only after the model opens, exceeds kSembWitnessMaxHidden -- refused
+  // BEFORE codes_out is written. See semb_encode_document_for_witness's
+  // own doc comment.
+  kSembEncodeHiddenTooLarge = 2,
 };
+
+// TE-79 F-7: semb_encode_document_for_witness cannot take a real
+// capacity parameter for codes_out without breaking every existing
+// caller's own fixed signature (extern "C", no default arguments, and
+// the callers under tests/ are outside this seat's writable scope) --
+// so the domain is closed the other direction: a fixed, documented
+// ceiling on hidden_size, enforced INSIDE the verb once the real value
+// is known (after the model opens, before any write), refusing by name
+// rather than writing past what any caller could safely have allocated.
+// 64 matches BOTH extant callers' own fixed allocations exactly
+// (tests/c39_seam_digest_test.cpp, tests/c40_chunk_budget_inertness_test.cpp,
+// each `n * 64` int8) and the tiny synthetic fixture's real hidden_size
+// (32, F-13) with a 2x margin -- a caller needing a larger hidden_size
+// must allocate more AND this ceiling must rise with it; both are owed
+// together at U1, when this witness-only verb retires in favour of the
+// real product entry point (sec 4.4a: "the cost cell links the library's
+// exported encoder entry and the singleton check's scope moves with it").
+constexpr size_t kSembWitnessMaxHidden = 64;
 
 extern "C" {
 
@@ -40,6 +63,14 @@ SembSerializeStatus semb_seam_serialize_document(const int8_t* codes, const int6
 // `token_ids` and writes the per-position codes/scales. `chunk_budget` is
 // sec 4.3's pinned chunk-budget parameter (0 or >= n means one
 // whole-document call).
+//
+// CAPACITY (TE-79 F-7): `codes_out` must have room for at least
+// `n * kSembWitnessMaxHidden` int8 values; `m_out`/`e_out` each need `n`
+// int64_t values (independent of hidden_size -- always safe at any `n` a
+// caller has itself allocated for). The real `hidden_size` is not known
+// until the model opens; if it exceeds `kSembWitnessMaxHidden` this verb
+// returns `kSembEncodeHiddenTooLarge` BEFORE writing anything to
+// `codes_out`, `m_out`, `e_out`, or `*hidden_out`.
 SembEncodeStatus semb_encode_document_for_witness(const char* model_path,
                                                    const int32_t* token_ids, size_t n,
                                                    size_t chunk_budget, int8_t* codes_out,
