@@ -1,28 +1,52 @@
 #!/usr/bin/env python3
-"""tools/semb_source_hash.py — computes semb_source_sha (§8 C34), the digest
-over the `superembedder` library target's own covered source set, and
-verifies it two ways:
+"""tools/semb_source_hash.py — computes semb_source_sha (Claude/Plans/
+SuperEmbedder_Plan.md Sec4.4, Sec8 C34), the digest over every file the
+compiler reads to build the `superembedder` library target — its
+translation units and their transitive include closure — and verifies it
+two ways:
 
-  configure  — compute the digest over the DECLARED covered set (the sources
-               CMake lists plus every header found by recursively walking the
-               given header roots), plus SEMB_ENGINE_PATH as a scalar input.
-               Used at CMake configure time, before the library is built.
+  configure  — compute the digest from a PREPROCESSOR-RESOLVED closure: for
+               each declared source, the real compiler (the one CMake
+               resolved) is invoked in preprocess/syntax-check-only mode
+               with the target's real include directories and standard, and
+               its own reported include list is the covered set. This is
+               not a directory glob: a public header nothing includes is
+               correctly absent, and a private header beside a source that
+               source #includes is correctly present, because both are
+               decided by the same preprocessor that will actually compile
+               the target, not by which directory a file happens to sit in.
+               Also asserts each declared SOURCE is a member of its own
+               resolved closure (Sec4.4's stated subset property).
   verify     — re-derive the REAL compiled closure from Ninja's own
-               dependency database (identical technique to
-               tools/pin-superslm/pin_superslm.py's engine-side derivation)
-               and recompute the digest from THAT, then compare to the
-               configure-time value recorded in the sidecar JSON. Used as a
-               POST-BUILD step; a mismatch is SEMB_SOURCE_SET_DRIFT — the
-               declared/scanned covered set disagreed with what the compiler
-               actually pulled in.
+               dependency database (tools/pin-superslm/pin_superslm.py's
+               engine-side technique) and recompute the digest from THAT,
+               then compare to the configure-time value recorded in the
+               sidecar JSON. Used as a POST-BUILD step; a genuine
+               discrepancy is SEMB_SOURCE_SET_DRIFT. Because configure-time
+               is now itself derived from real preprocessing rather than an
+               approximation, the two readings are expected to agree in the
+               ordinary case, and a mismatch is evidence of actual drift
+               (e.g. a source recompiled outside the tracked build graph)
+               rather than an artifact of two different discovery methods.
 
 Both subcommands share the digest formula in provenance_lib.digest_members so
 the two readings cannot drift apart independently of the real inputs.
+
+FIX ROUND (TE-65, F-1): the prior `configure` computed its covered set as
+`SOURCES union rglob(HEADER_ROOTS)` and demanded byte-for-byte agreement with
+the real compiled closure at verify time. That is not what Sec4.4 specifies
+("the covered set is the compiler's") and it failed in both directions on a
+correct tree: a public header nothing includes was wrongly counted in (the
+glob does not know it is unused), and a private header beside a source that
+source DOES include was wrongly left out (the header lived outside every
+globbed root). Both are executed in the TE-65 fix log's red-then-green
+section, reproducing the reviewer's own two constructions.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -30,36 +54,101 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent / "pin-superslm"))
 from provenance_lib import digest_members  # noqa: E402
 
+_INCLUDE_NOTE_RE = re.compile(r"^\s*Note:\s+including file:\s*(.+?)\s*$")
+
+
+def _msvc_closure(compiler: str, source: Path, include_dirs: list[str], std: str) -> list[Path]:
+    """Invoke MSVC in syntax-check-only mode (/Zs -- no codegen, still fully
+    preprocesses and parses) with /showIncludes, and return every header path
+    it names. /showIncludes writes 'Note: including file:  <path>' lines
+    (indentation encodes nesting depth, ignored here -- every depth is part
+    of the transitive closure)."""
+    cmd = [compiler, "/nologo", "/c", "/Zs", "/showIncludes", f"/std:{std}", "/EHsc", "/W0"]
+    for d in include_dirs:
+        cmd.append(f"/I{d}")
+    cmd.append(str(source))
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(source.parent))
+    headers = []
+    for line in (proc.stdout + "\n" + proc.stderr).splitlines():
+        m = _INCLUDE_NOTE_RE.match(line)
+        if m:
+            headers.append(Path(m.group(1)))
+    if proc.returncode != 0 and not headers:
+        raise SystemExit(
+            f"SEMB_SOURCE_PREPROCESS_FAILED: {compiler} could not preprocess {source} "
+            f"(exit {proc.returncode}). stdout/stderr:\n{proc.stdout}\n{proc.stderr}"
+        )
+    return headers
+
+
+def _gcc_clang_closure(compiler: str, source: Path, include_dirs: list[str], std: str) -> list[Path]:
+    """`-M` emits a Makefile dependency rule listing the source and every
+    header the preprocessor resolved for it; strip the 'target:' prefix and
+    line-continuation backslashes."""
+    cmd = [compiler, "-M", f"-std={std}"]
+    for d in include_dirs:
+        cmd.append(f"-I{d}")
+    cmd.append(str(source))
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(source.parent))
+    if proc.returncode != 0:
+        raise SystemExit(
+            f"SEMB_SOURCE_PREPROCESS_FAILED: {compiler} could not preprocess {source} "
+            f"(exit {proc.returncode}). stderr:\n{proc.stderr}"
+        )
+    text = proc.stdout.replace("\\\n", " ")
+    parts = text.split(":", 1)
+    if len(parts) != 2:
+        return []
+    tokens = parts[1].split()
+    return [Path(t) for t in tokens]
+
+
+def _resolve_closure(compiler_id: str, compiler: str, source: Path, include_dirs: list[str], std: str) -> list[Path]:
+    if compiler_id == "MSVC":
+        return _msvc_closure(compiler, source, include_dirs, std)
+    return _gcc_clang_closure(compiler, source, include_dirs, std)
+
 
 def cmd_configure(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
-    covered: list[Path] = []
-    missing: list[str] = []
-
-    for s in args.source:
-        p = (root / s).resolve()
-        if not p.exists():
-            missing.append(s)
-        else:
-            covered.append(p)
-
-    for header_root in args.header_root:
-        hr = (root / header_root).resolve()
-        if not hr.exists():
-            continue
-        for ext in ("*.h", "*.hpp", "*.inc"):
-            for p in sorted(hr.rglob(ext)):
-                covered.append(p)
-
+    missing = [s for s in args.source if not (root / s).exists()]
     if missing:
-        result = {"error": "SEMB_SOURCE_FILE_MISSING", "missing": missing}
-        print(json.dumps(result))
+        print(json.dumps({"error": "SEMB_SOURCE_FILE_MISSING", "missing": missing}))
         return 1
+
+    covered: set[Path] = set()
+    per_source_closure: dict[str, set[Path]] = {}
+    for s in args.source:
+        src_path = (root / s).resolve()
+        closure = _resolve_closure(args.compiler_id, args.compiler, src_path, args.include_dir, args.std)
+        resolved = set()
+        for h in closure:
+            try:
+                resolved.add(h.resolve())
+            except OSError:
+                continue
+        resolved.add(src_path)  # the source itself is always a member of its own closure
+        per_source_closure[s] = resolved
+        covered |= resolved
+
+    # Sec4.4's stated subset property: every declared SOURCE is a member of
+    # the covered set the preprocessor actually resolved for it. A source
+    # that fails this (e.g. one the preprocessor silently skipped) is a
+    # configuration defect, not a normal state.
+    for s, closure in per_source_closure.items():
+        if (root / s).resolve() not in closure:
+            print(json.dumps({"error": "SEMB_SOURCE_NOT_IN_OWN_CLOSURE", "source": s}))
+            return 1
 
     members = []
     file_list = []
-    for p in sorted(set(covered)):
-        rel = p.relative_to(root).as_posix()
+    out_of_root = []
+    for p in sorted(covered):
+        try:
+            rel = p.relative_to(root).as_posix()
+        except ValueError:
+            out_of_root.append(str(p))
+            continue
         members.append(("source", rel, p.read_bytes()))
         file_list.append(rel)
     members.append(("scalar", "SEMB_ENGINE_PATH", args.engine_path.encode("utf-8")))
@@ -71,14 +160,15 @@ def cmd_configure(args: argparse.Namespace) -> int:
         "#pragma once\n"
         f'#define SEMB_SOURCE_SHA "{digest}"\n'
     )
-    Path(args.out_header).write_text(header, encoding="utf-8")
+    Path(args.out_header).write_text(header, encoding="utf-8", newline="\n")
 
     sidecar = {
         "semb_source_sha": digest,
         "engine_path": args.engine_path,
         "covered_files": file_list,
+        "out_of_root_files_excluded": out_of_root,
     }
-    Path(args.out_json).write_text(json.dumps(sidecar, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    Path(args.out_json).write_text(json.dumps(sidecar, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
 
     print(json.dumps({"semb_source_sha": digest, "covered_count": len(file_list)}))
     return 0
@@ -109,6 +199,16 @@ def _parse_query_inputs(text: str) -> list[str]:
 
 def _ninja_deps(build: Path, ninja: str, obj: str) -> list[str]:
     proc = subprocess.run([ninja, "-t", "deps", obj], cwd=build, capture_output=True, text=True)
+    if proc.returncode != 0:
+        # F-14 (TE-65): a missing/broken deps database must not be read as
+        # "zero headers" -- that reading is indistinguishable from a
+        # genuinely header-free translation unit and would silently narrow
+        # engine_tree_sha to the source files alone. Fail loudly instead.
+        raise SystemExit(
+            f"SEMB_SOURCE_DEPS_UNAVAILABLE: 'ninja -t deps {obj}' exited {proc.returncode}; "
+            f"the dependency database this closure is derived from is missing or stale. "
+            f"stderr:\n{proc.stderr}"
+        )
     headers = []
     for line in proc.stdout.splitlines():
         if line.startswith("    "):
@@ -132,6 +232,9 @@ def cmd_verify(args: argparse.Namespace) -> int:
         return 1
     lib_out = _ninja_query(build, args.ninja, lib_targets[0])
     obj_files = _parse_query_inputs(lib_out)
+    if not obj_files:
+        print(json.dumps({"error": "SEMB_SOURCE_NO_OBJECTS", "target": args.target}))
+        return 1
 
     real_files: set[Path] = set()
     for obj in obj_files:
@@ -173,7 +276,12 @@ def main() -> int:
     c = sub.add_parser("configure")
     c.add_argument("--root", required=True)
     c.add_argument("--source", action="append", default=[], help="a declared library source, relative to --root")
-    c.add_argument("--header-root", action="append", default=[], help="a directory recursively globbed for headers")
+    c.add_argument("--include-dir", action="append", default=[],
+                    help="an include directory the real target will use (matches target_include_directories)")
+    c.add_argument("--compiler", required=True, help="CMAKE_CXX_COMPILER")
+    c.add_argument("--compiler-id", required=True, choices=["MSVC", "GNU", "Clang", "AppleClang"],
+                    help="CMAKE_CXX_COMPILER_ID")
+    c.add_argument("--std", default="c++20")
     c.add_argument("--engine-path", required=True)
     c.add_argument("--out-header", required=True)
     c.add_argument("--out-json", required=True)

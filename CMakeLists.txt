@@ -30,7 +30,7 @@ configure_file(
 # ---------------------------------------------------------------------------
 semb_compute_source_provenance(superembedder
 	SOURCES src/version.cpp
-	HEADER_ROOTS include/superembedder
+	INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include"
 	OUT_HEADER "${CMAKE_BINARY_DIR}/generated/semb_provenance.h"
 )
 

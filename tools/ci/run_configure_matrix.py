@@ -300,13 +300,15 @@ def c34_leg_d_source_added_after_digest(ninja: str):
                "baseline build unexpectedly failed:\n" + build_proc.stdout + build_proc.stderr, want_fail=False)
         return
 
-    # Add a new header the header-root glob would find on a FRESH configure,
+    # Add a new header a FRESH configure's preprocessor pass would resolve,
     # then make an ALREADY-COMPILED source #include it, and rebuild WITHOUT
-    # reconfiguring. The configure-time covered-set scan is a plain python
-    # glob (not a CMake-tracked file(GLOB CONFIGURE_DEPENDS ...)), so CMake
-    # has no reason to reconfigure on its own — exactly the gap that makes
-    # "a source added to the target after the digest was computed" a real,
-    # reachable state rather than one CMake's own change-tracking forecloses.
+    # reconfiguring. The configure-time covered-set computation runs a
+    # python subprocess (execute_process), which CMake's own change-tracking
+    # does not watch the way it watches CMakeLists.txt or a
+    # file(GLOB CONFIGURE_DEPENDS ...) result, so CMake has no reason to
+    # reconfigure on its own — exactly the gap that makes "a source added
+    # to the target after the digest was computed" a real, reachable state
+    # rather than one CMake's own change-tracking forecloses.
     new_header = src / "include" / "superembedder" / "added_after_digest.h"
     new_header.write_text("#pragma once\n#define SEMB_ADDED_AFTER_DIGEST 1\n", encoding="utf-8")
     version_cpp = src / "src" / "version.cpp"
