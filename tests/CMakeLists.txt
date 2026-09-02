@@ -95,9 +95,12 @@ semb_add_cxx_test(c39_seam_digest_test c39_seam_digest_test.cpp)
 # C40 -- the chunk budget is inert to the output.
 semb_add_cxx_test(c40_chunk_budget_inertness_test c40_chunk_budget_inertness_test.cpp)
 
-# TE-80: the owed assertion for TE-76 review F-7 (kSembEncodeHiddenTooLarge
+# TE-80: the assertion for TE-76 review F-7 (kSembEncodeHiddenTooLarge
 # fires on a real hidden_size > kSembWitnessMaxHidden, before any write).
-semb_add_cxx_test(c_f7_hidden_too_large_test c_f7_hidden_too_large_test.cpp)
+# TE-83 (TE-81 review N-13): renamed from c_f7_hidden_too_large_test --
+# a review finding ID means nothing outside its own casebook and this
+# test is permanent, unlike the ID.
+semb_add_cxx_test(seam_hidden_capacity_test seam_hidden_capacity_test.cpp)
 
 # ---------------------------------------------------------------------------
 # Python-driven cells, matching tools/ci/run_configure_matrix.py's own

@@ -90,7 +90,7 @@ def clone_engine_tools(tag: str, source: str, workdir: Path) -> Path:
     return workdir
 
 
-def generate(tools_dir: Path, out_path: Path) -> bytes:
+def generate(tools_dir: Path, out_path: Path, hidden_size: int = OVERSIZED_HIDDEN) -> bytes:
     sys.path.insert(0, str(tools_dir))
     sys.path.insert(0, str(tools_dir / "reference_pipeline"))
     import importlib
@@ -98,13 +98,45 @@ def generate(tools_dir: Path, out_path: Path) -> bytes:
     pipeline = importlib.import_module("pipeline")
     sslm_format = importlib.import_module("sslm_format")
 
+    # TE-83 (TE-81 review N-7, N-8): generalised from a single hardcoded
+    # 128-only config to any `hidden_size` a caller names, so this same
+    # generator can also produce the AT-THE-BOUND fixture (hidden_size ==
+    # kSembWitnessMaxHidden exactly) that seam_hidden_capacity_test.cpp's
+    # own must-accept needs -- its sibling, c3_accumulator_bound_test.cpp's
+    # F-2 cell, already tests exactly that boundary shape by name, and
+    # this fixture generator did not. `head_dim=16` fixed; every other
+    # dimension DERIVED from `hidden_size` by one plain rule each, stated
+    # here rather than as a self-contradicting trailing comment (N-8: the
+    # prior comment read "scaled 4x with hidden_size, T-2199's own ratio
+    # (64/32=2x... kept simple, 2x hidden)" -- two different ratios in one
+    # parenthetical, trailing off mid-reasoning):
+    #   num_attention_heads = hidden_size // head_dim   (so their product
+    #     is exactly hidden_size)
+    #   num_key_value_heads = num_attention_heads // 2  (the SAME GQA
+    #     group size, 2, T-2199's own 4/2 config uses)
+    #   intermediate_size   = 2 * hidden_size            (one plain rule,
+    #     not a ratio borrowed from a different config's own numbers)
+    # At hidden_size=128 (this module's own OVERSIZED_HIDDEN default) this
+    # reproduces the exact prior hardcoded values (8, 4, 16, 256) bit for
+    # bit -- verified by re-running F-7's own cell against this
+    # generalised generator, unchanged digest.
+    head_dim = 16
+    if hidden_size % head_dim != 0:
+        raise ValueError(f"hidden_size={hidden_size} is not a multiple of head_dim={head_dim}")
+    num_attention_heads = hidden_size // head_dim
+    if num_attention_heads % 2 != 0:
+        raise ValueError(f"num_attention_heads={num_attention_heads} (hidden_size="
+                         f"{hidden_size} / head_dim={head_dim}) is not even -- cannot halve "
+                         f"for num_key_value_heads at the GQA group size this fixture uses")
+    num_key_value_heads = num_attention_heads // 2
+
     cfg = pipeline.ModelConfig(
-        hidden_size=OVERSIZED_HIDDEN,
+        hidden_size=hidden_size,
         num_hidden_layers=8,        # unchanged from T-2199's own config
-        num_attention_heads=8,      # 8 * 16 = 128
-        num_key_value_heads=4,      # same GQA group size (2) as T-2199 (4/2)
-        head_dim=16,
-        intermediate_size=256,      # scaled 4x with hidden_size, T-2199's own ratio (64/32=2x... kept simple, 2x hidden)
+        num_attention_heads=num_attention_heads,
+        num_key_value_heads=num_key_value_heads,
+        head_dim=head_dim,
+        intermediate_size=2 * hidden_size,
         vocab_size=128,             # unchanged -- token ids stay in the same small vocab
         rope_theta=10000.0,
         rms_norm_eps=1e-6,
@@ -115,7 +147,7 @@ def generate(tools_dir: Path, out_path: Path) -> bytes:
     sections, _fold_err = convert_model.build_sections(model)  # no damped-greedy: not this fixture's concern
     data, fingerprint = sslm_format.build_artifact(sections)
     out_path.write_bytes(data)
-    print(f"wrote {out_path}: {len(data)} bytes, hidden_size={OVERSIZED_HIDDEN}, "
+    print(f"wrote {out_path}: {len(data)} bytes, hidden_size={hidden_size}, "
           f"fingerprint={fingerprint}")
     return data
 
@@ -126,6 +158,9 @@ def main(argv: list) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--source", default=DEFAULT_REMOTE)
     ap.add_argument("--workdir", default="build/_oversized_fixture_workdir")
+    ap.add_argument("--hidden-size", type=int, default=OVERSIZED_HIDDEN,
+                     help="TE-83 (N-7): defaults to the over-the-ceiling 128; pass "
+                          "--hidden-size 64 for the AT-THE-BOUND fixture instead.")
     args = ap.parse_args(argv)
 
     lock_path = Path(args.lock)
@@ -145,7 +180,7 @@ def main(argv: list) -> int:
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        generate(clone / "tools", out_path)
+        generate(clone / "tools", out_path, hidden_size=args.hidden_size)
     except Exception as ex:  # noqa: BLE001 -- reported, not swallowed
         print(f"SEMB_FIXTURE_GENERATION_FAILED: {ex}", file=sys.stderr)
         rmtree(workdir)
