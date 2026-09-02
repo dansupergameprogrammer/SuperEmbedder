@@ -1,0 +1,20 @@
+U-K1 INSTRUMENT -- READINGS QUARANTINED. Commissioning was executed once and returned NOT COMMISSIONED (build findings D-SLM4688/D-SLM4689, since fixed); the fix has not yet been verified by re-running the must-accept and both must-reject constructions (design Section 6.4) against an independent seat. No reading emitted below is a gate verdict until that re-run fires correctly.
+
+Self-exclusion convention: a candidate document whose id equals the ranking query's own id is dropped from the ranked list before truncation to k (BEIR's ignore_identical_ids=True, on by default in beir/retrieval/evaluation.py, which is the convention every published anchor read against this instrument was itself produced under). This fires only on sets where a query id can also name a corpus document (ArguAna today); it is a no-op everywhere else, verified by executed check. Implemented once, in eval.k1.self_exclusion.exclude_self_and_truncate, and applied uniformly by every ranker in this package (the dense ranker and the BM25 baseline) -- U-K1 fix round 2 (D-SLM4699) fixed the dense ranker; fix round 2b (D-SLM4699 class fix) extracted the shared helper so the BM25 baseline, which carried the identical defect, is fixed by the same code rather than a second, independently-written copy.
+
+Run: r3-batch8-run-a  (2026-08-30T08:33:31)
+
+== scifact ==  corpus=5183 test_queries=300
+  executed chance nDCG@10: 0.0010 (std 0.0013, 1000 trials)
+  model                              nDCG@10   recall@10    MRR@10    ach.RP
+  qwen3-embedding-0.6b                0.6999      0.8199    0.6679    0.0433
+
+== nfcorpus ==  corpus=3633 test_queries=323
+  executed chance nDCG@10: 0.0101 (std 0.0019, 1000 trials)
+  model                              nDCG@10   recall@10    MRR@10    ach.RP
+  qwen3-embedding-0.6b                0.3569      0.1697    0.5617    0.0357
+
+== gate verdict (F1/F2, design Section 4 -- quarantined, not load-bearing) ==
+  overall: FAIL/INCOMPLETE -- no model/set pair had both a reference and bm25 reading to gate against; 2 (set, model) pair(s) skipped for a missing reference/bm25 reading
+  SKIPPED: scifact/qwen3-embedding-0.6b: no reference reading in this run
+  SKIPPED: nfcorpus/qwen3-embedding-0.6b: no reference reading in this run

@@ -8,3 +8,15 @@ out/
 .idea/
 __pycache__/
 *.pyc
+
+# Local git worktrees created by working sessions.
+.worktrees/
+
+# Evaluation run outputs (D-SLM5831). The deciding artifacts of a run -- its
+# packet, its verdict, its replication report -- ARE committed. The bulk TREC
+# run files are not: they are ~109 MB for K1 Run 1 alone and are regenerable
+# only by re-executing the capture. They remain on the machine that produced
+# them, in place, beside the artifacts that are committed. See the README in
+# the run's own output directory for what each run's excluded set contains.
+eval/k1/*_output/run_files/
+eval/k1/*_output/*/run_files/
