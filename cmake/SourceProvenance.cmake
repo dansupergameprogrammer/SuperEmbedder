@@ -67,11 +67,24 @@ function(semb_compute_source_provenance target)
 	get_filename_component(_out_header_dir "${ARG_OUT_HEADER}" DIRECTORY)
 	file(MAKE_DIRECTORY "${_out_header_dir}")
 
+	# TE-63: --compiler-id selects tools/semb_source_hash.py's own closure
+	# resolver (_msvc_closure's /showIncludes vs _gcc_clang_closure's -M),
+	# and CMAKE_CXX_COMPILER_ID alone is the wrong axis for it -- clang-cl
+	# reports CMAKE_CXX_COMPILER_ID=Clang while its own command-line syntax
+	# is MSVC's (/showIncludes, /std:, no -M), which is what
+	# CMAKE_CXX_COMPILER_FRONTEND_VARIANT names. Executed: without this,
+	# a clang-cl configure sends -M/-std=c++20 to a driver that does not
+	# accept them and SEMB_SOURCE_PREPROCESS_FAILED's every clang-cl build.
+	set(_semb_source_hash_compiler_id "${CMAKE_CXX_COMPILER_ID}")
+	if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+		set(_semb_source_hash_compiler_id "MSVC")
+	endif()
+
 	set(_py_args
 		configure
 		--root "${CMAKE_CURRENT_SOURCE_DIR}"
 		--compiler "${CMAKE_CXX_COMPILER}"
-		--compiler-id "${CMAKE_CXX_COMPILER_ID}"
+		--compiler-id "${_semb_source_hash_compiler_id}"
 		--std "c++${CMAKE_CXX_STANDARD}"
 		--engine-path "${SEMB_ENGINE_PREFIX}"
 		--build-dir "${CMAKE_BINARY_DIR}"
