@@ -69,6 +69,27 @@
 //      check between the canary's own reference value and the shipped
 //      epilogue's, not as a second contraction-detecting construction.
 //
+//  TE-83 (TE-81 review N-10, Observation): STATED, NOT INFERRED -- what a
+//      GREEN result here does and does not prove. RED means what the
+//      failure message below says: "contraction is active (a stray
+//      fast-math/ffp-contract/fp:fast flag reached this TU)" -- true, and
+//      the only claim the message makes. The CONVERSE does not hold, and
+//      is not claimed: a GREEN result does not mean no fast-math flag
+//      reached this TU, only that this TU's build did not produce a
+//      fused multiply-add for THIS canary's specific expression shape.
+//      Executed (TE-81 review sec 6.2): under `-ffast-math` WITHOUT
+//      `-mfma`, the repaired canary reads exactly `0x00000000` (green) --
+//      the compiler has fast-math's other license (`-fno-signed-zeros`,
+//      `-freciprocal-math`, associative reassociation) but no FMA-capable
+//      target to fold `a2*a2 + c` into a single instruction, so nothing
+//      here observes it. This is the residual the prior review's own
+//      prediction named for sec 8's C13 toolchains (one of which may
+//      build for a non-FMA target): a green C14 on such a toolchain
+//      proves "no contraction reached this expression," never "no
+//      fast-math flag reached this translation unit" -- a strictly
+//      narrower claim than the cell's name might suggest to a reader who
+//      has not read this far.
+//
 // RED-UNIMPLEMENTED: `semb_wa_pool_run` is undefined until TE-63 lands it;
 // this executable fails to link.
 #include <cstdio>
