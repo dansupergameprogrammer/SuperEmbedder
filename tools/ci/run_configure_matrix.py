@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -73,6 +74,50 @@ def copy_prefix(dest: Path) -> Path:
     rmtree(dest)
     shutil.copytree(ENGINE_PREFIX, dest)
     return dest
+
+
+_COMPILER_ID_CACHE = {}
+
+
+def detect_compiler_id() -> str:
+    """TE-67 N-7: two C14 legs used to hardcode MSVC-specific flag syntax
+    and used GENERATOR == "Ninja" as a stand-in for "the compiler is MSVC"
+    -- wrong on a matrix this project's own CI runs with the Ninja
+    generator on all three OSes, where the REAL compiler on ubuntu/macos is
+    GCC/Clang. Reads CMAKE_CXX_COMPILER_ID from an already-configured
+    CMakeCache.txt when one exists (this project's own build/semb, if
+    present), or runs one cheap throwaway configure otherwise. Cached for
+    the process's lifetime -- this is asked once per leg, not once per
+    file."""
+    if "id" in _COMPILER_ID_CACHE:
+        return _COMPILER_ID_CACHE["id"]
+
+    def _scan_for_id(build_dir: Path) -> str | None:
+        # CMAKE_CXX_COMPILER_ID is not a CMakeCache.txt entry -- CMake
+        # records it in CMakeFiles/<version>/CMakeCXXCompiler.cmake as a
+        # plain set() call (found by execution: CMakeCache.txt has no such
+        # key at all).
+        for f in build_dir.glob("CMakeFiles/*/CMakeCXXCompiler.cmake"):
+            for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
+                m = re.match(r'\s*set\(CMAKE_CXX_COMPILER_ID\s+"([^"]+)"\)', line)
+                if m:
+                    return m.group(1)
+        return None
+
+    found = _scan_for_id(REPO_ROOT / "build" / "semb")
+    if found is None:
+        probe_src = SCRATCH / "_compiler_id_probe_src"
+        probe_build = SCRATCH / "_compiler_id_probe_build"
+        probe_src.mkdir(parents=True, exist_ok=True)
+        (probe_src / "CMakeLists.txt").write_text(
+            "cmake_minimum_required(VERSION 3.21)\nproject(probe LANGUAGES CXX)\n", encoding="utf-8",
+        )
+        run_cmake_configure(probe_src, probe_build, ENGINE_PREFIX)
+        found = _scan_for_id(probe_build)
+    if found is None:
+        raise RuntimeError("could not detect CMAKE_CXX_COMPILER_ID from any probe")
+    _COMPILER_ID_CACHE["id"] = found
+    return found
 
 
 def run_cmake_configure(src: Path, build: Path, prefix: Path, extra_defines=None) -> tuple[int, str]:
@@ -494,12 +539,19 @@ def c14_directive_withheld():
 
 
 def c14_cxx_flags_fastmath():
-    """The reviewer's E-8 construction: -DCMAKE_CXX_FLAGS=/fp:fast, which used
-    to be invisible to a check that only read target COMPILE_OPTIONS."""
+    """The reviewer's E-8 construction: -DCMAKE_CXX_FLAGS=<the real
+    compiler's own fast-math spelling>, which used to be invisible to a
+    check that only read target COMPILE_OPTIONS. TE-67 N-7: the forbidden-
+    flag spelling is chosen from the ACTUAL compiler in use
+    (detect_compiler_id()), not hardcoded to MSVC -- on GCC/Clang this
+    passes -ffast-math, matching what cmake/BuildFlags.cmake itself checks
+    for on that compiler family."""
+    compiler_id = detect_compiler_id()
+    forbidden = "/fp:fast" if compiler_id == "MSVC" else "-ffast-math"
     src = copy_repo(SCRATCH / "c14b_src")
     rc, out = run_cmake_configure(src, SCRATCH / "c14b_build", ENGINE_PREFIX,
-                                   extra_defines={"CMAKE_CXX_FLAGS": "/fp:fast"})
-    record("C14 CMAKE_CXX_FLAGS carries fast-math", "SEMB_FP_FASTMATH_PRESENT", rc, out)
+                                   extra_defines={"CMAKE_CXX_FLAGS": forbidden})
+    record(f"C14 CMAKE_CXX_FLAGS carries fast-math ({compiler_id})", "SEMB_FP_FASTMATH_PRESENT", rc, out)
 
 
 def c14_positive():
@@ -549,6 +601,13 @@ def c14_unregistered_target():
         cmd.append(f"-DCMAKE_MAKE_PROGRAM={NINJA}")
     proc = subprocess.run(cmd, capture_output=True, text=True)
     out = proc.stdout + proc.stderr
+    # TE-67 N-7: the required-flag spelling to look for is chosen from the
+    # ACTUAL compiler in use, not from GENERATOR -- GENERATOR is "Ninja" on
+    # all three of this project's CI OSes regardless of which compiler that
+    # Ninja invocation drives, so using it as a compiler stand-in looked for
+    # MSVC's spelling on a GCC compile line and could never find it.
+    compiler_id = detect_compiler_id()
+    required_flag = "/fp:precise" if compiler_id == "MSVC" else "-ffp-contract=off"
     flag_in_real_command = False
     if proc.returncode == 0:
         cc_path = build / "compile_commands.json"
@@ -557,7 +616,7 @@ def c14_unregistered_target():
             for e in entries:
                 if e.get("file", "").replace("\\", "/").endswith("src/extra.cpp"):
                     cmd_line = e.get("command", "") or " ".join(e.get("arguments", []))
-                    flag_in_real_command = "/fp:precise" in cmd_line if GENERATOR == "Ninja" else "-ffp-contract=off" in cmd_line
+                    flag_in_real_command = required_flag in cmd_line
     passed = proc.returncode == 0 and flag_in_real_command
     RESULTS.append({
         "leg": "C14 unregistered target (F-4 reproduction)",
@@ -570,11 +629,66 @@ def c14_unregistered_target():
     })
 
 
+def c14_target_compile_options_cleared():
+    """TE-67 N-2. A target's own COMPILE_OPTIONS explicitly set to empty
+    removes the directory-wide default from ITS real compile line too
+    (measured: get_target_property before any override already shows the
+    directory default, confirming CMake initializes it there at target
+    creation -- and an explicit set() overwrites that initial value)."""
+    src = copy_repo(SCRATCH / "c14e_src")
+    cmakelists = src / "CMakeLists.txt"
+    text = cmakelists.read_text(encoding="utf-8")
+    anchor = "\nsemb_assert_precise_fp()\n"
+    assert text.count(anchor) == 1, f"expected exactly one real call site, found {text.count(anchor)}"
+    text = text.replace(
+        anchor,
+        '\nset_target_properties(superembedder PROPERTIES COMPILE_OPTIONS "")\nsemb_assert_precise_fp()\n',
+        1,
+    )
+    cmakelists.write_text(text, encoding="utf-8")
+    rc, out = run_cmake_configure(src, SCRATCH / "c14e_build", ENGINE_PREFIX)
+    record("C14 target COMPILE_OPTIONS cleared (N-2)", "SEMB_FP_CONTRACTION_UNGUARDED", rc, out)
+
+
+def c14_subdirectory_target():
+    """TE-67 N-3. BUILDSYSTEM_TARGETS is per-directory; a target declared in
+    add_subdirectory() must be reached by the recursive walk."""
+    src = copy_repo(SCRATCH / "c14f_src")
+    tests_dir = src / "tests"
+    tests_dir.mkdir(exist_ok=True)
+    (tests_dir / "t.cpp").write_text("int semb_tests_symbol() { return 0; }\n", encoding="utf-8")
+    (tests_dir / "CMakeLists.txt").write_text(
+        "add_library(semb_tests STATIC t.cpp)\ntarget_compile_options(semb_tests PRIVATE /fp:fast)\n",
+        encoding="utf-8",
+    )
+    cmakelists = src / "CMakeLists.txt"
+    text = cmakelists.read_text(encoding="utf-8")
+    anchor = "\nsemb_assert_precise_fp()\n"
+    assert text.count(anchor) == 1, f"expected exactly one real call site, found {text.count(anchor)}"
+    text = text.replace(anchor, "\nadd_subdirectory(tests)\nsemb_assert_precise_fp()\n", 1)
+    cmakelists.write_text(text, encoding="utf-8")
+    rc, out = run_cmake_configure(src, SCRATCH / "c14f_build", ENGINE_PREFIX)
+    record("C14 subdirectory target with /fp:fast (N-3)", "SEMB_FP_FASTMATH_PRESENT", rc, out)
+
+
+def c14_cxx_flags_release_fastmath():
+    """TE-67 N-4. The identical bypass class E-8 named, one release-build
+    variable over: -DCMAKE_CXX_FLAGS_RELEASE=/fp:fast."""
+    src = copy_repo(SCRATCH / "c14g_src")
+    rc, out = run_cmake_configure(src, SCRATCH / "c14g_build", ENGINE_PREFIX,
+                                   extra_defines={"CMAKE_BUILD_TYPE": "Release",
+                                                  "CMAKE_CXX_FLAGS_RELEASE": "/fp:fast"})
+    record("C14 CMAKE_CXX_FLAGS_RELEASE carries fast-math (N-4)", "SEMB_FP_FASTMATH_PRESENT", rc, out)
+
+
 def c14_flag_strip():
     c14_directive_withheld()
     c14_cxx_flags_fastmath()
     c14_positive()
     c14_unregistered_target()
+    c14_target_compile_options_cleared()
+    c14_subdirectory_target()
+    c14_cxx_flags_release_fastmath()
 
 
 def main() -> int:
