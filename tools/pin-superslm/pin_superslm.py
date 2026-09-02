@@ -1,0 +1,438 @@
+#!/usr/bin/env python3
+"""tools/pin-superslm — clone, build, and install the pinned SuperSLM engine release,
+and compute the provenance the two CMake configure guards (see cmake/EngineGuards.cmake,
+Claude/Plans/SuperEmbedder_Plan.md §4.1) verify at every configure.
+
+WHAT THIS TOOL DOES, IN ORDER
+  1. Reads `tag=` from superslm.lock (the only field a person edits by hand).
+  2. Clones the engine at that tag — from the remote by default, or from a local
+     path via --source (a documented option; SuperEmbedder never builds
+     D:\\SuperSLM in place) — with core.autocrlf=false and core.eol=lf, so the
+     digest below is checkout-invariant (§1.3: "every digested source byte is
+     checkout-invariant").
+  3. Configures and builds ONLY the `superslm` static-library target (Ninja +
+     whatever C++ compiler is already on PATH — the caller is responsible for
+     having a working compiler environment active, e.g. having run VsDevCmd.bat
+     on Windows or simply being on a Unix box with a system compiler).
+  4. Derives the engine's own COMPILE closure — every source file the `superslm`
+     target actually compiled, plus every header the compiler actually resolved
+     for each of those translation units — from Ninja's own dependency database
+     (`ninja -t query` / `ninja -t deps`), never curated by this tool (§4.1:
+     "each derived from a build object rather than curated here").
+  5. Installs the engine (`cmake --install`) to the given prefix and reads
+     `install_manifest.txt` for the INSTALL closure — every file the engine's own
+     install() rules actually wrote.
+  6. For every COMPILE-closure member, checks it against the tag's own git tree
+     (`git hash-object` vs `git rev-parse <tag>:<path>`) — the independent
+     witness for SEMB_ENGINE_INSTALL_DIVERGED (an uncommitted edit in the clone
+     changes what got compiled without changing what the tag says should be
+     there).
+  7. Computes engine_tree_sha over the union of both closures, path-sorted,
+     length-prefixed (§4.1's own formula, with each entry additionally
+     namespaced by which closure it came from — see `_digest_members` below for
+     the exact byte layout, since the plan's prose formula does not by itself
+     disambiguate two same-named members from different closures).
+  8. Writes the provenance manifest into
+     `<prefix>/share/superslm-provenance/provenance.json`, and snapshots every
+     COMPILE-closure member's bytes into
+     `<prefix>/share/superslm-provenance/compiled/<path>` so a later `cmake`
+     configure can recompute the whole digest from the prefix alone, without
+     the clone still existing.
+  9. Updates superslm.lock's `commit=` and `tree=` fields to match what was just
+     computed (the `tag=` field is the only one a person edits; this tool
+     derives the other two — D-SLM3893).
+
+USAGE
+  python tools/pin-superslm/pin_superslm.py \\
+      --lock superslm.lock --prefix build/_engine_install [--source <path-or-url>] \\
+      [--workdir build/_engine_src] [--cmake <path>] [--ninja <path>] [--generator Ninja] \\
+      [--keep-workdir]
+
+Exit codes: 0 success; 1 usage/environment error; 2 clone/build/install failure.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+from pathlib import Path, PurePosixPath
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from provenance_lib import digest_members  # noqa: E402
+
+DEFAULT_REMOTE = "https://github.com/dansupergameprogrammer/SuperSLM.git"
+
+
+def log(msg: str) -> None:
+    print(f"[pin-superslm] {msg}", flush=True)
+
+
+def _rmtree_onerror(func, path, exc_info):
+    """git packs its object store read-only; a plain shutil.rmtree hits
+    PermissionError on Windows the first time it tries to unlink one. Clear
+    the read-only bit and retry once — the standard workaround for removing a
+    git checkout on Windows."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def rmtree(path: Path) -> None:
+    shutil.rmtree(path, onerror=_rmtree_onerror)
+
+
+def run(cmd, cwd=None, check=True, capture=False, env=None):
+    log("+ " + " ".join(str(c) for c in cmd))
+    kwargs = {"cwd": cwd, "env": env}
+    if capture:
+        kwargs["stdout"] = subprocess.PIPE
+        kwargs["stderr"] = subprocess.STDOUT
+        kwargs["text"] = True
+    proc = subprocess.run(cmd, **kwargs)
+    if capture:
+        sys.stdout.write(proc.stdout)
+    if check and proc.returncode != 0:
+        raise SystemExit(f"command failed ({proc.returncode}): {' '.join(str(c) for c in cmd)}")
+    return proc
+
+
+def parse_lock(path: Path) -> dict:
+    if not path.exists():
+        raise SystemExit(f"lock file not found: {path}")
+    fields = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        fields[k.strip()] = v.strip()
+    if "tag" not in fields:
+        raise SystemExit(f"{path}: missing required field 'tag='")
+    return fields
+
+
+def write_lock(path: Path, fields: dict) -> None:
+    lines = [f"{k}={v}" for k, v in fields.items()]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def clone_engine(source: str, tag: str, workdir: Path) -> Path:
+    """Clone `source` at `tag` into workdir/src. `source` is a git URL or a local
+    path (a documented option — see this file's module docstring). Always uses
+    core.autocrlf=false / core.eol=lf (§1.3's checkout-invariance requirement)
+    and core.longpaths=true (the engine's own tree carries paths that exceed
+    Windows' legacy MAX_PATH under a short clone root — verified by execution).
+    """
+    dest = workdir / "src"
+    if dest.exists():
+        rmtree(dest)
+    workdir.mkdir(parents=True, exist_ok=True)
+    run([
+        "git", "clone",
+        "-c", "core.autocrlf=false",
+        "-c", "core.eol=lf",
+        "-c", "core.longpaths=true",
+        "--branch", tag, "--single-branch",
+        source, str(dest),
+    ])
+    return dest
+
+
+def resolve_commit(clone: Path, tag: str) -> str:
+    proc = run(["git", "-C", str(clone), "rev-parse", f"{tag}^{{commit}}"], capture=True)
+    return proc.stdout.strip().splitlines()[-1].strip()
+
+
+def configure_engine(clone: Path, build: Path, cmake: str, ninja: str, generator: str) -> None:
+    if build.exists():
+        rmtree(build)
+    build.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        cmake, "-G", generator,
+        "-S", str(clone), "-B", str(build),
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+    ]
+    if generator == "Ninja" and ninja:
+        cmd.append(f"-DCMAKE_MAKE_PROGRAM={ninja}")
+    run(cmd)
+
+
+def build_engine_library(build: Path, cmake: str, target: str = "superslm") -> None:
+    run([cmake, "--build", str(build), "--target", target])
+
+
+def install_engine(build: Path, cmake: str, prefix: Path) -> None:
+    if prefix.exists():
+        rmtree(prefix)
+    prefix.mkdir(parents=True, exist_ok=True)
+    run([cmake, "--install", str(build), "--prefix", str(prefix)])
+
+
+def ninja_query(build: Path, ninja: str, target: str) -> str:
+    proc = run([ninja, "-t", "query", target], cwd=build, capture=True)
+    return proc.stdout
+
+
+def ninja_deps(build: Path, ninja: str, obj: str) -> list[str]:
+    proc = run([ninja, "-t", "deps", obj], cwd=build, capture=True, check=False)
+    headers = []
+    for line in proc.stdout.splitlines():
+        line = line.rstrip("\n")
+        if line.startswith("    "):
+            headers.append(line.strip())
+    return headers
+
+
+def _parse_query_inputs(text: str) -> list[str]:
+    """Parse `ninja -t query` output's "input:" block into the list of direct
+    input paths (skips the rule-name line and any `||` order-only marker)."""
+    lines = text.splitlines()
+    out = []
+    in_input = False
+    for line in lines:
+        if line.strip().startswith("input:"):
+            in_input = True
+            continue
+        if line.strip().startswith("outputs:"):
+            break
+        if in_input:
+            item = line.strip()
+            if item in ("", "phony") or item.startswith("||"):
+                continue
+            out.append(item)
+    return out
+
+
+def derive_compile_closure(clone: Path, build: Path, ninja: str) -> set[Path]:
+    """Return the set of absolute paths the `superslm` target actually compiled
+    (its .cpp sources) plus every header the compiler actually resolved for
+    each of them, all read from Ninja's own build graph and deps database —
+    never curated by this tool."""
+    phony_out = ninja_query(build, ninja, "superslm")
+    lib_targets = _parse_query_inputs(phony_out)
+    if not lib_targets:
+        raise SystemExit("could not resolve the 'superslm' target's linked output from ninja -t query")
+    lib_file = lib_targets[0]
+
+    lib_out = ninja_query(build, ninja, lib_file)
+    obj_files = _parse_query_inputs(lib_out)
+    if not obj_files:
+        raise SystemExit(f"could not resolve {lib_file}'s object-file inputs from ninja -t query")
+
+    closure: set[Path] = set()
+    for obj in obj_files:
+        obj_out = ninja_query(build, ninja, obj)
+        srcs = [s for s in _parse_query_inputs(obj_out) if not s.startswith("cmake_object_order_depends")]
+        for s in srcs:
+            closure.add((build / s).resolve())
+        for h in ninja_deps(build, ninja, obj):
+            closure.add((build / h).resolve())
+    # Every path above is resolved relative to the BUILD directory (ninja's own
+    # working directory); normalize to real files under the clone.
+    resolved = set()
+    for p in closure:
+        try:
+            resolved.add(p.resolve())
+        except OSError:
+            continue
+    return resolved
+
+
+# Compiled-binary suffixes are excluded from the digested install closure.
+# FINDING (this session, executed): the linked static library is NOT
+# byte-reproducible across two independent clone+configure+build+install runs
+# of the IDENTICAL pinned commit — two runs produced `superslm.lib` archives
+# differing at the byte level (MSVC's archiver embeds a per-member timestamp;
+# every other installed and compiled file — 71 of 72 members — was
+# byte-identical across the same two runs). Digesting the linked binary would
+# therefore make engine_tree_sha itself non-reproducible for the identical
+# pin, which breaks the guard this digest exists to serve (a re-run against
+# an unchanged pin must reproduce the same tree). §4.1 states the digest is
+# "provenance, not a hash input" — proof of WHICH SOURCE, not a fingerprint
+# of compiled bytes; that second job belongs to witness_sha (§4.4), which
+# proves compiled-arithmetic identity by RUNNING the code, the only layer
+# that can meaningfully absorb a non-deterministic archiver. So the installed
+# closure here covers headers and CMake package files only.
+_EXCLUDED_INSTALL_SUFFIXES = {".lib", ".a", ".so", ".dylib", ".dll", ".exe", ".obj", ".o", ".pdb"}
+
+
+def derive_install_closure(build: Path, prefix: Path) -> set[Path]:
+    manifest = build / "install_manifest.txt"
+    if not manifest.exists():
+        raise SystemExit(f"install_manifest.txt not found in {build} — did install run?")
+    out = set()
+    excluded = []
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        p = Path(line)
+        try:
+            p = p.resolve()
+        except OSError:
+            continue
+        if p.suffix.lower() in _EXCLUDED_INSTALL_SUFFIXES:
+            excluded.append(p)
+            continue
+        out.add(p)
+    if excluded:
+        log(f"install closure excludes {len(excluded)} compiled-binary artifact(s) (not byte-reproducible): "
+            + ", ".join(str(e) for e in excluded))
+    return out
+
+
+def git_clean_check(clone: Path, tag: str, compile_closure: set[Path]) -> tuple[bool, list[str]]:
+    """The independent witness for SEMB_ENGINE_INSTALL_DIVERGED: for every
+    compile-closure member that lives inside the clone, compare the blob hash
+    of what is ACTUALLY on disk (what got compiled) against the blob hash git
+    recorded for that path AT THE TAG. Two producers: git's own content-
+    addressed object store (tamper-evident short of rewriting history) and the
+    literal bytes the compiler read. A dirty_paths entry means the clone
+    carried an uncommitted edit to that file when it was built."""
+    dirty = []
+    for p in sorted(compile_closure):
+        try:
+            rel = p.relative_to(clone)
+        except ValueError:
+            continue  # not inside the clone (e.g. a system header) — out of scope for this check
+        relposix = PurePosixPath(rel.as_posix()).as_posix()
+        actual = run(["git", "-C", str(clone), "hash-object", "--", relposix], capture=True, check=False)
+        actual_hash = actual.stdout.strip().splitlines()[-1].strip() if actual.stdout.strip() else None
+        tagged = run(["git", "-C", str(clone), "rev-parse", f"{tag}:{relposix}"], capture=True, check=False)
+        tagged_hash = tagged.stdout.strip().splitlines()[-1].strip() if tagged.returncode == 0 else None
+        if actual_hash is None or tagged_hash is None or actual_hash != tagged_hash:
+            dirty.append(relposix)
+    return (len(dirty) == 0, dirty)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--lock", default="superslm.lock", type=Path)
+    ap.add_argument("--prefix", required=True, type=Path)
+    ap.add_argument("--source", default=DEFAULT_REMOTE,
+                     help="git URL or local path to clone the engine from (documented option; "
+                          "default is the public remote — this tool never builds a local checkout in place)")
+    ap.add_argument("--workdir", default=Path("build/_engine_src_workdir"), type=Path)
+    ap.add_argument("--cmake", default="cmake")
+    ap.add_argument("--ninja", default="ninja")
+    ap.add_argument("--generator", default="Ninja")
+    ap.add_argument("--keep-workdir", action="store_true")
+    ap.add_argument("--reuse-clone", default=None, type=Path,
+                     help="skip the clone step and use this existing checkout directly (test-only: "
+                          "used to build C33 leg (e) from a clone that already carries an uncommitted "
+                          "edit inside the compile closure)")
+    ap.add_argument("--allow-dirty", action="store_true",
+                     help="do not abort when the clone carries an uncommitted edit inside the compile "
+                          "closure — still records clean=false in the provenance manifest so a "
+                          "downstream configure refuses it (used to construct C33 leg (e) on purpose)")
+    args = ap.parse_args()
+
+    lock = parse_lock(args.lock)
+    tag = lock["tag"]
+    log(f"pinned tag: {tag}")
+
+    workdir = args.workdir.resolve()
+    if args.reuse_clone:
+        clone = args.reuse_clone.resolve()
+        log(f"reusing existing checkout at {clone} (--reuse-clone)")
+    else:
+        clone = clone_engine(args.source, tag, workdir)
+    commit = resolve_commit(clone, tag)
+    log(f"resolved commit: {commit}")
+
+    build = workdir / "build"
+    configure_engine(clone, build, args.cmake, args.ninja, args.generator)
+    build_engine_library(build, args.cmake)
+
+    prefix = args.prefix.resolve()
+    install_engine(build, args.cmake, prefix)
+
+    compile_closure = derive_compile_closure(clone, build, args.ninja)
+    install_closure = derive_install_closure(build, prefix)
+    log(f"compile closure: {len(compile_closure)} files; install closure: {len(install_closure)} files")
+
+    clean, dirty_paths = git_clean_check(clone, tag, compile_closure)
+    if not clean:
+        log(f"CLONE IS DIRTY relative to {tag} — {len(dirty_paths)} closure file(s) differ from the tag's own tree:")
+        for d in dirty_paths:
+            log(f"    dirty: {d}")
+        if not args.allow_dirty:
+            raise SystemExit(
+                "refusing to produce a clean-labelled install from a dirty clone; pass --allow-dirty "
+                "to install anyway with clean=false recorded (used only to construct the negative-"
+                "configure leg that proves SEMB_ENGINE_INSTALL_DIVERGED fires)."
+            )
+
+    # Snapshot every compile-closure member into the prefix so a later configure
+    # can recompute the digest without the clone.
+    snapshot_root = prefix / "share" / "superslm-provenance" / "compiled"
+    members = []
+    for p in sorted(compile_closure):
+        try:
+            rel = p.relative_to(clone)
+        except ValueError:
+            log(f"WARNING: compile-closure member outside the clone, skipped from provenance: {p}")
+            continue
+        relposix = rel.as_posix()
+        content = p.read_bytes()
+        dst = snapshot_root / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(content)
+        members.append(("compiled", relposix, content))
+
+    for p in sorted(install_closure):
+        try:
+            rel = p.relative_to(prefix)
+        except ValueError:
+            log(f"WARNING: install-closure member outside the prefix, skipped from provenance: {p}")
+            continue
+        relposix = rel.as_posix()
+        if relposix.startswith("share/superslm-provenance/"):
+            continue  # never digest our own provenance output
+        content = p.read_bytes()
+        members.append(("installed", relposix, content))
+
+    engine_tree_sha = digest_members(members)
+    log(f"engine_tree_sha: {engine_tree_sha}")
+
+    provenance = {
+        "schemaVersion": 1,
+        "tag": tag,
+        "commit": commit,
+        "engine_tree_sha": engine_tree_sha,
+        "clean": clean,
+        "dirty_paths": dirty_paths,
+        "member_count": len(members),
+        "digest_formula": "sha256 over path-sorted entries len(path_utf8:8BE) || path || len(bytes:8BE) || bytes; "
+                           "path is '<root>:<relpath-posix>' with root in {compiled, installed}",
+        # The path INDEX only (no content) — lets verify_provenance.py re-read
+        # each member's CURRENT bytes at configure time and recompute the
+        # digest, without re-deriving the closure itself (that derivation
+        # needs the engine's build graph, which no longer exists once the
+        # scratch workdir is removed).
+        "members_index": [{"root": root, "path": relpath} for root, relpath, _ in members],
+    }
+    manifest_path = prefix / "share" / "superslm-provenance" / "provenance.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    log(f"wrote {manifest_path}")
+
+    lock["commit"] = commit
+    lock["tree"] = engine_tree_sha
+    write_lock(args.lock, lock)
+    log(f"updated {args.lock}")
+
+    if not args.keep_workdir:
+        shutil.rmtree(workdir, onerror=_rmtree_onerror, ignore_errors=True)
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

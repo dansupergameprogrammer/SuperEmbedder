@@ -1,0 +1,92 @@
+#!/usr/bin/env python3
+"""tools/pin-superslm/verify_provenance.py — invoked by cmake/EngineGuards.cmake
+at EVERY configure. Reads whatever provenance.json currently sits under the
+found engine's install prefix, and recomputes engine_tree_sha fresh from the
+ACTUAL BYTES on disk right now — never trusting the manifest's own declared
+digest — using the identical formula pin_superslm.py used to write it
+(provenance_lib.digest_members). This is "the digest recomputed at configure
+from the prefix's own bytes" (§4.1).
+
+Always exits 0 and prints one JSON object to stdout; cmake/EngineGuards.cmake
+does all the policy branching (which discrepancy maps to which named error).
+Keeping this script exit-0-always keeps a real execute_process() failure
+(this script crashing) distinguishable, in the CMake code, from an honest
+"the bytes disagree" reading — CMake checks RESULT_VARIABLE for the former
+and the JSON body for the latter.
+
+Fields on success:
+  provenance_present:     bool
+  provenance:              the raw parsed provenance.json object, or null
+  recomputed_engine_tree_sha:  digest recomputed from the CURRENT on-disk
+                                bytes under the prefix, or null if provenance
+                                was absent (nothing to recompute against)
+  member_read_errors:      paths a member claimed to cover but that are not
+                            currently readable on disk (§8 C34-style "covered
+                            file missing")
+"""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from provenance_lib import digest_members  # noqa: E402
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print(json.dumps({"error": "usage: verify_provenance.py <engine_install_prefix>"}))
+        return 0
+    prefix = Path(sys.argv[1]).resolve()
+    manifest_path = prefix / "share" / "superslm-provenance" / "provenance.json"
+
+    result = {
+        "provenance_present": False,
+        "provenance": None,
+        "recomputed_engine_tree_sha": None,
+        "member_read_errors": [],
+    }
+
+    if not manifest_path.exists():
+        print(json.dumps(result))
+        return 0
+
+    try:
+        provenance = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 — reported to CMake as a JSON parse failure
+        result["provenance_present"] = True
+        result["parse_error"] = str(exc)
+        print(json.dumps(result))
+        return 0
+
+    result["provenance_present"] = True
+    result["provenance"] = provenance
+
+    members = []
+    errors = []
+    for m in provenance.get("members_index", []):
+        root = m["root"]
+        relpath = m["path"]
+        if root == "compiled":
+            actual = prefix / "share" / "superslm-provenance" / "compiled" / relpath
+        elif root == "installed":
+            actual = prefix / relpath
+        else:
+            errors.append(f"unknown root '{root}' for {relpath}")
+            continue
+        if not actual.exists():
+            errors.append(f"{root}:{relpath} (missing at {actual})")
+            continue
+        members.append((root, relpath, actual.read_bytes()))
+
+    result["member_read_errors"] = errors
+    if not errors and members:
+        result["recomputed_engine_tree_sha"] = digest_members(members)
+
+    print(json.dumps(result))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
