@@ -1,5 +1,9 @@
 """tests/pin_superslm_delete_ast_check.py -- TE-73: the structural cell that
 closes the data-loss class R-1 and Q-1 kept re-opening one site at a time.
+TE-75: two structural defects closed -- the check used to test the BOUND
+NAME a call used, not what that name resolves to, so an aliased import
+dodged it; and it returned an empty violation list -- indistinguishable
+from a real pass -- when handed no files at all.
 
 WHY THIS EXISTS (TE-73, brief "the pin tool gets one deletion primitive, and
 nothing else in it can delete"): three consecutive fix rounds (TE-69's Q-1,
@@ -10,20 +14,42 @@ Sec4) is that a rule enforced by a person remembering every call site is a
 rule that has already failed; the fix removes the class rather than adding
 another guarded site. `tools/pin-superslm/pin_superslm.py` now has exactly
 ONE function, `_remove_owned`, permitted to call a real deletion primitive
-(`shutil.rmtree`, `os.remove`, `os.unlink`, `os.rmdir`, or a `Path.unlink()`/
-`Path.rmdir()` method call) anywhere in the module. This file walks that
-module's own AST (never trusts a grep, which a renamed import or a `from
-shutil import rmtree as x` could dodge) and asserts that every such call
-lands inside `_remove_owned`'s own line range -- nowhere else, in that
-module or in any sibling module under the same package.
+anywhere in the module.
+
+THE POPULATION THIS CELL COVERS (TE-75 S-1): every filesystem-deletion
+callable in `os`, `shutil` and `pathlib` this codebase could plausibly
+reach --
+    os.remove, os.unlink, os.rmdir, os.removedirs
+    shutil.rmtree
+    pathlib.Path.unlink, pathlib.Path.rmdir
+-- resolved to that ORIGIN (module + attribute), never to the bound name a
+call site happens to use. `import x`, `import x as y`, and `from x import a
+[as b]` are all resolved through the module's own `ast.Import`/
+`ast.ImportFrom` nodes into a name->(module, attribute) map BEFORE any call
+is classified, so `from shutil import rmtree as x; x(p)` and
+`from os import remove as f; f(p)` resolve to `shutil.rmtree` and
+`os.remove` exactly as their unaliased forms do -- a renamed import cannot
+dodge this, because the check never looks at the name, only at what the
+name is bound to. `Path.unlink`/`Path.rmdir` have no non-deletion meaning
+in this codebase and are flagged on ANY receiver; `os.path.remove` does not
+exist, and `list.remove` (or any other `.remove()`) is ordinary Python with
+no relation to filesystem deletion here, so "remove" is deliberately NOT
+in the generic on-any-receiver set (TE-75 M-4) -- it is only caught through
+`os.remove`'s own resolved origin.
 
 Usage: `find_deletion_violations(paths)` returns a list of
 `DeletionViolation` (file, line, description) for every deletion-primitive
-call found outside `_remove_owned`. An empty list is the passing state.
+call found outside `_remove_owned`, resolved as above. Raises `ValueError`
+if `paths` is empty (TE-75 S-2) -- an empty population is a defect in the
+caller, not a clean scan, and must never be indistinguishable from one.
+`scan(paths)` is the same check plus the count of modules actually
+scanned, for a caller (the matrix leg) that wants to assert that count
+explicitly rather than trust an empty pass.
+
 Run directly (`python tests/pin_superslm_delete_ast_check.py <path>...`) to
-print violations and exit 1 if any exist, 0 otherwise -- used standalone to
-show this red against a historical revision (`git show <rev>:path > tmp`)
-and green at the tip.
+print violations and exit 1 if any exist, 2 if given no paths, 0 otherwise
+-- used standalone to show this red against a historical revision
+(`git show <rev>:path > tmp`) and green at the tip.
 """
 from __future__ import annotations
 
@@ -34,13 +60,20 @@ from pathlib import Path
 
 PRIMITIVE_FUNCTION_NAME = "_remove_owned"
 
-# Deletion-primitive attribute names this check flags regardless of the
-# object they are called on: os.remove/os.unlink/os.rmdir (module-level
-# functions) and Path.unlink()/Path.rmdir() (bound methods) collapse to the
-# same three attribute names; shutil.rmtree is checked by its own (module,
-# attr) pair since "rmtree" as a bare method name is not otherwise used in
-# this codebase.
-_OS_STYLE_ATTRS = {"remove", "unlink", "rmdir"}
+# TE-75 S-1: the population this cell covers, keyed by the REAL module a
+# name must resolve to, not by what a call site happens to spell it as.
+MODULE_DELETION_TARGETS: dict[str, set[str]] = {
+    "os": {"remove", "unlink", "rmdir", "removedirs"},
+    "shutil": {"rmtree"},
+}
+
+# TE-75 M-4: pathlib.Path's own deletion methods, flagged on ANY receiver
+# (a Path instance is rarely a simple, import-resolvable Name) because
+# neither name means anything else in this codebase. "remove" is
+# deliberately absent -- list.remove() is ordinary Python and is not a
+# filesystem-deletion call; os.remove is still caught, through its
+# resolved MODULE origin above, not through this receiver-agnostic set.
+PATH_METHOD_TARGETS: set[str] = {"unlink", "rmdir"}
 
 
 @dataclass(frozen=True)
@@ -53,31 +86,55 @@ class DeletionViolation:
         return f"{self.file}:{self.line}: {self.description}"
 
 
-def _is_deletion_call(node: ast.Call) -> str | None:
-    """Returns a short description if `node` is a deletion-primitive call,
-    else None. Deliberately structural (AST shape), not textual -- a rename
-    of the local `shutil` import, or a re-export, does not change what
-    ast.Attribute/ast.Name nodes are actually present here."""
+ImportMap = dict  # str -> tuple[str, str | None]
+
+
+def _build_import_map(tree: ast.Module) -> "ImportMap":
+    """Maps every local name this module can call to (module, attr): attr
+    is None when the local name is bound to the WHOLE module (`import os`,
+    `import os as o` -> `o` bound to `("os", None)`); it names the real
+    attribute when the local name is bound to ONE MEMBER of that module
+    (`from os import remove as f` -> `f` bound to `("os", "remove")`,
+    identically to the unaliased `from os import remove` -> `remove` bound
+    to `("os", "remove")`). This is the whole fix for TE-75 S-1: every call
+    site is classified against what its callee RESOLVES to, computed once
+    here from the module's own import statements, never against the bound
+    name a dodge could rename."""
+    import_map: "ImportMap" = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local = alias.asname or alias.name
+                import_map[local] = (alias.name, None)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module is None:  # a relative `from . import x` -- not this codebase's pattern
+                continue
+            for alias in node.names:
+                local = alias.asname or alias.name
+                import_map[local] = (node.module, alias.name)
+    return import_map
+
+
+def _classify_call(node: ast.Call, import_map: "ImportMap") -> str | None:
+    """Returns a short description if `node` resolves to a deletion
+    primitive, else None."""
     func = node.func
     if isinstance(func, ast.Attribute):
-        if func.attr == "rmtree":
-            # shutil.rmtree(...) -- the module-qualified form this codebase
-            # has always used. A bare `rmtree(...)` (no attribute access) is
-            # caught by the ast.Name branch below instead.
-            if isinstance(func.value, ast.Name) and func.value.id == "shutil":
-                return "shutil.rmtree(...)"
-            return f"<expr>.rmtree(...) -- non-shutil-qualified, still a deletion primitive"
-        if func.attr in _OS_STYLE_ATTRS:
-            if isinstance(func.value, ast.Name) and func.value.id == "os":
-                return f"os.{func.attr}(...)"
-            # Any other object's .remove()/.unlink()/.rmdir() -- Path's own
-            # unlink()/rmdir(), or an equivalent, are the only realistic
-            # callers of these three names on a non-`os` object in this
-            # codebase; flagged the same way regardless of the receiver.
+        base = func.value
+        if isinstance(base, ast.Name) and base.id in import_map:
+            module, bound_attr = import_map[base.id]
+            if bound_attr is None and module in MODULE_DELETION_TARGETS and func.attr in MODULE_DELETION_TARGETS[module]:
+                return f"{base.id}.{func.attr}(...) -- resolves to {module}.{func.attr}"
+        # Not resolvable to a known module import (a local variable, an
+        # unresolved name, or a call expression like pathlib.Path(p)) --
+        # the receiver-agnostic Path-method check.
+        if func.attr in PATH_METHOD_TARGETS:
             return f"<expr>.{func.attr}(...) -- Path-style deletion method"
-    elif isinstance(func, ast.Name):
-        if func.id in ("rmtree",):
-            return f"{func.id}(...) -- bare call to a module-level deletion helper"
+        return None
+    if isinstance(func, ast.Name) and func.id in import_map:
+        module, bound_attr = import_map[func.id]
+        if bound_attr is not None and module in MODULE_DELETION_TARGETS and bound_attr in MODULE_DELETION_TARGETS[module]:
+            return f"{func.id}(...) -- resolves to {module}.{bound_attr}"
     return None
 
 
@@ -98,15 +155,26 @@ def _function_line_ranges(tree: ast.Module, name: str) -> list[tuple[int, int]]:
 
 
 def find_deletion_violations(paths: list[Path]) -> list[DeletionViolation]:
+    """TE-75 S-2: raises ValueError on an empty `paths` -- an empty
+    population must never read as a clean scan. Every real caller
+    (main() below, and the matrix leg in tools/ci/run_configure_matrix.py)
+    goes through this, so neither can bypass it by skipping their own
+    guard."""
+    if not paths:
+        raise ValueError(
+            "find_deletion_violations() called with an empty path list -- refusing to report a "
+            "clean scan over nothing. Point it at the real tools/pin-superslm/*.py files."
+        )
     violations: list[DeletionViolation] = []
     for path in paths:
         source = path.read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(path))
+        import_map = _build_import_map(tree)
         primitive_ranges = _function_line_ranges(tree, PRIMITIVE_FUNCTION_NAME)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
-            description = _is_deletion_call(node)
+            description = _classify_call(node, import_map)
             if description is None:
                 continue
             line = node.lineno
@@ -116,18 +184,28 @@ def find_deletion_violations(paths: list[Path]) -> list[DeletionViolation]:
     return violations
 
 
+def scan(paths: list[Path]) -> tuple[int, list[DeletionViolation]]:
+    """(modules_scanned, violations) -- the count a caller can assert on
+    directly, so "how many files did this actually look at" never has to
+    be inferred from an empty violation list (TE-75 S-2)."""
+    violations = find_deletion_violations(paths)
+    return len(paths), violations
+
+
 def main(argv: list[str]) -> int:
     if not argv:
         print("usage: pin_superslm_delete_ast_check.py <file.py> [<file.py> ...]", file=sys.stderr)
         return 2
     paths = [Path(a) for a in argv]
-    violations = find_deletion_violations(paths)
+    modules_scanned, violations = scan(paths)
     if violations:
-        print(f"FAIL: {len(violations)} deletion-primitive call(s) outside {PRIMITIVE_FUNCTION_NAME}():")
+        print(f"FAIL: {len(violations)} deletion-primitive call(s) outside {PRIMITIVE_FUNCTION_NAME}() "
+              f"({modules_scanned} module(s) scanned):")
         for v in violations:
             print(f"  {v}")
         return 1
-    print(f"PASS: every deletion-primitive call is inside {PRIMITIVE_FUNCTION_NAME}()")
+    print(f"PASS: every deletion-primitive call is inside {PRIMITIVE_FUNCTION_NAME}() "
+          f"({modules_scanned} module(s) scanned)")
     return 0
 
 

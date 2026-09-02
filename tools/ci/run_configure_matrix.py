@@ -1130,13 +1130,26 @@ def c34_leg_i_build_dir_placement_invariant():
 # ---------------------------------------------------------------------------
 
 def pin_tool_deletion_primitive_enforced():
-    """TE-73: shown red against 2798866 (6 violations across 3 idioms:
-    shutil.rmtree x3, the retired bare rmtree() helper x3) before this leg
-    or the fix it pins existed; green once _remove_owned became the one
-    permitted deletion site. Checks the REAL, committed
+    """TE-73: shown red against 2798866 -- 6 deletion-primitive calls
+    outside _remove_owned(), 2 distinct descriptions (shutil.rmtree x3;
+    the retired bare rmtree() helper x3 -- corrected TE-75 M-3, the prior
+    docstring here said "3 idioms" and attributed configure_engine's own
+    hit to shutil.rmtree, when it was the bare helper call) -- before this
+    leg or the fix it pins existed; green once _remove_owned became the
+    one permitted deletion site. Checks the REAL, committed
     tools/pin-superslm/*.py files directly -- no copy_repo needed, since
     this inspects the tool's own source, not a cmake construction against
-    it."""
+    it.
+
+    TE-75 S-2: this used to hand py_files straight to
+    find_deletion_violations() with no check that the glob found
+    anything -- an empty list produces an empty violation list, which
+    reads identically to a genuine clean scan.
+    tests/pin_superslm_delete_ast_check.py's own scan() now raises
+    ValueError on an empty population, and this leg lets that raise into
+    _run_leg's own infra-failure path rather than catching it -- a moved
+    or renamed tools/pin-superslm/ now fails this leg loudly instead of
+    reporting "no violations" over nothing."""
     ast_check_dir = REPO_ROOT / "tests"
     if str(ast_check_dir) not in sys.path:
         sys.path.insert(0, str(ast_check_dir))
@@ -1144,19 +1157,19 @@ def pin_tool_deletion_primitive_enforced():
 
     pin_dir = REPO_ROOT / "tools" / "pin-superslm"
     py_files = sorted(pin_dir.glob("*.py"))
-    violations = ast_check.find_deletion_violations(py_files)
+    modules_scanned, violations = ast_check.scan(py_files)  # raises ValueError if py_files is empty
     passed = len(violations) == 0
     RESULTS.append({
         "leg": "pin-superslm AST: only _remove_owned deletes anything",
-        "expected": "zero deletion-primitive calls outside _remove_owned()",
+        "expected": "zero deletion-primitive calls outside _remove_owned(), over a non-empty population",
         "returncode": 0 if passed else 1,
         "want_fail": False,
         "found_expected_string": passed,
         "passed": passed,
         "output_tail": (
-            "no violations"
+            f"{modules_scanned} module(s) scanned, no violations"
             if passed
-            else "\n".join(str(v) for v in violations)
+            else f"{modules_scanned} module(s) scanned\n" + "\n".join(str(v) for v in violations)
         ),
     })
 
