@@ -18,8 +18,25 @@ include(EngineGuards)   # find_package(superslm), the two version guards, proven
 include(BuildFlags)     # the precise-FP flag (directory-wide) + semb_assert_precise_fp() (C14)
 include(SourceProvenance)  # semb_source_sha (C34)
 
-# The pinned engine's tag/commit/tree baked in for the CLI to report and for
-# any future unit that wants a compile-time handle on the pin.
+# engine_path_sha (sec 4.3: "the build selects one adapter translation unit
+# in one branch of one variable... its bytes are engine_path_sha, manifest
+# provenance since two adapters computing the same vectors share an
+# epoch") — a content digest of the one selected adapter TU's own bytes,
+# computed at configure (a byte digest of a produced/committed file, never
+# a path or a CMake property — StandardsDocument.md sec 3.3's own
+# producer-identity rule, applied here to the one variable this project
+# has today: SEMB_ENGINE_ADAPTER_TU always resolves to the interim TU
+# until U3 adds a second branch). Computed BEFORE the configure_file()
+# call below (TE-79 F-11, TE-76 review) so it reaches the generated pin
+# header like the other three pin fields, rather than only a
+# message(STATUS) line no build artifact carries.
+set(SEMB_ENGINE_ADAPTER_TU "${CMAKE_SOURCE_DIR}/src/superembedder/engine_adapter_interim.cpp")
+file(SHA256 "${SEMB_ENGINE_ADAPTER_TU}" SEMB_ENGINE_PATH_SHA)
+message(STATUS "engine_path_sha (${SEMB_ENGINE_ADAPTER_TU}): ${SEMB_ENGINE_PATH_SHA}")
+
+# The pinned engine's tag/commit/tree, and engine_path_sha, baked in for
+# the CLI to report and for any future unit that wants a compile-time
+# handle on the pin.
 configure_file(
 	"${CMAKE_SOURCE_DIR}/cmake/templates/semb_engine_pin.h.in"
 	"${CMAKE_BINARY_DIR}/generated/semb_engine_pin.h"
@@ -58,18 +75,6 @@ target_include_directories(superembedder
 target_link_libraries(superembedder PRIVATE superslm::superslm)
 semb_verify_source_provenance(superembedder SIDECAR "${SEMB_SOURCE_PROVENANCE_SIDECAR}")
 
-# engine_path_sha (sec 4.3: "the build selects one adapter translation unit
-# in one branch of one variable... its bytes are engine_path_sha, manifest
-# provenance since two adapters computing the same vectors share an
-# epoch") — a content digest of the one selected adapter TU's own bytes,
-# computed at configure (a byte digest of a produced/committed file, never
-# a path or a CMake property — StandardsDocument.md sec 3.3's own
-# producer-identity rule, applied here to the one variable this project
-# has today: SEMB_ENGINE_ADAPTER_TU always resolves to the interim TU
-# until U3 adds a second branch).
-set(SEMB_ENGINE_ADAPTER_TU "${CMAKE_SOURCE_DIR}/src/superembedder/engine_adapter_interim.cpp")
-file(SHA256 "${SEMB_ENGINE_ADAPTER_TU}" SEMB_ENGINE_PATH_SHA)
-message(STATUS "engine_path_sha (${SEMB_ENGINE_ADAPTER_TU}): ${SEMB_ENGINE_PATH_SHA}")
 
 # ---------------------------------------------------------------------------
 # The semb CLI. A stub in this slice: it prints its version and the pinned
@@ -95,12 +100,6 @@ add_executable(semb_witness src/witness/witness_main.cpp)
 # same routine model_sha uses."
 target_link_libraries(semb_witness PRIVATE superembedder superslm::superslm)
 
-# Both product targets above (and any future target this file declares) inherit the
-# precise-FP flag from BuildFlags.cmake's directory-wide add_compile_options()
-# automatically — there is no per-target call left to make. Assert the whole
-# set now, once, after nothing else can add or remove a target.
-semb_assert_precise_fp()
-
 # ---------------------------------------------------------------------------
 # Tests: the negative-configure matrix (C33's provenance legs, C34's
 # source-provenance legs, and C14's build-configuration legs) and the
@@ -113,6 +112,20 @@ enable_testing()
 # add_subdirectory-able because the superembedder target and
 # superslm::superslm already exist in this scope by this point.
 add_subdirectory(tests)
+
+# TE-79 F-4 (Significant, TE-76 review): semb_assert_precise_fp() moved
+# HERE, after every add_subdirectory() this file calls -- it used to run
+# BEFORE add_subdirectory(tests), so its own recursive BUILDSYSTEM_TARGETS
+# walk (cmake/BuildFlags.cmake) saw an EMPTY subdirectory list and checked
+# only [superembedder;semb;semb_witness], none of the nine test targets
+# (executed, confirmed from the project's own recorded configure output:
+# the printed population never named a test TU). Both product targets
+# above (and any future target this file declares) inherit the precise-FP
+# flag from BuildFlags.cmake's directory-wide add_compile_options()
+# automatically — there is no per-target call left to make. Assert the
+# whole set now, once, after nothing else can add or remove a target --
+# which is only true once every add_subdirectory() call has already run.
+semb_assert_precise_fp()
 
 add_test(
 	NAME provenance_and_flag_matrix
