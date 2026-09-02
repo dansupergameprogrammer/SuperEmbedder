@@ -173,7 +173,35 @@ def build_engine_library(build: Path, cmake: str, target: str = "superslm") -> N
     run([cmake, "--build", str(build), "--target", target])
 
 
+def _assert_safe_to_wipe(prefix: Path) -> None:
+    """install_engine() recursively deletes --prefix before every install.
+    TE-65 F-11: that used to run with no guard on what --prefix actually
+    resolved to. Refuse rather than silently rm -rf an arbitrary path:
+    (1) a path too close to a filesystem root (a drive root, or one level
+    below it, e.g. a home directory) is refused outright, regardless of its
+    contents; (2) an EXISTING, non-empty prefix that carries no
+    share/superslm-provenance/ marker from a prior run of this tool is
+    refused, because this tool did not create it and has no basis for
+    deciding it is safe to erase."""
+    resolved = prefix.resolve()
+    if len(resolved.parts) <= 2:
+        raise SystemExit(
+            f"SEMB_PIN_UNSAFE_PREFIX: refusing to install to {resolved} — too close to a "
+            f"filesystem root to safely wipe and recreate. Pass a --prefix at least two "
+            f"directories deep (e.g. build/_engine_install, not C:\\ or a home directory)."
+        )
+    if resolved.exists():
+        marker = resolved / "share" / "superslm-provenance"
+        if not marker.exists() and any(resolved.iterdir()):
+            raise SystemExit(
+                f"SEMB_PIN_UNSAFE_PREFIX: refusing to wipe {resolved} — it already exists, is "
+                f"non-empty, and carries no share/superslm-provenance/ marker from a prior run of "
+                f"this tool. Point --prefix at an empty directory or one this tool already owns."
+            )
+
+
 def install_engine(build: Path, cmake: str, prefix: Path) -> None:
+    _assert_safe_to_wipe(prefix)
     if prefix.exists():
         rmtree(prefix)
     prefix.mkdir(parents=True, exist_ok=True)
