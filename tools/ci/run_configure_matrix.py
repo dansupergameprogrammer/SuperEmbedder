@@ -211,17 +211,31 @@ def _run_leg(fn, *args, **kwargs) -> None:
     calls, so nothing in the suite could actually trigger it) -- but a leg
     written to call pin_superslm's own functions in-process, the way
     C33(e2) already does for one of them, would silently escape this
-    wrapper entirely on any SEMB_PIN_* refusal. Catches `BaseException`
-    now, with `KeyboardInterrupt` (and `SystemExit` raised with no message,
-    which this codebase never does but a future caller might) re-raised
-    rather than swallowed -- a real interrupt or a deliberate top-level
-    exit must still stop the run; only the "this leg's own construction
-    failed" class is caught and recorded."""
+    wrapper entirely on any SEMB_PIN_* refusal.
+
+    TE-75 S-3: this docstring then promised that a bare `SystemExit` (or
+    `sys.exit(0)`) would be re-raised, "a deliberate top-level exit must
+    still stop the run" -- and the code caught every `SystemExit` in
+    `except BaseException`, promise and code disagreeing. Fixed at the
+    code, per StandardsDocument.md Sec5.6 (the promise is the design
+    commitment): `KeyboardInterrupt` is re-raised unconditionally; a
+    `SystemExit` whose `.code` is `None` (a bare `raise SystemExit`) or `0`
+    (`sys.exit(0)`) is ALSO re-raised -- a deliberate, clean top-level exit
+    -- while a `SystemExit` carrying a real message or nonzero code (every
+    SEMB_PIN_* refusal in this codebase, and every other real error this
+    matrix's own tools raise) is caught and recorded the same as any other
+    exception, which is the class this wrapper exists to catch."""
     try:
         fn(*args, **kwargs)
     except KeyboardInterrupt:
         raise
-    except BaseException as exc:
+    except SystemExit as exc:
+        if exc.code is None or exc.code == 0:
+            raise
+        record_infra_failure(f"<leg raised an unhandled exception> {fn.__name__}",
+                              "<no exception -- the leg was expected to run its own construction>",
+                              1, f"{type(exc).__name__}: {exc}", traceback.format_exc())
+    except Exception as exc:
         record_infra_failure(f"<leg raised an unhandled exception> {fn.__name__}",
                               "<no exception -- the leg was expected to run its own construction>",
                               1, f"{type(exc).__name__}: {exc}", traceback.format_exc())
