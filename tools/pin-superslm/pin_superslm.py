@@ -181,7 +181,7 @@ def build_engine_library(build: Path, cmake: str, target: str = "superslm") -> N
     run([cmake, "--build", str(build), "--target", target])
 
 
-def _assert_safe_to_wipe(path: Path, markers: tuple[str, ...], what: str, error_code: str = "SEMB_PIN_UNSAFE_PREFIX") -> None:
+def _assert_safe_to_wipe(path: Path, markers: tuple[str, ...], what: str, error_code: str = "SEMB_PIN_UNSAFE_PREFIX", own_this_run: bool = False) -> None:
     """Guards every recursive delete this tool performs on a user-supplied
     path. TE-65 F-11 added this for --prefix; TE-67 N-11 generalizes it and
     applies it to --workdir too, which had the identical unguarded rmtree
@@ -194,7 +194,16 @@ def _assert_safe_to_wipe(path: Path, markers: tuple[str, ...], what: str, error_
     (2) An EXISTING, non-empty path carrying none of `markers` (each a
         relative path checked for existence under `path`) is refused,
         because this tool did not create it and has no basis for deciding
-        it is safe to erase."""
+        it is safe to erase -- UNLESS `own_this_run` is True, meaning the
+        caller has independent, in-process proof that THIS run already
+        used `path` successfully (TE-69 P-4: --reuse-clone skips
+        clone_engine() entirely, so workdir/src -- the marker's own
+        assumed shape -- is never created; only workdir/build is, and only
+        by this same process, in this same run. The marker heuristic
+        cannot see that, and reaching the final cleanup at all already
+        proves it more directly than any marker could -- every earlier
+        step that could have failed already returned nonzero and exited
+        before this point)."""
     resolved = path.resolve()
     if len(resolved.parts) <= 2:
         raise SystemExit(
@@ -202,7 +211,7 @@ def _assert_safe_to_wipe(path: Path, markers: tuple[str, ...], what: str, error_
             f"root to safely wipe and recreate. Pass a path at least two directories deep (e.g. "
             f"build/_engine_install, not C:\\ or a home directory)."
         )
-    if resolved.exists():
+    if resolved.exists() and not own_this_run:
         has_marker = any((resolved / m).exists() for m in markers)
         if not has_marker and any(resolved.iterdir()):
             raise SystemExit(
@@ -567,12 +576,19 @@ def main() -> int:
     log(f"updated {args.lock}")
 
     if not args.keep_workdir:
-        # TE-67 N-11: the same guard, applied to the final cleanup. Lower
-        # risk than the pre-clone deletion (this process just used `workdir`
-        # successfully, so the marker is expected to be present), kept for
-        # the same reason the pre-clone guard exists: nothing here should
-        # depend on "this call happens to be safe" without checking.
-        _assert_safe_to_wipe(workdir, markers=("src/.git",), what="--workdir", error_code="SEMB_PIN_UNSAFE_WORKDIR")
+        # TE-67 N-11 / TE-69 P-4: the marker-based guard from the pre-clone
+        # site does not apply here unchanged. With --reuse-clone,
+        # clone_engine() never runs, so workdir/src (and its .git marker)
+        # is never created -- only workdir/build is, by this same process,
+        # in this same run -- and the marker check refused a run that had
+        # already succeeded and already written provenance.json and
+        # superslm.lock, turning a clean success into a reported failure.
+        # own_this_run=True: reaching this line at all means every earlier
+        # step that touches workdir already returned 0, which is stronger,
+        # in-process proof of ownership than any marker heuristic reading
+        # the directory after the fact.
+        _assert_safe_to_wipe(workdir, markers=("src/.git",), what="--workdir",
+                              error_code="SEMB_PIN_UNSAFE_WORKDIR", own_this_run=True)
         shutil.rmtree(workdir, onerror=_rmtree_onerror, ignore_errors=True)
 
     return 0
