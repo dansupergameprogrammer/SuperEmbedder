@@ -494,6 +494,10 @@ def main() -> int:
     ap.add_argument("--ninja-executable", default="ninja")
     ap.add_argument("--python-executable", default=sys.executable)
     ap.add_argument("--scratch", default=None)
+    ap.add_argument("--keep-scratch", action="store_true",
+                     help="do not delete the scratch tree on a fully-passing run (TE-65 F-12: by "
+                          "default it is deleted -- leg (e) alone clones+builds the real engine and "
+                          "leaves ~100 MB behind per run, never cleaned before this fix)")
     args = ap.parse_args()
 
     REPO_ROOT = Path(args.repo_root).resolve()
@@ -504,6 +508,23 @@ def main() -> int:
     PYEXE = args.python_executable
     SCRATCH = Path(args.scratch).resolve() if args.scratch else Path(tempfile.mkdtemp(prefix="semb_negconf_"))
     SCRATCH.mkdir(parents=True, exist_ok=True)
+
+    # TE-65 F-13: leg (e) builds the real engine under SCRATCH, and MSVC's
+    # own compiler-check step (testCXXCompiler.cxx.obj) hit LNK1181 at a
+    # ~150-character scratch root on the reviewer's machine, surfacing as a
+    # C33 leg failure that pointed at nothing about the artifact -- a defect
+    # in the *path*, reported as a defect in the *build*. This does not fix
+    # the underlying Windows path-length ceiling (core.longpaths=true
+    # already covers what git itself can do about it); it gives an early,
+    # legible warning instead of a confusing failure buried inside leg (e)'s
+    # own output three subprocess calls later.
+    _scratch_len = len(str(SCRATCH))
+    if _scratch_len > 100:
+        print(f"[run_configure_matrix] WARNING: scratch root is {_scratch_len} characters "
+              f"({SCRATCH}). Leg (e) builds the real engine under this path; MSVC's own compiler-"
+              f"check step has been observed to fail with LNK1181 past roughly this length even "
+              f"with core.longpaths=true. Pass --scratch with a short path (e.g. C:\\semb_scratch) "
+              f"if leg (e) fails for no reason connected to the artifact.", flush=True)
 
     pin_tool = REPO_ROOT / "tools" / "pin-superslm" / "pin_superslm.py"
 
@@ -525,6 +546,20 @@ def main() -> int:
 
     all_passed = all(r["passed"] for r in RESULTS)
     print(json.dumps({"all_passed": all_passed, "results": RESULTS}, indent=2))
+
+    # TE-65 F-12: this used to leave the scratch tree behind unconditionally
+    # -- leg (e) alone clones and builds the real engine (~100 MB, measured),
+    # and three copies had accumulated in the worktree's build/ before this
+    # fix. Cleaned up on a fully-passing run unless --keep-scratch was
+    # passed; kept on any failure so the failing construction can be
+    # inspected, and kept whenever the caller supplied --scratch explicitly
+    # (an explicit path is a signal the caller wants to look at it, e.g. the
+    # path-length investigation this same finding's F-13 half exists for).
+    if all_passed and not args.keep_scratch and not args.scratch:
+        rmtree(SCRATCH)
+    else:
+        print(f"[run_configure_matrix] scratch tree kept at {SCRATCH}", flush=True)
+
     return 0 if all_passed else 1
 
 
