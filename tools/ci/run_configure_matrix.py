@@ -785,7 +785,12 @@ def c14_cxx_flags_release_fastmath():
     record(f"C14 CMAKE_CXX_FLAGS_RELEASE carries fast-math ({compiler_id})", "SEMB_FP_FASTMATH_PRESENT", rc, out)
 
 
-def c14_flag_strip():
+def c14_run_all_legs():
+    """TE-69 O-4: renamed from c14_flag_strip -- N-9's prose sweep reworded
+    every mention of "flag-strip proof" but left this identifier, the same
+    stale-mechanism class one name short of swept. None of the seven legs
+    below strips a flag; each constructs one way the C14 assertion could be
+    wrong and confirms it is not."""
     c14_directive_withheld()
     c14_cxx_flags_fastmath()
     c14_positive()
@@ -855,7 +860,7 @@ def main() -> int:
     c34_leg_d_source_added_after_digest(NINJA)
     c34_leg_f_header_edit_moves_digest()
 
-    c14_flag_strip()
+    c14_run_all_legs()
 
     all_passed = all(r["passed"] for r in RESULTS)
     print(json.dumps({"all_passed": all_passed, "results": RESULTS}, indent=2))
