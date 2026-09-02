@@ -120,7 +120,11 @@ def parse_lock(path: Path) -> dict:
 
 def write_lock(path: Path, fields: dict) -> None:
     lines = [f"{k}={v}" for k, v in fields.items()]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # TE-65 F-10: newline="\n" forces LF regardless of platform. write_text's
+    # default (universal newlines, translating "\n" to os.linesep) means the
+    # SAME call emits CRLF on Windows and LF on Linux/macOS -- superslm.lock's
+    # committed line endings would depend on which OS last ran this tool.
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
 def clone_engine(source: str, tag: str, workdir: Path) -> Path:
@@ -467,7 +471,7 @@ def main() -> int:
     }
     manifest_path = prefix / "share" / "superslm-provenance" / "provenance.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest_path.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    manifest_path.write_text(json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
     log(f"wrote {manifest_path}")
 
     lock["commit"] = commit
