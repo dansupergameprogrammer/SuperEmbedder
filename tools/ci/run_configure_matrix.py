@@ -762,7 +762,12 @@ def c34_leg_i_build_dir_placement_invariant():
     reaching source, configured at two different -B locations (nested
     inside the source root, and a sibling outside it) -- must produce an
     IDENTICAL semb_source_sha and an identical covered_count at both, and
-    the post-build re-verification must agree at both."""
+    the post-build re-verification must agree at both. TE-71 Q-2: the
+    in-root placement used to be a SIBLING of the source root under
+    SCRATCH, not nested inside it -- both configures were out-of-root, so
+    N-8's exclusion caught the generated header at both placements and the
+    leg passed with the exclusion removed. build_in is now genuinely inside
+    the source root, at src/build/semb."""
     src = copy_repo(SCRATCH / "c34i_src")
     (src / "src" / "uses_gen.cpp").write_text(
         '#include "superembedder/version.h"\n#include "semb_engine_pin.h"\nint semb_uses_gen() { return 0; }\n',
@@ -781,7 +786,17 @@ def c34_leg_i_build_dir_placement_invariant():
     )
     cmakelists.write_text(text, encoding="utf-8")
 
-    build_in = SCRATCH / "c34i_build_in"  # nested inside src (the project's own documented layout)
+    # TE-71 Q-2: build_in used to be SCRATCH/"c34i_build_in" -- a SIBLING of
+    # `src` under SCRATCH, not nested inside it, despite the docstring and
+    # this comment both saying "nested". Both configures were therefore
+    # out-of-root, N-8's own exclusion caught the generated header at BOTH
+    # placements, and the leg passed with N-8's fix removed (Q-2, executed:
+    # reverting `if build_dir is not None:` to `if False and build_dir is
+    # not None:` still passed). build_in is now genuinely inside `src`, at
+    # the project's own documented "-B build/semb" layout relative to the
+    # source root -- the placement the exclusion's in-root branch has to
+    # reach for the leg to discriminate at all.
+    build_in = src / "build" / "semb"
     rc_in, out_in = run_cmake_configure(src, build_in, ENGINE_PREFIX)
     build_out = SCRATCH.parent / "c34i_build_out_of_root"  # a sibling of SCRATCH, outside src
     rc_out, out_out = run_cmake_configure(src, build_out, ENGINE_PREFIX)
