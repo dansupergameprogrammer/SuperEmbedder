@@ -85,6 +85,22 @@ function(semb_compute_source_provenance target)
 		list(APPEND _py_args --include-dir "${_inc}")
 	endforeach()
 
+	# TE-71 Q-6: a genuine CACHE variable, matching SEMB_TEST_SKIP_FP_DIRECTIVE's
+	# own pattern in cmake/BuildFlags.cmake -- never set in normal use. Replaces
+	# the prior SEMB_TEST_FORCE_EMPTY_CLOSURE environment-variable hook, which
+	# was ambient process state: inherited by every child process, announced
+	# nowhere, and recorded in no build artifact, so a configure run under it
+	# was indistinguishable afterward from one that was not. A `-D` cache
+	# variable lands in CMakeCache.txt and stays readable in the build
+	# directory forever, and the message(STATUS ...) below announces it in the
+	# configure log too, exactly as the sibling hatch does.
+	if(SEMB_TEST_FORCE_EMPTY_CLOSURE)
+		message(STATUS "SEMB TEST: forcing an empty resolved closure "
+			"(-DSEMB_TEST_FORCE_EMPTY_CLOSURE=1) to prove the two-producer subset check "
+			"(SEMB_SOURCE_NOT_IN_OWN_CLOSURE) can fail.")
+		list(APPEND _py_args --force-empty-closure)
+	endif()
+
 	execute_process(
 		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/semb_source_hash.py" ${_py_args}
 		OUTPUT_VARIABLE _semb_src_out

@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import subprocess
 import sys
@@ -110,16 +109,34 @@ def _gcc_clang_closure(compiler: str, source: Path, include_dirs: list[str], std
     return [Path(t) for t in tokens]
 
 
-def _resolve_closure(compiler_id: str, compiler: str, source: Path, include_dirs: list[str], std: str) -> list[Path]:
-    # TE-69 P-3: SEMB_TEST_FORCE_EMPTY_CLOSURE is a test-only escape hatch
-    # (never set in normal use, matching the SEMB_TEST_SKIP_FP_DIRECTIVE
-    # pattern in cmake/BuildFlags.cmake) that makes this function return an
+def _resolve_closure(compiler_id: str, compiler: str, source: Path, include_dirs: list[str], std: str,
+                      force_empty: bool = False) -> list[Path]:
+    # TE-69 P-3, corrected TE-71 Q-6: force_empty is a test-only escape
+    # hatch (never set in normal use) that makes this function return an
     # empty closure regardless of what the real compiler resolves --
     # letting N-6's own subset assertion be driven to its must-reject
     # through a REAL `cmake -S -B` configure (a permanent matrix leg) rather
     # than only a standalone Python-level monkeypatch, which is how N-6 was
     # verified in TE-67 and again in TE-69 but never wired in.
-    if os.environ.get("SEMB_TEST_FORCE_EMPTY_CLOSURE"):
+    #
+    # Q-6: this used to be an environment variable
+    # (SEMB_TEST_FORCE_EMPTY_CLOSURE), read via os.environ.get -- claimed to
+    # match SEMB_TEST_SKIP_FP_DIRECTIVE's pattern in cmake/BuildFlags.cmake,
+    # but did not, on the two axes that make that hatch safe:
+    # SEMB_TEST_SKIP_FP_DIRECTIVE is a `-D` CACHE VARIABLE, so it lands in
+    # CMakeCache.txt and stays readable in the build directory forever, and
+    # its active branch prints message(STATUS "SEMB TEST: ..."). The old
+    # env-var hook was ambient process state, inherited by every child
+    # process, announced nowhere, and recorded in no build artifact -- a
+    # configure run under it was indistinguishable afterward from one that
+    # was not. Now a genuine CLI flag (cmd_configure's --force-empty-closure
+    # below), fed from a real CMake cache variable
+    # (cmake/SourceProvenance.cmake's own SEMB_TEST_FORCE_EMPTY_CLOSURE,
+    # which prints the identical message(STATUS ...) shape
+    # SEMB_TEST_SKIP_FP_DIRECTIVE does) -- so a configure run under this
+    # hatch now IS distinguishable afterward, from CMakeCache.txt and from
+    # the configure log, exactly as the sibling hatch is.
+    if force_empty:
         return []
     if compiler_id == "MSVC":
         return _msvc_closure(compiler, source, include_dirs, std)
@@ -138,7 +155,8 @@ def cmd_configure(args: argparse.Namespace) -> int:
     per_source_text: dict[str, str] = {}
     for s in args.source:
         src_path = (root / s).resolve()
-        closure = _resolve_closure(args.compiler_id, args.compiler, src_path, args.include_dir, args.std)
+        closure = _resolve_closure(args.compiler_id, args.compiler, src_path, args.include_dir, args.std,
+                                    force_empty=args.force_empty_closure)
         resolved = set()
         for h in closure:
             try:
@@ -386,6 +404,11 @@ def main() -> int:
                          "regardless of whether it sits inside or outside --root")
     c.add_argument("--out-header", required=True)
     c.add_argument("--out-json", required=True)
+    c.add_argument("--force-empty-closure", action="store_true",
+                    help="TE-71 Q-6: test-only escape hatch, fed from a real CMake cache variable "
+                         "(cmake/SourceProvenance.cmake) -- never set in normal use. Makes "
+                         "_resolve_closure() return an empty closure regardless of what the real "
+                         "compiler resolves, driving N-6's own must-reject through a real configure.")
     c.set_defaults(func=cmd_configure)
 
     v = sub.add_parser("verify")

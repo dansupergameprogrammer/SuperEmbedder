@@ -771,10 +771,11 @@ def c34_leg_g_preprocess_failure_raises():
 
 
 def c34_leg_j_empty_resolver_refused():
-    """TE-69 P-3, a permanent leg for N-6. SEMB_TEST_FORCE_EMPTY_CLOSURE
-    drives the real cmd_configure() through a real `cmake -S -B` to its own
-    must-reject: a resolver reporting nothing at all against this project's
-    real, #include-bearing src/version.cpp.
+    """TE-69 P-3, a permanent leg for N-6. SEMB_TEST_FORCE_EMPTY_CLOSURE (a
+    real CMake cache variable, TE-71 Q-6) drives the real cmd_configure()
+    through a real `cmake -S -B` to its own must-reject: a resolver
+    reporting nothing at all against this project's real, #include-bearing
+    src/version.cpp.
 
     TE-71 Q-8: this leg claimed letter "h", which the plan's own C34 row
     (Claude/Plans/SuperEmbedder_Plan.md Sec8) already allocates to a
@@ -786,7 +787,7 @@ def c34_leg_j_empty_resolver_refused():
     reservation of it for a different not-yet-built leg too)."""
     src = copy_repo(SCRATCH / "c34j_src")
     rc, out = run_cmake_configure(src, SCRATCH / "c34j_build", ENGINE_PREFIX,
-                                   extra_env={"SEMB_TEST_FORCE_EMPTY_CLOSURE": "1"})
+                                   extra_defines={"SEMB_TEST_FORCE_EMPTY_CLOSURE": "1"})
     record("C34(j) empty resolver refused (N-6)", "SEMB_SOURCE_NOT_IN_OWN_CLOSURE", rc, out)
 
 
