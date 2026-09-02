@@ -1,5 +1,5 @@
-// tests/c39_seam_digest_test.cpp -- TE-62/TE-80 (U0 slice B): C39's second
-// half, the seam digest from the timed call against
+// tests/c39_seam_digest_test.cpp -- TE-62/TE-80/TE-83 (U0 slice B): C39's
+// second half, the seam digest from the timed call against
 // `tests/fixtures/reference-digests.txt`
 // (`Claude/Plans/SuperEmbedder_Plan.md` sec 8, C39). The grep-able
 // singleton half is `tests/c39_singleton_check.py`.
@@ -18,34 +18,44 @@
 // byte-for-byte (as lowercase hex, `superslm::ToHex`'s own format)
 // against the anchor read from `tests/fixtures/reference-digests.txt`.
 //
-// COMMISSIONED BEFORE TRUSTED (StandardsDocument.md sec 5.4): `Compare()`
+// COMMISSIONED BEFORE TRUSTED (StandardsDocument.md sec 5.4): `DigestsMatch`
 // is exercised against a constructed all-`1`s anchor first -- the
 // reviewer's own construction -- and must report a mismatch, before the
 // real anchor comparison is run. This never touches the fixture file
-// (outside this seat's writable scope, `Claude/Bach/briefs/
-// te80-u0b-test-fixes.md`'s own Contract: "tests/fixtures/** except
-// reference-digests.txt, which is the builder's"); the all-`1`s anchor is
-// a string constructed in memory and fed to the SAME comparison function
-// the real run uses.
+// (outside this seat's writable scope for the round that added it; the
+// all-`1`s anchor is a string constructed in memory and fed to the SAME
+// comparison function the real run uses).
 //
-// SCOPE, STATED PRECISELY (per this seat's own brief: "State whether the
-// committed anchor... is the value the corrected cell computes; if not,
-// the builder's recomposition is the finding, filed, not an anchor you
-// edit"): this cell computes ONLY W-B's own seam digest -- SHA-256 over
-// `semb_seam_serialize_document`'s output bytes, exactly what this file's
-// header has always specified and what C39's own sec 8 row names ("the
-// seam digest from the timed call"). TE-78 (`witness_sha` composition,
-// D-SLM6072/D-SLM6073) recomposed `tests/fixtures/reference-digests.txt`'s
-// anchor to hold the FULL three-component `witness_sha`
-// (SHA-256(W-A digest || W-B digest || W-Q placeholder digest)) instead
-// of W-B's digest alone -- a DIFFERENT, broader quantity this cell was
-// never asked to compute. Executed this session (this file's own printed
-// output, and this seat's own test-design record,
-// `Claude/Curie/te80-u0b-test-fixes-2026-09-02.md`, states the exact
-// digests): the two values do not agree. This is filed as a finding for
-// the anchor's own owner (the builder), not resolved by widening this
-// cell's own scope to match whatever the fixture currently holds, nor by
-// editing the fixture.
+// SCOPE, STATED PRECISELY: this cell computes ONLY W-B's own seam digest
+// -- SHA-256 over `semb_seam_serialize_document`'s output bytes, exactly
+// what this file's header has always specified and what C39's own sec 8
+// row names ("the seam digest from the timed call"). TE-82 resolved the
+// scope conflict TE-80 filed (TE-78 had recomposed the fixture's single
+// anchor line to hold the broader, three-component `witness_sha` instead
+// of W-B's digest alone): `tests/fixtures/reference-digests.txt` is now a
+// NAMED TABLE, `c39_seam_digest` and `witness_sha` each under its own
+// name, and this cell's own computed value matches the `c39_seam_digest`
+// row exactly -- confirmed by execution, both toolchains, this round.
+//
+// TE-83 (TE-81 review N-3, Significant): the header above and the failure
+// message below were written by TE-80, correctly, while this cell was
+// legitimately red against the pre-TE-82 fixture. TE-82's own writable
+// scope was one fixture file and could not scrub them; they survived,
+// stale, telling a reader that a mismatch is a known, filed non-defect --
+// exactly backwards now that the values agree. Scrubbed in this round:
+// a mismatch here means what sec 4.4b says it means -- "a leg whose
+// anchor does not reproduce the committed reference is measuring a
+// different encoder, engine pin, artifact or corpus" -- and the failure
+// message states that, not a resolved finding's own history.
+//
+// TE-83 (TE-81 review N-4, Minor): `ReadAnchor()` used to read the LAST
+// FIELD OF THE FIRST NON-COMMENT LINE, positionally -- it never looked at
+// the name a row carried, so the fixture's own move to a named table
+// (TE-82) was cosmetic to this reader: swapping the `c39_seam_digest` and
+// `witness_sha` rows (names and values both moved together) silently
+// made this cell grade W-B's digest against `witness_sha` instead.
+// `ReadAnchorByName()`, below, parses and matches the name on every
+// non-comment line and is insensitive to row order.
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -77,6 +87,9 @@ namespace {
 const int32_t kTokenIds[] = {3, 17, 42, 5, 90};
 const size_t kN = sizeof(kTokenIds) / sizeof(kTokenIds[0]);
 
+// The name this cell's own row carries in the fixture's named table.
+const char kAnchorName[] = "c39_seam_digest";
+
 std::string EngineSourceArg() {
   // TE-80 F-19: no hardcoded local path in committed test source -- an
   // optional override for this seat's own local runs, defaulting to
@@ -98,19 +111,21 @@ std::string EnsureSyntheticArtifact() {
   return path;
 }
 
-// Reads the LAST field of the first non-comment, non-blank line of
-// tests/fixtures/reference-digests.txt -- the committed anchor, per that
-// file's own documented line format ("<artifact-fingerprint>  <digest-
-// hex>").
-std::string ReadAnchor() {
+// TE-83 (N-4): reads `tests/fixtures/reference-digests.txt` as the named
+// table it is (TE-82) and returns the value on the FIRST line whose own
+// first field equals `name` -- never a position, so reordering rows (or
+// adding a new one above this cell's own) cannot make this reader silently
+// pick up a different quantity. Returns "" if `name` appears on no line.
+std::string ReadAnchorByName(const std::string& name) {
   std::ifstream ref("tests/fixtures/reference-digests.txt");
   std::string line;
   while (std::getline(ref, line)) {
     if (line.empty() || line[0] == '#') continue;
     std::istringstream iss(line);
-    std::string field, last;
-    while (iss >> field) last = field;
-    return last;
+    std::string field_name, value;
+    if (iss >> field_name >> value) {
+      if (field_name == name) return value;
+    }
   }
   return "";
 }
@@ -188,29 +203,33 @@ int main() {
 
   if (!SelfTestAnchorMismatchIsDetected(computed_hex)) return 1;
 
-  const std::string anchor_hex = ReadAnchor();
+  const std::string anchor_hex = ReadAnchorByName(kAnchorName);
   if (anchor_hex.empty()) {
-    std::fprintf(stderr, "C39: reference-digests.txt has no entry -- nothing to compare "
-                          "against.\n");
+    std::fprintf(stderr, "C39: reference-digests.txt has no '%s' row -- nothing to compare "
+                          "against.\n", kAnchorName);
     return 1;
   }
 
   std::printf("C39: encoded %zu-token document, seam bytes length=%zu, computed W-B digest=%s, "
-              "fixture anchor=%s\n",
-              kN, len, computed_hex.c_str(), anchor_hex.c_str());
+              "fixture '%s' anchor=%s\n",
+              kN, len, computed_hex.c_str(), kAnchorName, anchor_hex.c_str());
 
   if (!DigestsMatch(computed_hex, anchor_hex)) {
     std::fprintf(stderr,
-                 "C39: the computed W-B seam digest does NOT match the committed anchor.\n"
-                 "  This is a KNOWN, FILED finding (TE-80, this file's own header comment,\n"
-                 "  Claude/Curie/te80-u0b-test-fixes-2026-09-02.md): TE-78 recomposed the\n"
-                 "  fixture's anchor to hold the FULL witness_sha (W-A||W-B||W-Q), not W-B's\n"
-                 "  own seam digest alone -- the quantity this cell has always specified and\n"
-                 "  computes. The mismatch is the correct, honest report of that scope gap; it\n"
-                 "  is not a defect in this cell's own arithmetic (the digest computation\n"
-                 "  itself is exercised and proven able to fail by the self-test above).\n");
+                 "C39: the computed W-B seam digest does NOT match the committed '%s' anchor.\n"
+                 "  Per sec 4.4b: a leg whose anchor does not reproduce the committed reference\n"
+                 "  is measuring a DIFFERENT encoder, engine pin, artifact or corpus. Check, in\n"
+                 "  order: (1) the engine pin (superslm.lock) -- a bump moves the forward and\n"
+                 "  therefore the seam; (2) the synthetic artifact\n"
+                 "  (build/_scratch/synthetic_te62_c39.sslm) -- stale or regenerated from a\n"
+                 "  different pinned tag; (3) this cell's own committed document (kTokenIds) or\n"
+                 "  chunk_budget -- either changed without the anchor being recomputed; (4) the\n"
+                 "  adapter (src/superembedder/engine_adapter_interim.cpp) -- an edit to the\n"
+                 "  forward composition. This is the project's only pinned oracle for the\n"
+                 "  encoder (sec 8 C39); a mismatch here is never expected and never benign.\n",
+                 kAnchorName);
     return 1;
   }
-  std::printf("C39: computed digest matches the committed anchor.\n");
+  std::printf("C39: computed digest matches the committed '%s' anchor.\n", kAnchorName);
   return 0;
 }

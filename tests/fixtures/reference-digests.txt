@@ -25,17 +25,18 @@
 # for both rows independently.
 #
 # FORMAT: "<name> <sha256-hex>", one entry per line, lowercase hex.
-# `tests/c39_seam_digest_test.cpp`'s own `ReadAnchor()` reads the LAST
-# WHITESPACE-SEPARATED FIELD of the FIRST non-comment, non-blank line of
-# this file ONLY (verified at source, TE-82 -- it does not parse names and
-# does not read past the first content line) -- so `c39_seam_digest` MUST
-# be that first line, below. `witness_sha` is the second line: nothing in
-# `tests/` parses it programmatically today (`tests/witness_structural_
-# matrix.py`'s own C31(v)/C36(b) legs run `semb_witness` directly and
-# compare its freshly-computed value against ITSELF across a mutant build,
-# never against this file) -- it is committed here as the project's one
-# pinned reference value for the composed fingerprint, for a human reader
-# or a future cell to compare against.
+# TE-83 (TE-81 review N-4): `tests/c39_seam_digest_test.cpp`'s own
+# `ReadAnchorByName()` parses and matches the NAME on every non-comment
+# line -- row order is not significant, and this table can gain rows
+# above or below either of these two without affecting either reader
+# (verified at source, TE-83). `witness_sha` is not parsed
+# programmatically by anything under `tests/` today
+# (`tests/witness_structural_matrix.py`'s own C31(v)/C36(b) legs run
+# `semb_witness` directly and compare its freshly-computed value against
+# ITSELF across a mutant build, never against this file) -- it is
+# committed here as the project's one pinned reference value for the
+# composed fingerprint, for a human reader or a future cell to compare
+# against.
 #
 # c39_seam_digest: SHA-256 over `semb_seam_serialize_document`'s own
 # output bytes (W-B alone) for the document below, through the engine's
