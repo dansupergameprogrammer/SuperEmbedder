@@ -476,8 +476,13 @@ def main() -> int:
     if args.reuse_clone:
         clone = args.reuse_clone.resolve()
         log(f"reusing existing checkout at {clone} (--reuse-clone)")
+        # TE-71 Q-1: this run does NOT create workdir/src on this path --
+        # `clone` may not even be under `workdir` at all. Tracked so final
+        # cleanup deletes only what this run actually made.
+        created_src_this_run = False
     else:
         clone = clone_engine(args.source, tag, workdir)
+        created_src_this_run = True
     commit = resolve_commit(clone, tag)
     log(f"resolved commit: {commit}")
 
@@ -592,20 +597,34 @@ def main() -> int:
     log(f"updated {args.lock}")
 
     if not args.keep_workdir:
-        # TE-67 N-11 / TE-69 P-4: the marker-based guard from the pre-clone
-        # site does not apply here unchanged. With --reuse-clone,
-        # clone_engine() never runs, so workdir/src (and its .git marker)
-        # is never created -- only workdir/build is, by this same process,
-        # in this same run -- and the marker check refused a run that had
-        # already succeeded and already written provenance.json and
-        # superslm.lock, turning a clean success into a reported failure.
-        # own_this_run=True: reaching this line at all means every earlier
-        # step that touches workdir already returned 0, which is stronger,
-        # in-process proof of ownership than any marker heuristic reading
-        # the directory after the fact.
-        _assert_safe_to_wipe(workdir, markers=("src/.git",), what="--workdir",
+        # TE-71 Q-1 (Critical, corrects TE-69 P-4): the marker-based guard
+        # from the pre-clone site does not apply here unchanged, but the
+        # prior fix answered that by disabling the ONLY guard between a
+        # caller-supplied --workdir and shutil.rmtree, then wiping the
+        # whole directory -- including whatever the caller had already put
+        # there. Reaching this line proves this run's OWN steps succeeded;
+        # it proves nothing about what existed in `workdir` before this run
+        # started, which is the only question a wipe of `workdir` itself
+        # asks. The rule for every rmtree in this tool: delete only what
+        # this run created, by name, never the directory that held it.
+        # This run always creates workdir/build (configure_engine and
+        # build_engine_library both write into it, on every path). It
+        # creates workdir/src only when clone_engine() ran this run --
+        # --reuse-clone points `clone` at a caller-owned checkout, inside
+        # `workdir` or not, and workdir/src is never touched either way.
+        # own_this_run=True is correct HERE because ownership is now
+        # established structurally (this run's own control flow), not by
+        # the marker heuristic reading the directory after the fact --
+        # applied to the two specific by-name paths this run made, never
+        # to `workdir` as a whole. `workdir` itself is left standing.
+        _assert_safe_to_wipe(build, markers=(), what="--workdir/build",
                               error_code="SEMB_PIN_UNSAFE_WORKDIR", own_this_run=True)
-        shutil.rmtree(workdir, onerror=_rmtree_onerror, ignore_errors=True)
+        shutil.rmtree(build, onerror=_rmtree_onerror, ignore_errors=True)
+        if created_src_this_run:
+            src = workdir / "src"
+            _assert_safe_to_wipe(src, markers=(), what="--workdir/src",
+                                  error_code="SEMB_PIN_UNSAFE_WORKDIR", own_this_run=True)
+            shutil.rmtree(src, onerror=_rmtree_onerror, ignore_errors=True)
 
     return 0
 

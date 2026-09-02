@@ -525,6 +525,74 @@ def c33_leg_f_label_mismatch():
     record("C33(f) lock/provenance label mismatch", "SEMB_PIN_LABEL_MISMATCH", rc, out)
 
 
+def c33_leg_h_final_cleanup_preserves_user_files(pin_tool: Path, lock_path_template: Path):
+    """TE-71 Q-1 (Critical). The final-cleanup rmtree site -- distinct from
+    C33(g)'s pre-clone guard (N-11's own site; this one is the site P-4
+    touched and Q-1 found broken). A real --reuse-clone run against a
+    --workdir that ALREADY holds a file this tool did not create, sitting
+    directly in workdir (not under workdir/build or workdir/src) -- the
+    exact shape a person pointing --workdir at a directory of their own
+    would produce. The tool must delete only what it made this run
+    (workdir/build; workdir/src is never created on the --reuse-clone path
+    at all) and leave the caller's file and workdir itself standing.
+    Requires a real engine clone+configure+build+install, like C33(e)."""
+    clone_dir = SCRATCH / "c33h_clone"
+    rmtree(clone_dir)
+    tag = None
+    for line in lock_path_template.read_text(encoding="utf-8").splitlines():
+        if line.startswith("tag="):
+            tag = line.split("=", 1)[1]
+    assert tag, "could not read tag from superslm.lock"
+    subprocess.run(
+        ["git", "clone", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.longpaths=true",
+         "--branch", tag, "--single-branch",
+         DEFAULT_REMOTE, str(clone_dir)],
+        check=True, capture_output=True, text=True,
+    )
+
+    workdir = SCRATCH / "c33h_workdir"
+    rmtree(workdir)
+    workdir.mkdir(parents=True)
+    keepme = workdir / "keepme.txt"
+    keepme.write_text("Q-1: not this tool's own build output\n", encoding="utf-8")
+
+    lock = SCRATCH / "c33h_lock" / "superslm.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(lock_path_template.read_text(encoding="utf-8"), encoding="utf-8")
+    prefix = SCRATCH / "c33h_prefix"
+    rmtree(prefix)
+
+    pin_cmd = [
+        PYEXE, str(pin_tool),
+        "--lock", str(lock),
+        "--prefix", str(prefix),
+        "--workdir", str(workdir),
+        "--reuse-clone", str(clone_dir),
+        "--cmake", CMAKE,
+        "--ninja", NINJA,
+        "--generator", GENERATOR,
+    ]
+    pin_proc = subprocess.run(pin_cmd, capture_output=True, text=True)
+    out = pin_proc.stdout + pin_proc.stderr
+    keepme_survived = keepme.exists() and keepme.read_text(encoding="utf-8").startswith("Q-1")
+    workdir_survived = workdir.exists()
+    build_removed = not (workdir / "build").exists()
+    src_never_touched = not (workdir / "src").exists()
+    passed = (pin_proc.returncode == 0 and keepme_survived and workdir_survived
+              and build_removed and src_never_touched)
+    RESULTS.append({
+        "leg": "C33(h) final cleanup preserves a caller's own --workdir file (Q-1)",
+        "expected": "exit 0, caller's file and workdir survive, only workdir/build removed",
+        "returncode": pin_proc.returncode,
+        "want_fail": False,
+        "found_expected_string": keepme_survived and workdir_survived and build_removed and src_never_touched,
+        "passed": passed,
+        "output_tail": "\n".join(out.splitlines()[-10:])
+                        + f"\nkeepme_survived={keepme_survived} workdir_survived={workdir_survived}"
+                          f" build_removed={build_removed} src_never_touched={src_never_touched}",
+    })
+
+
 # ---------------------------------------------------------------------------
 # C34 legs
 # ---------------------------------------------------------------------------
@@ -993,6 +1061,7 @@ def main() -> int:
     c33_leg_e2_added_file_no_edit(pin_tool, REPO_ROOT / "superslm.lock")
     c33_leg_e3_deleted_manifest_field(pin_tool, REPO_ROOT / "superslm.lock")
     c33_leg_g_unowned_workdir_refused(pin_tool, REPO_ROOT / "superslm.lock")
+    c33_leg_h_final_cleanup_preserves_user_files(pin_tool, REPO_ROOT / "superslm.lock")
     c33_leg_f_label_mismatch()
 
     c34_leg_a_cache_override()
