@@ -87,7 +87,26 @@ endif()
 # 4. Provenance. superslm_DIR is <prefix>/lib/cmake/superslm; the provenance
 #    manifest tools/pin-superslm wrote sits at <prefix>/share/superslm-provenance/.
 # ---------------------------------------------------------------------------
-get_filename_component(SEMB_ENGINE_PREFIX "${superslm_DIR}/../../.." ABSOLUTE)
+# TE-65 F-16: PACKAGE_PREFIX_DIR, not a hardcoded "../../..". The prior
+# get_filename_component(... "${superslm_DIR}/../../.." ...) hardcodes the
+# lib/cmake/superslm install depth; a multiarch libdir (e.g. Debian's
+# lib/x86_64-linux-gnu/cmake/superslm) would resolve to the wrong directory
+# and fire SEMB_ENGINE_PROVENANCE_MISSING spuriously. superslmConfig.cmake's
+# own @PACKAGE_INIT@ block (CMakePackageConfigHelpers) already computes the
+# correct prefix for WHATEVER depth this engine's own install() rules
+# actually used, and — verified by execution — that variable remains set in
+# this scope after find_package() returns, since find_package() includes
+# the config script rather than calling it in a new scope. Using the
+# engine's own computation is also more correct than re-deriving it: it is
+# automatically right for any install layout the engine's own CMakeLists.txt
+# chooses, not only the one this file's author checked.
+if(DEFINED PACKAGE_PREFIX_DIR)
+	set(SEMB_ENGINE_PREFIX "${PACKAGE_PREFIX_DIR}")
+else()
+	# Defensive fallback only — no CONFIG package this project has seen omits
+	# @PACKAGE_INIT@, but a future or third-party one might.
+	get_filename_component(SEMB_ENGINE_PREFIX "${superslm_DIR}/../../.." ABSOLUTE)
+endif()
 set(SEMB_ENGINE_PROVENANCE_FILE "${SEMB_ENGINE_PREFIX}/share/superslm-provenance/provenance.json")
 
 if(NOT EXISTS "${SEMB_ENGINE_PROVENANCE_FILE}")
