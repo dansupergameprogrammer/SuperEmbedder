@@ -151,7 +151,14 @@ def cmd_configure(args: argparse.Namespace) -> int:
             continue
         members.append(("source", rel, p.read_bytes()))
         file_list.append(rel)
-    members.append(("scalar", "SEMB_ENGINE_PATH", args.engine_path.encode("utf-8")))
+    # TE-65 F-8: SEMB_ENGINE_PATH is recorded in the sidecar below for the
+    # separate SEMB_ENGINE_PATH_CHANGED cache-variable check
+    # (cmake/SourceProvenance.cmake leg (c)), but is NOT fed into the digest
+    # itself. semb_source_sha is meant to be as path-invariant as
+    # engine_tree_sha (Sec4.4: "repository-relative forward-slash paths so
+    # the digest is platform-invariant") -- identical source at a different
+    # engine install path used to yield a different digest, which the two
+    # digests disagreed about whether a local path is part of an identity.
 
     digest = digest_members(members)
 
@@ -254,14 +261,16 @@ def cmd_verify(args: argparse.Namespace) -> int:
             out_of_root.append(str(p))
             continue
         members.append(("source", rel, p.read_bytes()))
-    members.append(("scalar", "SEMB_ENGINE_PATH", sidecar["engine_path"].encode("utf-8")))
+    # TE-65 F-8: SEMB_ENGINE_PATH is deliberately not fed into the digest
+    # (see the matching comment in cmd_configure) -- semb_source_sha is
+    # path-invariant, matching engine_tree_sha's own stated invariant.
 
     recomputed = digest_members(members)
     result = {
         "configure_time_semb_source_sha": sidecar["semb_source_sha"],
         "recomputed_semb_source_sha": recomputed,
         "agrees": recomputed == sidecar["semb_source_sha"],
-        "real_file_count": len(members) - 1,
+        "real_file_count": len(members),
         "configure_time_file_count": len(sidecar["covered_files"]),
         "out_of_root_files_excluded": out_of_root,
     }
