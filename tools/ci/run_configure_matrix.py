@@ -919,6 +919,51 @@ def c34_leg_i_build_dir_placement_invariant():
 
 
 # ---------------------------------------------------------------------------
+# TE-73: the structural cell. Not a cmake configure at all -- a static
+# check of the pin tool's own source code, walking its AST to assert that
+# exactly one function (_remove_owned) is permitted to call a real
+# deletion primitive anywhere under tools/pin-superslm/. Three consecutive
+# rounds (TE-69 Q-1, TE-71 R-1) each guarded the ONE site a reviewer had
+# just named and left a sibling site, written with a different idiom,
+# untouched -- this closes the CLASS rather than adding another guarded
+# site. Named "other" in leg_counts (its leg name carries no "C<n>" prefix
+# -- it is not a C33/C34/C14 cell, it does not run cmake at all), which is
+# correct: this checks the TOOL, not a construction against it.
+# ---------------------------------------------------------------------------
+
+def pin_tool_deletion_primitive_enforced():
+    """TE-73: shown red against 2798866 (6 violations across 3 idioms:
+    shutil.rmtree x3, the retired bare rmtree() helper x3) before this leg
+    or the fix it pins existed; green once _remove_owned became the one
+    permitted deletion site. Checks the REAL, committed
+    tools/pin-superslm/*.py files directly -- no copy_repo needed, since
+    this inspects the tool's own source, not a cmake construction against
+    it."""
+    ast_check_dir = REPO_ROOT / "tests"
+    if str(ast_check_dir) not in sys.path:
+        sys.path.insert(0, str(ast_check_dir))
+    import pin_superslm_delete_ast_check as ast_check
+
+    pin_dir = REPO_ROOT / "tools" / "pin-superslm"
+    py_files = sorted(pin_dir.glob("*.py"))
+    violations = ast_check.find_deletion_violations(py_files)
+    passed = len(violations) == 0
+    RESULTS.append({
+        "leg": "pin-superslm AST: only _remove_owned deletes anything",
+        "expected": "zero deletion-primitive calls outside _remove_owned()",
+        "returncode": 0 if passed else 1,
+        "want_fail": False,
+        "found_expected_string": passed,
+        "passed": passed,
+        "output_tail": (
+            "no violations"
+            if passed
+            else "\n".join(str(v) for v in violations)
+        ),
+    })
+
+
+# ---------------------------------------------------------------------------
 # C14 legs (TE-65 F-4/F-5 rewrite: BuildFlags.cmake no longer has a per-target
 # registry to strip a flag from -- the directive is directory-wide and the
 # assertion enumerates CMake's own BUILDSYSTEM_TARGETS. The legs below match
@@ -1187,6 +1232,8 @@ def main() -> int:
     _run_leg(c34_leg_g_preprocess_failure_raises)
     _run_leg(c34_leg_j_empty_resolver_refused)
     _run_leg(c34_leg_i_build_dir_placement_invariant)
+
+    _run_leg(pin_tool_deletion_primitive_enforced)
 
     _run_leg(c14_run_all_legs)
 
