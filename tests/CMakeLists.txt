@@ -135,6 +135,26 @@ add_test(
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
+# TE-86 (U0 slice C, C31(iv)/C36(e)): the structural absence check,
+# standalone -- witness_structural_matrix.py's own C31(iv)/C36(e) legs
+# import and call the same run_construction(), so this target proves the
+# module on its own terms too (both constructions, real).
+add_test(
+	NAME witness_no_foreign_reading_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/witness_no_foreign_reading_check.py"
+		--selftest
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# TE-86 (F3, Mendeleev te84 coverage audit): the one bare cell in the pin
+# tool's own population sweep -- --reuse-clone against a directory that is
+# not a valid clone.
+add_test(
+	NAME pin_superslm_reuse_clone_invalid_test
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/pin_superslm_reuse_clone_invalid_test.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
 # The W-A/PS-1 oracle's own self-test and split-verification -- these are
 # expected GREEN (the oracle is independently verified infrastructure, not
 # a cell grading unimplemented product code); registered so a future CI
