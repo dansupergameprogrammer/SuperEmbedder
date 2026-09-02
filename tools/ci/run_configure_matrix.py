@@ -27,6 +27,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pin-superslm"))
@@ -91,9 +92,10 @@ def detect_compiler_id() -> str:
     came back empty). Cached for the process's lifetime.
 
     TE-69 (found during this round's own Clang verification, not one of
-    the casebook's numbered findings): the prior version read
-    REPO_ROOT/build/semb/CMakeCache.txt FIRST, a persistent directory nine
-    of this file's OWN developer/CI conventions leave behind from a PRIOR
+    the casebook's numbered findings; TE-71 O-1: the stray word "nine"
+    below made this sentence unparseable, corrected): the prior version
+    read REPO_ROOT/build/semb/CMakeCache.txt FIRST, a persistent directory
+    this file's OWN developer/CI conventions leave behind from a PRIOR
     run -- if that prior run used a different compiler than the one the
     CURRENT invocation's CXX/CC environment selects (exactly what happens
     switching between an MSVC verification and a Clang one in the same
@@ -179,6 +181,31 @@ def record(leg: str, expected: str, rc: int, output: str, want_fail: bool = True
     if extra:
         entry.update(extra)
     RESULTS.append(entry)
+
+
+def _run_leg(fn, *args, **kwargs) -> None:
+    """TE-71 Q-7: P-8 closed only the message limb of a raise inside
+    detect_compiler_id() -- the deeper consequence it was filed for, that
+    ANY unhandled exception from ANY leg discards the whole RESULTS report
+    main() would otherwise print (no exception handling exists in main(),
+    and json.dumps only runs after every leg call returns), was untouched.
+    The same round widened detect_compiler_id()'s own reachability (correctly,
+    fixing the stale-cache defect) and added two MORE unhandled-exception
+    sites of the identical class -- the `assert text.count(old_sources) == 1`
+    anchor checks in c34_leg_g and c34_leg_i -- both reachable only after
+    C33(e)/C33(e2)'s own real network clone and engine build have already
+    run, multi-minute work discarded along with everything recorded before
+    it. Every leg call now goes through this wrapper: a leg that raises is
+    recorded as an infra failure (passed=False, the real exception type,
+    message and traceback in output_tail) and the matrix continues to the
+    next leg, rather than the whole run terminating in a bare traceback
+    with no leg table at all."""
+    try:
+        fn(*args, **kwargs)
+    except Exception as exc:
+        record_infra_failure(f"<leg raised an unhandled exception> {fn.__name__}",
+                              "<no exception -- the leg was expected to run its own construction>",
+                              1, f"{type(exc).__name__}: {exc}", traceback.format_exc())
 
 
 def record_infra_failure(leg: str, expected: str, rc: int, reason: str, output: str) -> None:
@@ -438,14 +465,22 @@ def c33_leg_e2_added_file_no_edit(pin_tool: Path, lock_path_template: Path):
 
     rc, out = run_cmake_configure(src, SCRATCH / "c33e2_build", prefix)
     expected = "SEMB_ENGINE_INSTALL_DIVERGED"
-    configure_refused_by_name = rc != 0 and expected in out
-    passed = newhdr_named and configure_refused_by_name
+    # TE-71 O-2: found_expected_string used to be the COMPOUND
+    # `rc != 0 and expected in out`, drifted from record()'s own meaning for
+    # the same-named field (`expected in output`, nothing else) -- a reader
+    # of the JSON could no longer use this field to tell whether the
+    # expected string actually appeared, only whether the leg's rc AND
+    # string check both held. Split: found_expected_string is now the plain
+    # substring test, matching record()'s schema exactly; passed composes
+    # it with rc and newhdr_named explicitly.
+    found_expected_string = expected in out
+    passed = newhdr_named and rc != 0 and found_expected_string
     RESULTS.append({
         "leg": "C33(e2) added-file no-edit install",
         "expected": expected,
         "returncode": rc,
         "want_fail": True,
-        "found_expected_string": configure_refused_by_name,
+        "found_expected_string": found_expected_string,
         "passed": passed,
         "output_tail": "\n".join(out.splitlines()[-15:])
                         + f"\nverify_provenance dirty_members={verify_result.get('dirty_members')}"
@@ -682,9 +717,12 @@ def c34_leg_d_source_added_after_digest(ninja: str):
                            "SEMB_SOURCE_SET_DRIFT string — the python verifier's own exit status is the "
                            "signal; see 'agrees': false in its JSON line above"})
     # Refine pass/fail: the post-build step's own JSON line carries "agrees": false.
-    passed = ('"agrees": false' in out) and build_proc2.returncode != 0
+    # TE-71 O-2: found_expected_string used to just re-echo `passed`. Now the
+    # literal substring check alone, distinct from the rc precondition.
+    found_expected_string = '"agrees": false' in out
+    passed = found_expected_string and build_proc2.returncode != 0
     RESULTS[-1]["passed"] = passed
-    RESULTS[-1]["found_expected_string"] = passed
+    RESULTS[-1]["found_expected_string"] = found_expected_string
 
 
 def c34_leg_f_header_edit_moves_digest():
@@ -704,13 +742,18 @@ def c34_leg_f_header_edit_moves_digest():
 
     sha1 = extract_sha(build1) if rc1 == 0 else None
     sha2 = extract_sha(build2) if rc2 == 0 else None
-    passed = rc1 == 0 and rc2 == 0 and sha1 is not None and sha1 != sha2
+    # TE-71 O-2: found_expected_string used to just re-echo `passed`. Now
+    # the literal condition "expected" describes (the two digests differ),
+    # distinct from the baseline-validity precondition (both configures
+    # succeeded and produced a real digest to compare).
+    found_expected_string = sha1 is not None and sha1 != sha2
+    passed = rc1 == 0 and rc2 == 0 and found_expected_string
     RESULTS.append({
         "leg": "C34(f) header content edit moves semb_source_sha",
         "expected": "semb_source_sha(edited) != semb_source_sha(baseline)",
         "returncode": [rc1, rc2],
         "want_fail": False,
-        "found_expected_string": passed,
+        "found_expected_string": found_expected_string,
         "passed": passed,
         "output_tail": f"baseline={sha1} edited={sha2}",
     })
@@ -855,13 +898,20 @@ def c34_leg_i_build_dir_placement_invariant():
 
     sha_in = extract(build_in) if rc_in == 0 else None
     sha_out = extract(build_out) if rc_out == 0 else None
-    passed = rc_in == 0 and rc_out == 0 and sha_in is not None and sha_in == sha_out
+    # TE-71 O-2: found_expected_string used to just re-echo `passed` --
+    # drifted from record()'s own meaning, and useless as an independent
+    # signal (a leg broken for ANY reason reads False on both fields
+    # identically). Now the literal condition "expected" describes (the two
+    # digests agree), distinct from the baseline-validity precondition
+    # (both configures succeeded and produced a real digest to compare).
+    found_expected_string = sha_in is not None and sha_in == sha_out
+    passed = rc_in == 0 and rc_out == 0 and found_expected_string
     RESULTS.append({
         "leg": "C34(i) semb_source_sha invariant to -B placement (N-8)",
         "expected": "identical semb_source_sha regardless of -B location",
         "returncode": [rc_in, rc_out],
         "want_fail": False,
-        "found_expected_string": passed,
+        "found_expected_string": found_expected_string,
         "passed": passed,
         "output_tail": f"in-root={sha_in} out-of-root={sha_out}",
     })
@@ -904,13 +954,16 @@ def c14_cxx_flags_fastmath():
 def c14_positive():
     src = copy_repo(SCRATCH / "c14_pos_src")
     rc, out = run_cmake_configure(src, SCRATCH / "c14_pos_build", ENGINE_PREFIX)
-    passed = rc == 0 and "C14 build-configuration assertion" in out
+    # TE-71 O-2: found_expected_string used to just re-echo `passed`. Now the
+    # literal substring check alone, distinct from the rc precondition.
+    found_expected_string = "C14 build-configuration assertion" in out
+    passed = rc == 0 and found_expected_string
     RESULTS.append({
         "leg": "C14 flag present (positive)",
         "expected": "C14 build-configuration assertion: ... carries",
         "returncode": rc,
         "want_fail": False,
-        "found_expected_string": passed,
+        "found_expected_string": found_expected_string,
         "passed": passed,
         "output_tail": "\n".join(out.splitlines()[-8:]),
     })
@@ -1059,14 +1112,15 @@ def c14_run_all_legs():
     every mention of "flag-strip proof" but left this identifier, the same
     stale-mechanism class one name short of swept. None of the seven legs
     below strips a flag; each constructs one way the C14 assertion could be
-    wrong and confirms it is not."""
-    c14_directive_withheld()
-    c14_cxx_flags_fastmath()
-    c14_positive()
-    c14_unregistered_target()
-    c14_target_compile_options_cleared()
-    c14_subdirectory_target()
-    c14_cxx_flags_release_fastmath()
+    wrong and confirms it is not. TE-71 Q-7: each now goes through
+    _run_leg(), like every other leg in the matrix."""
+    _run_leg(c14_directive_withheld)
+    _run_leg(c14_cxx_flags_fastmath)
+    _run_leg(c14_positive)
+    _run_leg(c14_unregistered_target)
+    _run_leg(c14_target_compile_options_cleared)
+    _run_leg(c14_subdirectory_target)
+    _run_leg(c14_cxx_flags_release_fastmath)
 
 
 def main() -> int:
@@ -1113,28 +1167,28 @@ def main() -> int:
 
     pin_tool = REPO_ROOT / "tools" / "pin-superslm" / "pin_superslm.py"
 
-    c33_leg_a_hand_edited_lock_tree()
-    c33_leg_b_missing_provenance()
-    c33_leg_c_provenance_lock_disagreement()
-    c33_leg_d_floor()
-    c33_leg_d_exact_pin()
-    c33_leg_e_dirty_clone(pin_tool, REPO_ROOT / "superslm.lock")
-    c33_leg_e2_added_file_no_edit(pin_tool, REPO_ROOT / "superslm.lock")
-    c33_leg_e3_deleted_manifest_field(pin_tool, REPO_ROOT / "superslm.lock")
-    c33_leg_g_unowned_workdir_refused(pin_tool, REPO_ROOT / "superslm.lock")
-    c33_leg_h_final_cleanup_preserves_user_files(pin_tool, REPO_ROOT / "superslm.lock")
-    c33_leg_f_label_mismatch()
+    _run_leg(c33_leg_a_hand_edited_lock_tree)
+    _run_leg(c33_leg_b_missing_provenance)
+    _run_leg(c33_leg_c_provenance_lock_disagreement)
+    _run_leg(c33_leg_d_floor)
+    _run_leg(c33_leg_d_exact_pin)
+    _run_leg(c33_leg_e_dirty_clone, pin_tool, REPO_ROOT / "superslm.lock")
+    _run_leg(c33_leg_e2_added_file_no_edit, pin_tool, REPO_ROOT / "superslm.lock")
+    _run_leg(c33_leg_e3_deleted_manifest_field, pin_tool, REPO_ROOT / "superslm.lock")
+    _run_leg(c33_leg_g_unowned_workdir_refused, pin_tool, REPO_ROOT / "superslm.lock")
+    _run_leg(c33_leg_h_final_cleanup_preserves_user_files, pin_tool, REPO_ROOT / "superslm.lock")
+    _run_leg(c33_leg_f_label_mismatch)
 
-    c34_leg_a_cache_override()
-    c34_leg_b_missing_covered_file()
-    c34_leg_c_engine_path_changed()
-    c34_leg_d_source_added_after_digest(NINJA)
-    c34_leg_f_header_edit_moves_digest()
-    c34_leg_g_preprocess_failure_raises()
-    c34_leg_j_empty_resolver_refused()
-    c34_leg_i_build_dir_placement_invariant()
+    _run_leg(c34_leg_a_cache_override)
+    _run_leg(c34_leg_b_missing_covered_file)
+    _run_leg(c34_leg_c_engine_path_changed)
+    _run_leg(c34_leg_d_source_added_after_digest, NINJA)
+    _run_leg(c34_leg_f_header_edit_moves_digest)
+    _run_leg(c34_leg_g_preprocess_failure_raises)
+    _run_leg(c34_leg_j_empty_resolver_refused)
+    _run_leg(c34_leg_i_build_dir_placement_invariant)
 
-    c14_run_all_legs()
+    _run_leg(c14_run_all_legs)
 
     all_passed = all(r["passed"] for r in RESULTS)
 
