@@ -134,11 +134,65 @@ void CheckPosition0IsInertToAlignment() {
 }
 
 }  // namespace
+// TE-80's own owed assertion (TE-79 build log sec 9 item 1, closing
+// TE-76 review F-2, Critical): semb_wa_pool_run refuses
+// kSembEMinDomainExceeded for |e_min| > kSembWaPoolMaxAbsEMin, and does
+// NOT refuse with that status AT the bound itself -- the same
+// at-the-bound / one-past-the-bound pair CheckBoundIsRefusedByName
+// already uses for the spread check, above.
+void CheckEMinDomainIsRefused() {
+  const int8_t codes[3] = {0, 5, 5};
+  const int64_t m[3] = {1 << 30, 1 << 30, 1 << 30};
+  float out[1];
+
+  // One-past-the-bound, both directions, and the two constructions the
+  // review's own reproduction used (F-2 sec 5.2): e_min = 2^32 (whose
+  // true value the truncation-to-unsigned defect silently computed as
+  // 5*2^30 instead of refusing), -2^32, and INT64_MIN (additionally
+  // signed-overflow UB on `-e_min` before this fix). Spread 0 (both
+  // pooled positions share one e_min) so the ALREADY-covered spread
+  // guard (construction 2, above) cannot be what fires here -- this
+  // isolates the e_min domain check specifically.
+  const int64_t one_past = kSembWaPoolMaxAbsEMin + 1;
+  const struct { const char* label; int64_t e_min; } kOnePastCases[] = {
+      {"one-past-the-bound (kSembWaPoolMaxAbsEMin + 1)", one_past},
+      {"one-past-the-bound, negated", -one_past},
+      {"2^32", int64_t{1} << 32},
+      {"-2^32", -(int64_t{1} << 32)},
+      {"INT64_MIN", std::numeric_limits<int64_t>::min()},
+  };
+  for (const auto& c : kOnePastCases) {
+    const int64_t e[3] = {0, c.e_min, c.e_min};
+    const SembWaPoolStatus st = semb_wa_pool_run(codes, m, e, 3, 1, out);
+    if (st != kSembEMinDomainExceeded) {
+      std::fprintf(stderr,
+                   "C3 FAIL: e_min=%s did not refuse kSembEMinDomainExceeded (status=%d)\n",
+                   c.label, static_cast<int>(st));
+      ++g_failures;
+    }
+  }
+
+  // AT the bound, exactly, must NOT refuse kSembEMinDomainExceeded --
+  // whatever status the (now astronomically large) POOLED VALUE itself
+  // resolves to (overflow, at this magnitude) is a DIFFERENT, already-
+  // covered concern (sec 3.2 item 4's own corner classification); this
+  // check is specifically that the DOMAIN check's own boundary is
+  // inclusive, not that the value is representable.
+  const int64_t e_at_bound[3] = {0, kSembWaPoolMaxAbsEMin, kSembWaPoolMaxAbsEMin};
+  const SembWaPoolStatus st_at_bound = semb_wa_pool_run(codes, m, e_at_bound, 3, 1, out);
+  if (st_at_bound == kSembEMinDomainExceeded) {
+    std::fprintf(stderr, "C3 FAIL: e_min AT kSembWaPoolMaxAbsEMin incorrectly refused "
+                          "kSembEMinDomainExceeded (the boundary must be inclusive)\n");
+    ++g_failures;
+  }
+}
+
 
 int main() {
   CheckBoundIsRefusedByName();
   CheckSpreadIsOverflowSafeBeforeShift();
   CheckPosition0IsInertToAlignment();
+  CheckEMinDomainIsRefused();
   if (g_failures) {
     std::fprintf(stderr, "C3: %d check(s) failed.\n", g_failures);
     return 1;
