@@ -56,6 +56,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -262,6 +263,20 @@ def derive_compile_closure(clone: Path, build: Path, ninja: str) -> set[Path]:
 # closure here covers headers and CMake package files only.
 _EXCLUDED_INSTALL_SUFFIXES = {".lib", ".a", ".so", ".dylib", ".dll", ".exe", ".obj", ".o", ".pdb"}
 
+# CMake's install(EXPORT ...) generates a base "<name>Targets.cmake" plus one
+# per-config variant "<name>Targets-<config>.cmake" (e.g.
+# superslmTargets-release.cmake); every one of these EMBEDS the platform's
+# own compiled-library filename via IMPORTED_LOCATION_<CONFIG> (e.g.
+# "${_IMPORT_PREFIX}/lib/superslm.lib" on Windows/MSVC vs
+# ".../lib/libsuperslm.a" on Linux/macOS) -- read at source,
+# superslmTargets-release.cmake at this session's install. TE-65 F-7:
+# digesting this file makes engine_tree_sha vary by OS/toolchain for
+# byte-identical engine source, which is a legitimate cross-platform
+# difference the same way the linked archive itself is (D-SLM5919's own
+# reasoning) -- excluded from the digest for the identical reason, not
+# because it might be reproducible on the SAME platform.
+_EXCLUDED_INSTALL_NAME_RE = re.compile(r"^superslmTargets(-[A-Za-z0-9_]+)?\.cmake$")
+
 
 def derive_install_closure(build: Path, prefix: Path) -> set[Path]:
     manifest = build / "install_manifest.txt"
@@ -278,12 +293,12 @@ def derive_install_closure(build: Path, prefix: Path) -> set[Path]:
             p = p.resolve()
         except OSError:
             continue
-        if p.suffix.lower() in _EXCLUDED_INSTALL_SUFFIXES:
+        if p.suffix.lower() in _EXCLUDED_INSTALL_SUFFIXES or _EXCLUDED_INSTALL_NAME_RE.match(p.name):
             excluded.append(p)
             continue
         out.add(p)
     if excluded:
-        log(f"install closure excludes {len(excluded)} compiled-binary artifact(s) (not byte-reproducible): "
+        log(f"install closure excludes {len(excluded)} platform-varying artifact(s) (not source-identity-bearing): "
             + ", ".join(str(e) for e in excluded))
     return out
 
