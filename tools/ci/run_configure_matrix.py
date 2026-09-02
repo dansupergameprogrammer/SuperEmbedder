@@ -671,6 +671,17 @@ def c14_unregistered_target():
     )
     cmakelists.write_text(text, encoding="utf-8")
     build = SCRATCH / "c14d_build"
+    # TE-69 P-7: every other leg goes through run_cmake_configure(), which
+    # rmtree()s the build directory before configuring; this leg built its
+    # own cmake invocation by hand and omitted that. Measured: re-running
+    # this leg into a --scratch a PRIOR run (under a different compiler)
+    # already populated reads FAIL, because CMake reuses the CACHED
+    # compiler from that prior configure while detect_compiler_id() reports
+    # the CURRENT one -- the flag check then looks for the wrong compiler's
+    # spelling on the wrong compiler's compile line. A reused --scratch is
+    # a supported state (F-12's own carve-out keeps scratch on an explicit
+    # --scratch), so this leg must not depend on it being fresh.
+    rmtree(build)
     cmd = [
         CMAKE, "-G", GENERATOR, "-S", str(src), "-B", str(build),
         f"-DCMAKE_PREFIX_PATH={ENGINE_PREFIX}", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
