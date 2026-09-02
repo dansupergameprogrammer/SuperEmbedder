@@ -1,44 +1,66 @@
-# tests/fixtures/reference-digests.txt -- TE-62 (U0 slice B): C39's anchor.
+# tests/fixtures/reference-digests.txt -- TE-62/TE-78/TE-82 (U0 slice B):
+# a NAMED TABLE, one line per named quantity per (artifact, corpus),
+# computed by the SHIPPED encoder's own timed call, in the same process,
+# at whole-document chunk budget -- never a value any seat fabricates or
+# transcribes from the fold-4 probe's own reference-digests.txt (which
+# was measured against a DIFFERENT engine pin, v1.2.0, and PS-1's
+# pre-fold-11 seam shape -- read as an anchor's SHAPE and provenance
+# discipline, never copied as a value: `Claude/Plans/SuperEmbedder_Plan.md`
+# sec 3.3's own producer-identity rule forbids a field computed from a
+# description of an input, which a transcribed digest would be here).
 #
-# One value per (artifact, corpus), computed by the SHIPPED encoder's own
-# timed call, in the same process, at whole-document chunk budget --
-# never a value this seat (Curie) fabricates or transcribes from the
-# fold-4 probe's own reference-digests.txt (which was measured against a
-# DIFFERENT engine pin, v1.2.0, and PS-1's pre-fold-11 seam shape -- read
-# as an anchor's SHAPE and provenance discipline, never copied as a value:
-# `Claude/Plans/SuperEmbedder_Plan.md` sec 3.3's own producer-identity rule
-# forbids a field computed from a description of an input, which a
-# transcribed digest would be here).
+# TE-82 RULING (D-SLM6072/D-SLM6073/D-SLM6094, and the open question
+# TE-80's own record filed): C39 (`tests/c39_seam_digest_test.cpp`) and
+# the witness matrix (`tests/witness_structural_matrix.py`) grade two
+# DIFFERENT quantities against this ONE fixture, and TE-78 had recomposed
+# the single prior anchor line to hold only one of them (`witness_sha`),
+# which is why C39 read a mismatch it was correct to report (TE-76 review
+# F-1; TE-80's own filed finding). Both values now live here, each under
+# its own name -- C39's scope is unchanged (it still computes and compares
+# ONLY W-B's own seam digest, exactly what sec 8's C39 row and this file's
+# header have always specified); the witness's composition is unchanged
+# (sec 4.4b's `witness_sha = SHA-256(W-A || W-B || W-Q)`). "A leg whose
+# anchor does not reproduce the committed reference is measuring a
+# different encoder, engine pin, artifact or corpus" (sec 4.4b) now holds
+# for both rows independently.
 #
-# COMMISSIONED, TE-63, 2026-09-02; RECOMPOSED, TE-78, 2026-09-02.
-# `semb_encode_document_for_witness` + `semb_seam_serialize_document`
-# (src/superembedder/engine_adapter_interim.cpp,
-# src/superembedder/seam_serialize.cpp) ran against the regenerated
+# FORMAT: "<name> <sha256-hex>", one entry per line, lowercase hex.
+# `tests/c39_seam_digest_test.cpp`'s own `ReadAnchor()` reads the LAST
+# WHITESPACE-SEPARATED FIELD of the FIRST non-comment, non-blank line of
+# this file ONLY (verified at source, TE-82 -- it does not parse names and
+# does not read past the first content line) -- so `c39_seam_digest` MUST
+# be that first line, below. `witness_sha` is the second line: nothing in
+# `tests/` parses it programmatically today (`tests/witness_structural_
+# matrix.py`'s own C31(v)/C36(b) legs run `semb_witness` directly and
+# compare its freshly-computed value against ITSELF across a mutant build,
+# never against this file) -- it is committed here as the project's one
+# pinned reference value for the composed fingerprint, for a human reader
+# or a future cell to compare against.
+#
+# c39_seam_digest: SHA-256 over `semb_seam_serialize_document`'s own
+# output bytes (W-B alone) for the document below, through the engine's
+# portable `superslm::Sha256Hash`. Recomputed this round from the BUILT
+# c39_seam_digest_test's own code path (never re-derived by hand): run
+# TWICE as two independent process invocations on MSVC (both produced
+# this exact digest, byte for byte) and once more under Clang 18.1.8
+# (identical) -- `Claude/Brunel/te82-u0b-seam-anchor-2026-09-02.md`.
+# Unchanged from TE-63's own original value; TE-78 never actually moved
+# this quantity, only the fixture's own single slot that used to hold it.
+#
+# witness_sha: SHA-256(W-A digest || W-B digest || W-Q placeholder
+# digest), sec 4.4b's own composed fingerprint. TE-78's own value,
+# reproduced again this round via `semb_witness --model build/_scratch/
+# synthetic_te62_c39.sslm --tokens 3,17,42,5,90 --chunk-budget 0` on both
+# MSVC and Clang -- unchanged, kept under its own name.
+#
+# Both rows: the document is `tests/c39_seam_digest_test.cpp`'s own
+# committed 5-token document (kTokenIds = {3, 17, 42, 5, 90}) at
+# chunk_budget=0 (one whole-document call), against the regenerated
 # synthetic artifact `build/_scratch/synthetic_te62_c39.sslm` (pinned tag
-# v1.3.0, `tests/fixtures/regenerate_synthetic_artifact.py`'s own output),
-# on `tests/c39_seam_digest_test.cpp`'s own committed 5-token document
-# (kTokenIds = {3, 17, 42, 5, 90}) at chunk_budget=0 (one whole-document
-# call).
-#
-# TE-78: the value below is no longer W-B's own seam digest alone -- it is
-# the FULL COMPOSED `witness_sha` sec 4.4b specifies (SHA-256 over W-A's
-# digest || W-B's digest || W-Q's placeholder digest; D-SLM6072,
-# D-SLM6073). `semb_wa_digest` (src/superembedder/wa_digest.cpp) is now
-# wired into the witness, so the anchor moved from TE-63's
-# `994b433e418082340ee6dcb460fcba458dbf67e10b4fad9d2cccc78c1f0564cd`
-# (W-B only) to the value below -- an expected move under sec 4.4b's own
-# composition, not a regression. Via `semb_witness --model
-# build/_scratch/synthetic_te62_c39.sslm --tokens 3,17,42,5,90
-# --chunk-budget 0`, run TWICE as two independent process invocations --
-# both runs produced this exact digest, byte for byte, reproduced again
-# under Clang (this seat's own build log).
-#
-# Line format: "<artifact-fingerprint>  <witness_sha-hex>"
-# artifact-fingerprint: SHA-256 of the regenerated .sslm file's own bytes
-# (independently computed via Python hashlib against the file on disk,
-# not read from any field this build emits) — the same value
-# `tests/oracle/regenerate_synthetic_artifact.py`'s own
-# --verify-determinism run and this seat's own hashlib check both agree
-# on for the pinned tag's hermetic regeneration.
+# v1.3.0, `tests/fixtures/regenerate_synthetic_artifact.py`'s own output).
+# Artifact fingerprint (SHA-256 of that .sslm file's own bytes,
+# independently computed via Python hashlib, not read from any field this
+# build emits): a8f88ab9e82f220bf5fdffa68d4fac4cf248d0158a4ae9dc557eeedd51df8097.
 
-a8f88ab9e82f220bf5fdffa68d4fac4cf248d0158a4ae9dc557eeedd51df8097  6ba6be802d35eb08bec63e9812f83a9b14cfe8ca9c9367b848661416ea221610
+c39_seam_digest 994b433e418082340ee6dcb460fcba458dbf67e10b4fad9d2cccc78c1f0564cd
+witness_sha 6ba6be802d35eb08bec63e9812f83a9b14cfe8ca9c9367b848661416ea221610
