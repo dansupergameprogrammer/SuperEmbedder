@@ -56,12 +56,22 @@ def rmtree(p: Path) -> None:
 
 def copy_repo(dest: Path) -> Path:
     """A minimal copy of the repo sufficient to configure: CMakeLists.txt,
-    cmake/, include/, src/, tools/, superslm.lock. Excludes build/, .git,
-    archive/, eval/ — none of it is needed to configure and copying the
-    engine-build scratch tree would be slow and pointless."""
+    cmake/, include/, src/, tests/, tools/, superslm.lock. Excludes build/,
+    .git, archive/, eval/ — none of it is needed to configure and copying
+    the engine-build scratch tree would be slow and pointless.
+
+    TE-63: "tests" added to the copy list. The root CMakeLists.txt now
+    calls add_subdirectory(tests) unconditionally (TE-62's red suite,
+    wired in by this round) — a copy that omits it fails EVERY leg that
+    reaches that line at configure with "add_subdirectory given source
+    'tests' which is not an existing directory," not the leg's own
+    intended construction. tests/CMakeLists.txt needs nothing this
+    function was not already copying (cmake/, include/, src/, tools/,
+    superslm.lock)."""
     rmtree(dest)
     dest.mkdir(parents=True)
-    for item in ("CMakeLists.txt", "cmake", "include", "src", "tools", "superslm.lock", ".gitattributes"):
+    for item in ("CMakeLists.txt", "cmake", "include", "src", "tests", "tools", "superslm.lock",
+                 ".gitattributes"):
         src = REPO_ROOT / item
         if not src.exists():
             continue
@@ -152,6 +162,18 @@ def run_cmake_configure(src: Path, build: Path, prefix: Path, extra_defines=None
     cmd = [
         CMAKE, "-G", GENERATOR, "-S", str(src), "-B", str(build),
         f"-DCMAKE_PREFIX_PATH={prefix}",
+        # TE-63: the pinned engine is installed as a Release build
+        # (tools/pin-superslm's own -DCMAKE_BUILD_TYPE=Release); a matrix
+        # leg configured with no build type leaves MSVC's runtime-library
+        # selection at its own default (the debug DLL runtime), which
+        # links against superslm.lib's Release-runtime objects and fails
+        # every leg that reaches an actual `cmake --build` with
+        # LNK2038 _ITERATOR_DEBUG_LEVEL/RuntimeLibrary mismatches -- a
+        # gap TE-61's slice never surfaced because nothing it built yet
+        # linked the engine. A leg's own extra_defines can still override
+        # this (the later -D wins), matching c14_cxx_flags_release_fastmath's
+        # own explicit Release request below.
+        "-DCMAKE_BUILD_TYPE=Release",
     ]
     if GENERATOR == "Ninja" and NINJA:
         cmd.append(f"-DCMAKE_MAKE_PROGRAM={NINJA}")
@@ -997,15 +1019,19 @@ def c34_leg_g_preprocess_failure_raises():
     )
     cmakelists = src / "CMakeLists.txt"
     text = cmakelists.read_text(encoding="utf-8")
-    old_sources = 'SOURCES src/version.cpp\n\tINCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include"'
-    new_sources = 'SOURCES src/version.cpp src/uses_gen.cpp\n\tINCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include"'
-    assert text.count(old_sources) == 1, f"anchor not found or not unique: {text.count(old_sources)}"
-    text = text.replace(old_sources, new_sources, 1)
-    text = text.replace(
-        "add_library(superembedder STATIC src/version.cpp)",
-        "add_library(superembedder STATIC src/version.cpp src/uses_gen.cpp)",
-        1,
+    # TE-63: both semb_compute_source_provenance's SOURCES and
+    # add_library's own source list now read one shared
+    # set(SEMB_LIBRARY_SOURCES ...) variable (the arithmetic sources TE-63
+    # added) rather than repeating "src/version.cpp" as a literal in two
+    # places -- one substitution into that set's own closing line now
+    # extends BOTH lists at once, where the two-anchor form this replaced
+    # needed a second, separate add_library() text replace.
+    old_sources_block = '\tsrc/superembedder/engine_adapter_interim.cpp\n)'
+    new_sources_block = '\tsrc/superembedder/engine_adapter_interim.cpp\n\tsrc/uses_gen.cpp\n)'
+    assert text.count(old_sources_block) == 1, (
+        f"anchor not found or not unique: {text.count(old_sources_block)}"
     )
+    text = text.replace(old_sources_block, new_sources_block, 1)
     cmakelists.write_text(text, encoding="utf-8")
     rc, out = run_cmake_configure(src, SCRATCH / "c34g_build", ENGINE_PREFIX)
     record("C34(g) preprocess failure raises, not truncates (N-5)", "SEMB_SOURCE_PREPROCESS_FAILED", rc, out)
@@ -1050,15 +1076,27 @@ def c34_leg_i_build_dir_placement_invariant():
     )
     cmakelists = src / "CMakeLists.txt"
     text = cmakelists.read_text(encoding="utf-8")
-    old_sources = 'SOURCES src/version.cpp\n\tINCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include"'
-    new_sources = 'SOURCES src/version.cpp src/uses_gen.cpp\n\tINCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include" "${CMAKE_BINARY_DIR}/generated"'
-    assert text.count(old_sources) == 1, f"anchor not found or not unique: {text.count(old_sources)}"
-    text = text.replace(old_sources, new_sources, 1)
-    text = text.replace(
-        "add_library(superembedder STATIC src/version.cpp)",
-        "add_library(superembedder STATIC src/version.cpp src/uses_gen.cpp)",
-        1,
+    # TE-63: see c34_leg_g_preprocess_failure_raises's own comment -- one
+    # substitution into the shared set(SEMB_LIBRARY_SOURCES ...) now
+    # extends both semb_compute_source_provenance's SOURCES and
+    # add_library's source list at once.
+    old_sources_block = '\tsrc/superembedder/engine_adapter_interim.cpp\n)'
+    new_sources_block = '\tsrc/superembedder/engine_adapter_interim.cpp\n\tsrc/uses_gen.cpp\n)'
+    assert text.count(old_sources_block) == 1, (
+        f"anchor not found or not unique: {text.count(old_sources_block)}"
     )
+    text = text.replace(old_sources_block, new_sources_block, 1)
+    old_include_dirs = (
+        'INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include" "${SEMB_ENGINE_PREFIX}/include"'
+    )
+    new_include_dirs = (
+        'INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include" "${SEMB_ENGINE_PREFIX}/include" '
+        '"${CMAKE_BINARY_DIR}/generated"'
+    )
+    assert text.count(old_include_dirs) == 1, (
+        f"anchor not found or not unique: {text.count(old_include_dirs)}"
+    )
+    text = text.replace(old_include_dirs, new_include_dirs, 1)
     cmakelists.write_text(text, encoding="utf-8")
 
     # TE-71 Q-2: build_in used to be SCRATCH/"c34i_build_in" -- a SIBLING of
@@ -1330,10 +1368,21 @@ def c14_subdirectory_target():
     compiler_id = detect_compiler_id()
     forbidden = "/fp:fast" if compiler_id == "MSVC" else "-ffast-math"
     src = copy_repo(SCRATCH / "c14f_src")
-    tests_dir = src / "tests"
-    tests_dir.mkdir(exist_ok=True)
-    (tests_dir / "t.cpp").write_text("int semb_tests_symbol() { return 0; }\n", encoding="utf-8")
-    (tests_dir / "CMakeLists.txt").write_text(
+    # TE-63: this leg's own synthetic subdirectory used to be named "tests"
+    # and inject its own add_subdirectory(tests) call. The root
+    # CMakeLists.txt now calls add_subdirectory(tests) for real (TE-62's
+    # red suite), and copy_repo copies the real tests/ tree, so reusing
+    # that name would either collide with a second add_subdirectory(tests)
+    # call on the same source directory (a real CMake configure error, not
+    # this leg's own construction) or silently overwrite the real red
+    # suite's tests/CMakeLists.txt with this leg's tiny synthetic one.
+    # A differently-named subdirectory keeps this leg's own construction
+    # (a target declared via add_subdirectory, reached by the recursive
+    # BUILDSYSTEM_TARGETS walk) independent of the real tests/ tree.
+    leg_subdir = src / "leg_c14_subdir"
+    leg_subdir.mkdir(exist_ok=True)
+    (leg_subdir / "t.cpp").write_text("int semb_tests_symbol() { return 0; }\n", encoding="utf-8")
+    (leg_subdir / "CMakeLists.txt").write_text(
         f"add_library(semb_tests STATIC t.cpp)\ntarget_compile_options(semb_tests PRIVATE {forbidden})\n",
         encoding="utf-8",
     )
@@ -1341,7 +1390,7 @@ def c14_subdirectory_target():
     text = cmakelists.read_text(encoding="utf-8")
     anchor = "\nsemb_assert_precise_fp()\n"
     assert text.count(anchor) == 1, f"expected exactly one real call site, found {text.count(anchor)}"
-    text = text.replace(anchor, "\nadd_subdirectory(tests)\nsemb_assert_precise_fp()\n", 1)
+    text = text.replace(anchor, "\nadd_subdirectory(leg_c14_subdir)\nsemb_assert_precise_fp()\n", 1)
     cmakelists.write_text(text, encoding="utf-8")
     rc, out = run_cmake_configure(src, SCRATCH / "c14f_build", ENGINE_PREFIX)
     record(f"C14 subdirectory target with fast-math ({compiler_id})", "SEMB_FP_FASTMATH_PRESENT", rc, out)
