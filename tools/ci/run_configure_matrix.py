@@ -334,14 +334,33 @@ def c33_leg_e_dirty_clone(pin_tool: Path, lock_path_template: Path):
 
 
 def c33_leg_e2_added_file_no_edit(pin_tool: Path, lock_path_template: Path):
-    """TE-67 N-1 (Critical). The reviewer's second, edit-free construction: a
-    clone carrying an UNTRACKED file inside the compile closure -- no existing
-    tracked file is touched at all. git_clean_check() records no
-    tag_content_sha256 for a path the tag has no content for; the fix under
-    test is that a null/missing tag_content_sha256 is itself a refusal, not a
-    skip. Isolated at the git_clean_check level too (this leg's own baseline,
-    asserted below) so the leg cannot pass by coincidence of a DIFFERENT
-    dirty file also being caught."""
+    """TE-67 N-1 (Critical), corrected for TE-69 P-2. The reviewer's second,
+    edit-free construction: a clone carrying an UNTRACKED file inside the
+    compile closure. git_clean_check() records no tag_content_sha256 for a
+    path the tag has no content for; the fix under test is that a
+    null/missing tag_content_sha256 is itself a refusal, not a skip.
+
+    TE-69 P-2: to get newhdr.h into the REAL compile closure at all, an
+    EXISTING tracked file (src/sha256.cpp) must be edited to #include it --
+    there is no way to add a file to what the compiler actually reads
+    without something referencing it. That edit trips the PRE-EXISTING
+    mismatch path (src/sha256.cpp's own tag_content_sha256 no longer
+    matches its on-disk bytes) all by itself, so a leg that only asserts
+    "configure refused, naming SEMB_ENGINE_INSTALL_DIVERGED" cannot tell
+    the added-file mechanism apart from the already-fixed modified-file one
+    -- reverting N-1's fix and re-running this leg still refuses (through
+    sha256.cpp's own mismatch), and the leg read green. The prior
+    docstring's isolation claim was checked only against git_clean_check()
+    called STANDALONE on a two-member closure, never against what
+    verify_provenance.py -- the actual decision path -- reports for the
+    REAL install this leg builds.
+
+    The fix: call verify_provenance.py directly against the prefix
+    pin_superslm.py actually wrote, and require newhdr.h SPECIFICALLY in
+    its own dirty_members list -- the identity of what was caught, not
+    merely that something was. This is what discriminates "the added-file
+    mechanism fired" from "some other, already-covered mechanism fired
+    coincidentally"."""
     clone_dir = SCRATCH / "c33e2_clone"
     rmtree(clone_dir)
     tag = None
@@ -355,19 +374,19 @@ def c33_leg_e2_added_file_no_edit(pin_tool: Path, lock_path_template: Path):
          DEFAULT_REMOTE, str(clone_dir)],
         check=True, capture_output=True, text=True,
     )
-    before = (clone_dir / "src" / "sha256.cpp").read_bytes()
     (clone_dir / "newhdr.h").write_text("#pragma once\n#define SEMB_N1_LEG_MARKER 1\n", encoding="utf-8")
     (clone_dir / "src" / "sha256.cpp").write_text(
         '#include "../newhdr.h"\n' + (clone_dir / "src" / "sha256.cpp").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
-    # Isolation check: sha256.cpp's own git blob must still equal the tag's --
-    # only the #include line differs from what git recorded when it was
-    # LAST staged, which for an uncommitted change means hash-object must
-    # NOT equal the tag (it was edited too, to pull the new header in) --
-    # what matters is that this leg's REFUSAL is attributable to the added
-    # file, verified directly against git_clean_check below, independent of
-    # whatever the full cmake pipeline additionally catches about sha256.cpp.
+    # This edit ALSO makes src/sha256.cpp itself mismatch its tag content --
+    # by construction (see docstring), not something this leg can avoid.
+    # git_clean_check() run standalone on the isolated two-member closure
+    # confirms newhdr.h carries no tag content (it does not exist at the
+    # tag); it does NOT establish that verify_provenance.py's own
+    # dirty_members will name newhdr.h specifically once sha256.cpp's own
+    # edit is also present in the real closure -- that is what the
+    # post-pin check below establishes instead.
     sys.path.insert(0, str(pin_tool.parent))
     import importlib
     if "pin_superslm" in sys.modules:
@@ -397,11 +416,37 @@ def c33_leg_e2_added_file_no_edit(pin_tool: Path, lock_path_template: Path):
                               pin_proc.returncode, "pin tool itself failed unexpectedly",
                               pin_proc.stdout + pin_proc.stderr)
         return
-    # The lock the tool wrote already agrees with this dirty install's own
-    # tree (pin_superslm.py always writes both together); configuring the
-    # copied source tree as-is, with no further edit, is the whole point.
+
+    # TE-69 P-2's own fix: verify_provenance.py, called directly against the
+    # real prefix the tool just wrote -- the actual decision path
+    # cmake/EngineGuards.cmake invokes -- must name newhdr.h in its OWN
+    # dirty_members. This is what a reverted N-1 fix cannot satisfy even
+    # though configure still refuses (see docstring): the reverted code
+    # reads `clean`/`dirty_paths` (a different, coarser field) or nothing
+    # at all for newhdr.h specifically, so it does not appear here.
+    verify_script = pin_tool.parent / "verify_provenance.py"
+    verify_proc = subprocess.run([PYEXE, str(verify_script), str(prefix)], capture_output=True, text=True)
+    try:
+        verify_result = json.loads(verify_proc.stdout)
+    except json.JSONDecodeError:
+        verify_result = {}
+    newhdr_named = "newhdr.h" in verify_result.get("dirty_members", [])
+
     rc, out = run_cmake_configure(src, SCRATCH / "c33e2_build", prefix)
-    record("C33(e2) added-file no-edit install", "SEMB_ENGINE_INSTALL_DIVERGED", rc, out)
+    expected = "SEMB_ENGINE_INSTALL_DIVERGED"
+    configure_refused_by_name = rc != 0 and expected in out
+    passed = newhdr_named and configure_refused_by_name
+    RESULTS.append({
+        "leg": "C33(e2) added-file no-edit install",
+        "expected": expected,
+        "returncode": rc,
+        "want_fail": True,
+        "found_expected_string": configure_refused_by_name,
+        "passed": passed,
+        "output_tail": "\n".join(out.splitlines()[-15:])
+                        + f"\nverify_provenance dirty_members={verify_result.get('dirty_members')}"
+                        + f" newhdr_named={newhdr_named}",
+    })
 
 
 def c33_leg_e3_deleted_manifest_field(pin_tool: Path, lock_path_template: Path):
