@@ -249,15 +249,43 @@ def _validate_reuse_clone(clone: Path, tag: str) -> None:
     directory that does not carry the pinned tag, and fell through to
     `run()`'s own generic `SystemExit(f"command failed ({rc}): {cmd}")` --
     loud and non-zero-exit, but not a NAMED refusal the way every other
-    failure mode in this tool is. This validates the two conditions
+    failure mode in this tool is. This validates three conditions
     directly, before `resolve_commit()` ever runs, and refuses by name for
-    each."""
+    each: a missing directory (SEMB_PIN_REUSE_CLONE_NOT_FOUND), an
+    existing directory that is not a git repository at all (TE-89, TE-88
+    review M-3: SEMB_PIN_REUSE_CLONE_NOT_A_REPO), and a real checkout that
+    does not carry the pinned tag (SEMB_PIN_REUSE_CLONE_TAG_MISMATCH)."""
     if not clone.exists() or not clone.is_dir():
         raise SystemExit(
             f"SEMB_PIN_REUSE_CLONE_NOT_FOUND: --reuse-clone points at {clone}, which does not "
             f"exist as a directory. --reuse-clone skips the normal clone step and requires an "
             f"existing checkout already in place -- point it at a real checkout, or omit the flag "
             f"to let this tool clone one."
+        )
+    # TE-89 (TE-88 review M-3): `git rev-parse <tag>^{commit}` also exits
+    # nonzero for "this directory is not a git repository at all," which
+    # the check below used to fold into SEMB_PIN_REUSE_CLONE_TAG_MISMATCH
+    # -- a real checkout that merely lacks the pinned tag, and an existing
+    # directory that was never a git repository, are different conditions,
+    # and the named status is what a consumer keys on (the raw git stderr
+    # is included either way, but nothing forces a caller to read it).
+    #
+    # `git -C <clone> rev-parse --git-dir` is NOT the right probe here --
+    # executed, found by the leg this fix itself pins
+    # (tests/pin_superslm_reuse_clone_invalid_test.py's own
+    # leg_not_a_git_repo_directory): git's own directory-discovery walks
+    # UP the tree looking for an ENCLOSING repository, so it succeeds for
+    # any plain, never-`git init`'d subdirectory nested inside one -- which
+    # `<clone>` always is here, since --reuse-clone's own scratch
+    # directories live under this project's own checkout. A direct check
+    # for `<clone>/.git` (a normal, non-bare `git clone` always creates one
+    # at its own root, whether a directory or -- for a worktree -- a file)
+    # tests `<clone>` ITSELF rather than any ancestor.
+    if not (clone / ".git").exists():
+        raise SystemExit(
+            f"SEMB_PIN_REUSE_CLONE_NOT_A_REPO: --reuse-clone points at {clone}, which exists but "
+            f"has no .git of its own (not a git repository) -- --reuse-clone requires an existing "
+            f"checkout, not merely an existing directory."
         )
     proc = subprocess.run(["git", "-C", str(clone), "rev-parse", f"{tag}^{{commit}}"],
                            capture_output=True, text=True)

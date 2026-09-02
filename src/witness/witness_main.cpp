@@ -65,10 +65,16 @@
 #include "superslm/sha256.h"
 
 // TE-86's own C31(ii) leg (tests/witness_structural_matrix.py::eval_c31_ii)
-// patches a scratch copy of this file at the exact anchor
-// '#include "superembedder/witness_abi.h"\n\nnamespace {' -- the new
-// generated-header include below is placed BEFORE witness_abi.h's own
-// include, not after, so that anchor stays byte-identical.
+// patches a scratch copy of this file directly ahead of the witness ABI
+// header's own include line below, at an anchor that also spans the
+// namespace-opening brace that follows it -- the new generated-header
+// include is placed BEFORE that header's own include, not after, so the
+// anchor's own text stays byte-identical. (TE-89 S-1: this comment used to
+// quote the witness ABI header's own include line verbatim, which made
+// this comment a SECOND occurrence of eval_c31_i's own anchor text --
+// patch_text() replaced the FIRST occurrence, landing that leg's mutation
+// here instead of on the real include below. Described in prose rather
+// than quoted now, and patch_text() itself refuses a non-unique anchor.)
 #include "semb_witness_build_generation.h"
 #include "superembedder/witness_abi.h"
 
@@ -126,13 +132,21 @@ int main(int argc, char** argv) {
     const char* const kThisBuildGeneration = SEMB_WITNESS_BUILD_GENERATION_TOKEN;
     char library_build_generation[32];
     semb_library_build_generation(library_build_generation);
-    if (std::memcmp(kThisBuildGeneration, library_build_generation, 32) != 0) {
+    // TE-89 (TE-88 review S-6): sizeof(...) - 1 on the MACRO reads exactly
+    // the literal's own hex-character width, guarded at compile time by
+    // the static_assert in semb_witness_build_generation.h.in -- see
+    // witness_build_generation.cpp's own identical comment on its
+    // memcpy. The %.*s precision arguments below carry the same width, so
+    // a shorter literal cannot make the diagnostic print past the buffer
+    // either.
+    constexpr int kTokenLen = static_cast<int>(sizeof(SEMB_WITNESS_BUILD_GENERATION_TOKEN) - 1);
+    if (std::memcmp(kThisBuildGeneration, library_build_generation, kTokenLen) != 0) {
       std::fprintf(stderr,
                     "witness: SEMB_WITNESS_DETACHED_LINK -- this build's own compiled-in "
                     "build-generation token does not match the linked library's own copy "
-                    "(this=%.32s, library=%.32s); the witness executable and the "
+                    "(this=%.*s, library=%.*s); the witness executable and the "
                     "superembedder library it links were not configured together\n",
-                    kThisBuildGeneration, library_build_generation);
+                    kTokenLen, kThisBuildGeneration, kTokenLen, library_build_generation);
       return 1;
     }
   }

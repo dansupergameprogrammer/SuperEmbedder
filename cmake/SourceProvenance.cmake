@@ -16,6 +16,10 @@
 #
 # Call once, after the covered set is final and BEFORE add_library()/
 # target_sources() so the generated header exists in time to be compiled in.
+# Returns the sidecar's path in SEMB_SOURCE_PROVENANCE_SIDECAR_<target> (TE-89,
+# TE-88 review S-5: a variable named per target, so two calls for two targets
+# cannot alias) -- pass that straight to semb_verify_source_provenance(<target>
+# SIDECAR ...) below.
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
@@ -147,7 +151,14 @@ function(semb_compute_source_provenance target)
 	endif()
 	message(STATUS "semb_source_sha computed for '${target}': ${_semb_src_out}")
 
-	set(SEMB_SOURCE_PROVENANCE_SIDECAR "${_sidecar}" PARENT_SCOPE)
+	# TE-89 (TE-88 review S-5): returning the sidecar path in ONE
+	# shared-name variable made correctness depend on call-site ORDER --
+	# whichever target's semb_verify_source_provenance() call read the
+	# variable next got THIS call's sidecar, silently, if it ran before the
+	# variable was consumed. A per-target variable name cannot alias: two
+	# calls for two different targets write two different variables, so no
+	# statement-order requirement exists to violate.
+	set(SEMB_SOURCE_PROVENANCE_SIDECAR_${target} "${_sidecar}" PARENT_SCOPE)
 endfunction()
 
 # semb_verify_source_provenance(<target> SIDECAR <path>) — call AFTER
@@ -165,7 +176,16 @@ endfunction()
 # supported, and a configure that cannot provide the gate refuses loudly
 # instead of building unguarded.
 function(semb_verify_source_provenance target)
-	cmake_parse_arguments(ARG "" "SIDECAR" "" ${ARGN})
+	cmake_parse_arguments(ARG "" "SIDECAR;STATUS_NAME" "" ${ARGN})
+	# TE-89 (TE-88 review S-3): §4.4d requires the drift to fail the build
+	# "by name" -- SEMB_SOURCE_SET_DRIFT for the library (C34, the existing,
+	# already-named behavior) and SEMB_WITNESS_FOREIGN_BUILD for the witness
+	# (C31(i), sec 4.4d item 1). STATUS_NAME is the one new argument this
+	# call site needs to say which; it defaults to the library's own
+	# existing name so every caller before this round is unaffected.
+	if(NOT ARG_STATUS_NAME)
+		set(ARG_STATUS_NAME "SEMB_SOURCE_SET_DRIFT")
+	endif()
 	if(NOT CMAKE_GENERATOR STREQUAL "Ninja")
 		message(FATAL_ERROR "SEMB_SOURCE_DRIFT_CHECK_UNAVAILABLE: the post-build semb_source_sha "
 			"re-verification (§8 C34's depfile leg) needs the Ninja generator's own dependency "
@@ -188,6 +208,7 @@ function(semb_verify_source_provenance target)
 			--ninja "${SEMB_NINJA_EXECUTABLE}"
 			--target "${target}"
 			--sidecar "${ARG_SIDECAR}"
+			--status-name "${ARG_STATUS_NAME}"
 		COMMENT "semb_source_sha post-build re-verification (C34 depfile leg) for ${target}"
 		VERBATIM
 	)

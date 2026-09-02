@@ -19,8 +19,12 @@
 #include "semb_witness_build_generation.h"
 
 extern "C" void semb_library_build_generation(char out_token[32]) {
-  // SEMB_WITNESS_BUILD_GENERATION_TOKEN is a 32-hex-character string
-  // literal (33 bytes including its own trailing NUL) -- copy exactly the
-  // 32 hex characters, matching witness_main.cpp's own 32-byte memcmp.
-  std::memcpy(out_token, SEMB_WITNESS_BUILD_GENERATION_TOKEN, 32);
+  // TE-89 (TE-88 review S-6): sizeof(...) - 1 on the MACRO (not a
+  // hardcoded 32) reads exactly the literal's own hex-character width --
+  // guarded at compile time by the static_assert in
+  // semb_witness_build_generation.h.in, so a future change to that
+  // literal's width is caught there rather than silently copying past it
+  // (a decrease) or truncating it (an increase) here.
+  std::memcpy(out_token, SEMB_WITNESS_BUILD_GENERATION_TOKEN,
+              sizeof(SEMB_WITNESS_BUILD_GENERATION_TOKEN) - 1);
 }

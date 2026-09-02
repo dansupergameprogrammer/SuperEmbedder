@@ -14,6 +14,16 @@
 // arrays themselves are not digested, only the tuple that parameterises
 // their construction -- see wa_digest.cpp's own header comment for the
 // exact scope this leaves open.
+//
+// TE-89 (TE-88 review O-6): both verbs in this header are WITNESS/BUILD
+// MACHINERY -- consumed by semb_witness and by this project's own test
+// matrix, never by an application encoding text. §3.1's twelve frozen
+// verbs do not include either of them, and CMakeLists.txt declares no
+// install() rules at all today, so neither reaches a consumer yet. A
+// future installer's own include-directory/export list is a DELIBERATE,
+// curated set -- it must not become "every symbol this header happens to
+// declare" by default, or it ships a build-generation accessor and a
+// synthetic self-test digest to a downstream consumer by accident.
 #ifndef SEMB_WITNESS_ABI_H
 #define SEMB_WITNESS_ABI_H
 

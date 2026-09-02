@@ -44,12 +44,21 @@ configure_file(
 )
 
 # sec 8 C31(ii) (SEMB_WITNESS_DETACHED_LINK, sec 4.4d item 2): a per-configure
-# random 128-bit hex token, baked into a generated header the same way the
+# 128-bit-WIDE hex token, baked into a generated header the same way the
 # four pin fields above are -- compiled into both the library and the
 # witness executable's own TU, so the two copies are identical if and only
 # if both were configured together. string(RANDOM ...) with no RANDOM_SEED
-# given reseeds from the current time on every configure (CMake's own
-# documented behavior), which is what makes this token PER-CONFIGURE.
+# given draws each character from CMake's own rand()-based generator, seeded
+# once per CMake PROCESS -- executed (TE-89 build log, M-4): five consecutive
+# `cmake -P` runs of this exact call produced five distinct tokens, so the
+# per-configure-distinct property this clause needs is verified by execution,
+# not merely asserted. TE-89 M-4: the token is 128 bits WIDE and its ENTROPY
+# is bounded at ~2^32 -- each character is drawn from the SAME 32-bit seed,
+# not independently, so the collision probability between two specific
+# configures is ~2^-32, not ~2^-128 -- and CMake's own documentation for
+# string(RANDOM) describes RANDOM_SEED only; it does not document
+# per-invocation reseeding from the clock, so that behavior above is stated
+# as executed, not as CMake's documented contract.
 string(RANDOM LENGTH 32 ALPHABET "0123456789abcdef" SEMB_WITNESS_BUILD_GENERATION_TOKEN)
 configure_file(
 	"${CMAKE_SOURCE_DIR}/cmake/templates/semb_witness_build_generation.h.in"
@@ -93,7 +102,8 @@ target_include_directories(superembedder
 		"${CMAKE_BINARY_DIR}/generated"
 )
 target_link_libraries(superembedder PRIVATE superslm::superslm)
-semb_verify_source_provenance(superembedder SIDECAR "${SEMB_SOURCE_PROVENANCE_SIDECAR}")
+semb_verify_source_provenance(superembedder SIDECAR "${SEMB_SOURCE_PROVENANCE_SIDECAR_superembedder}"
+	STATUS_NAME "SEMB_SOURCE_SET_DRIFT")
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +145,6 @@ semb_compute_source_provenance(semb_witness
 	# comment).
 	SIDECAR_NAME "semb_witness_source_provenance.json"
 )
-set(SEMB_WITNESS_SOURCE_PROVENANCE_SIDECAR "${SEMB_SOURCE_PROVENANCE_SIDECAR}")
 
 # Links the engine directly too (not only transitively through
 # superembedder, which links it PRIVATE) — this TU calls
@@ -147,7 +156,35 @@ target_link_libraries(semb_witness PRIVATE superembedder superslm::superslm)
 # through superembedder's own PUBLIC include dirs, since that header lives
 # in the same PRIVATE generated dir the library itself uses.
 target_include_directories(semb_witness PRIVATE "${CMAKE_BINARY_DIR}/generated")
-semb_verify_source_provenance(semb_witness SIDECAR "${SEMB_WITNESS_SOURCE_PROVENANCE_SIDECAR}")
+# TE-89 (TE-88 review S-3, sec 8 C31(i), sec 4.4d item 1): §4.4d says the
+# drift "fails the build, by name" -- cmd_verify used to report only
+# {"agrees": false, ...}, a JSON field with no named status a consumer could
+# grep for the way every other refusal in this project is named. STATUS_NAME
+# parameterises the same POST_BUILD verify step this target shares with
+# `superembedder` (which keeps its own name, SEMB_SOURCE_SET_DRIFT) with the
+# name sec 4.4d actually specifies for THIS target's own drift.
+semb_verify_source_provenance(semb_witness SIDECAR "${SEMB_SOURCE_PROVENANCE_SIDECAR_semb_witness}"
+	STATUS_NAME "SEMB_WITNESS_FOREIGN_BUILD")
+
+# TE-89 (TE-88 review C-1, sec 8 C31(i)/C31(ii)): tests/witness_structural_matrix.py
+# and tools/engine_side_wa_perturbation.py used to hardcode "semb_witness.exe"
+# and "superembedder.lib" -- correct on Windows, wrong on ubuntu-latest and
+# macos-latest, where a genuinely successful build's own real output is
+# named differently and the hardcoded lookup reported an EVALUATED FAIL
+# rather than the honest MISSING PREREQUISITE or PASS the platform earned.
+# The fix is to ask THIS BUILD for its own real artifact paths rather than
+# have a python test branch on the platform string: file(GENERATE) resolves
+# $<TARGET_FILE:...> at CMake's own generate step (using its own, always-
+# correct per-platform executable-suffix and static-library-prefix/suffix
+# rules) into a small JSON manifest every configure produces, single-config
+# generator or not. Every scratch tree the matrix and the perturbation
+# script configure carries this same CMakeLists.txt (copy_repo()), so every
+# scratch configure regenerates its own manifest too -- there is no
+# separate maintenance path for the scratch case.
+file(GENERATE
+	OUTPUT "${CMAKE_BINARY_DIR}/semb_artifact_manifest.json"
+	CONTENT "{\n  \"semb_witness\": \"$<TARGET_FILE:semb_witness>\",\n  \"superembedder\": \"$<TARGET_FILE:superembedder>\"\n}\n"
+)
 
 # ---------------------------------------------------------------------------
 # Tests: the negative-configure matrix (C33's provenance legs, C34's

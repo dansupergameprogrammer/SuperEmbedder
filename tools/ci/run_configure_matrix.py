@@ -981,13 +981,12 @@ def c34_leg_f_header_edit_moves_digest():
 
 def c34_leg_g_preprocess_failure_raises():
     """TE-69 P-3, a permanent leg for N-5. A second library source whose
-    only #include is reachable through CMAKE_BINARY_DIR/generated -- an
-    include directory the real target has (via the generated header) but
-    the provenance call is not given, matching what src/main.cpp needs but
-    src/version.cpp's own SOURCES declaration does not cover. The compiler
-    resolves one real header (superembedder/version.h) before failing to
-    resolve the second, reproducing the reviewer's own "some output, then a
-    fatal error" shape rather than an immediate failure.
+    only #include names a header that exists NOWHERE in the scratch tree
+    (`semb_test_c34g_header_that_exists_nowhere.h` -- TE-87, below, replaced
+    an earlier CMAKE_BINARY_DIR/generated-reaching anchor with this one).
+    The compiler resolves one real header (superembedder/version.h) before
+    failing to resolve the second, reproducing the reviewer's own "some
+    output, then a fatal error" shape rather than an immediate failure.
 
     TE-71 Q-3: N-5's own repair is inside _msvc_closure only --
     _gcc_clang_closure has raised on any nonzero preprocessor exit since
@@ -1022,13 +1021,13 @@ def c34_leg_g_preprocess_failure_raises():
     declared INCLUDE_DIRS (witness_build_generation.cpp's own new
     #include "semb_witness_build_generation.h" needs it, matching what
     the real target's build already resolves) -- closing the specific
-    gap this leg's construction depended on, which made the induced
+    gap this leg's construction used to depend on, which made the induced
     failure stop firing (configure succeeded, returncode 0) rather than
-    raising SEMB_SOURCE_PREPROCESS_FAILED. Replaced with a header name
-    that exists NOWHERE in the scratch tree at all, so this leg's own
-    construction no longer depends on which directories superembedder's
-    real INCLUDE_DIRS does or does not declare -- future-proof against
-    the identical collision recurring."""
+    raising SEMB_SOURCE_PREPROCESS_FAILED. Replaced with the header name
+    given above, which exists nowhere in the scratch tree at all, so this
+    leg's own construction no longer depends on which directories
+    superembedder's real INCLUDE_DIRS does or does not declare --
+    future-proof against the identical collision recurring."""
     src = copy_repo(SCRATCH / "c34g_src")
     (src / "src" / "uses_gen.cpp").write_text(
         '#include "superembedder/version.h"\n#include "semb_test_c34g_header_that_exists_nowhere.h"\nint semb_uses_gen() { return 0; }\n',
@@ -1076,8 +1075,15 @@ def c34_leg_j_empty_resolver_refused():
 
 
 def c34_leg_i_build_dir_placement_invariant():
-    """TE-69 P-3, a permanent leg for N-8. The g-leg's own generated-header-
-    reaching source, configured at two different -B locations (nested
+    """TE-69 P-3, a permanent leg for N-8. Its own second library source
+    whose only #include reaches through CMAKE_BINARY_DIR/generated
+    (`semb_engine_pin.h`) -- a construction this leg has always owned and
+    maintained separately from c34_leg_g_preprocess_failure_raises's own
+    source, which TE-87 changed to a header that exists nowhere for a
+    different reason (TE-89 M-1: this docstring used to call this leg's
+    source "the g-leg's own," which was already imprecise before TE-87 and
+    became actively wrong once the two legs' sources diverged). Configured
+    at two different -B locations (nested
     inside the source root, and a sibling outside it) -- must produce an
     IDENTICAL semb_source_sha and an identical covered_count at both, and
     the post-build re-verification must agree at both. TE-71 Q-2: the

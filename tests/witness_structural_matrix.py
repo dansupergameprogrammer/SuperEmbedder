@@ -33,20 +33,29 @@ what the builder built. This version gives each leg a REAL evaluation:
     copy-and-patch convention) -- this file drives the real construction
     and reads the real result.
 
-WHAT WAS INVESTIGATED BEFORE DECIDING WHICH LEGS ARE WHICH (read in full
-this session): `witness_main.cpp` (the witness executable's own TU) calls
-only `semb_encode_document_for_witness` and `semb_seam_serialize_document`
-plus the engine's own SHA-256 -- no arithmetic, matching sec 4.4b clause
-4's own requirement, confirmed by reading rather than assumed. It has NO
-code that detects "was I built from a second configure," "am I linked to
-a detached copy," or "did a value arrive from another process" -- none of
-SEMB_WITNESS_FOREIGN_BUILD, SEMB_WITNESS_DETACHED_LINK, or
-SEMB_WITNESS_FOREIGN_READING is emitted anywhere in this build (grepped,
-zero hits). Building those detectors is product code, outside this
-seat's writable scope for TE-77 (`Claude/Bach/briefs/te77-u0b-cell-fixes.md`'s
-own Contract: `src/**` is read-only) and a real feature this ticket does
-not add -- so C31(i), C31(ii), C31(iv) are `MISSING PREREQUISITE`, named
-exactly why. Similarly, `intmath.h` and `layer_marshal.h` (the only
+WHAT WAS INVESTIGATED BEFORE DECIDING WHICH LEGS WERE WHICH, AS OF TE-77
+(read in full that session): `witness_main.cpp` (the witness executable's
+own TU) called only `semb_encode_document_for_witness` and
+`semb_seam_serialize_document` plus the engine's own SHA-256 -- no
+arithmetic, matching sec 4.4b clause 4's own requirement, confirmed by
+reading rather than assumed. It had NO code that detects "was I built
+from a second configure," "am I linked to a detached copy," or "did a
+value arrive from another process" -- none of SEMB_WITNESS_FOREIGN_BUILD,
+SEMB_WITNESS_DETACHED_LINK, or SEMB_WITNESS_FOREIGN_READING was emitted
+anywhere in that build (grepped, zero hits). Building those detectors was
+product code, outside TE-77's own writable scope
+(`Claude/Bach/briefs/te77-u0b-cell-fixes.md`'s own Contract: `src/**` was
+read-only) and not a feature that ticket added -- so at TE-77, C31(i),
+C31(ii), C31(iv) were `MISSING PREREQUISITE`, named exactly why.
+
+TE-89 (TE-88 review M-2): TE-86 (D-SLM6155, D-SLM6156) built the
+detectors this investigation found absent -- C31(i) and C31(ii) are real,
+evaluated constructions below (`eval_c31_i`, `eval_c31_ii`), each red at
+this tip for the reason its own leg names; C31(iv) retires to the
+structural check `eval_c31_iv_and_c36_e` specifies, green by design. Only
+C38 remains `MISSING PREREQUISITE`, for the separate reason below.
+
+Similarly, `intmath.h` and `layer_marshal.h` (the only
 installed engine headers whose INLINE primitives the reproducible path
 actually calls -- `ReadCarriedScale`, confirmed the sole one in use) carry
 NO `#ifdef`-gated branch anywhere (grepped: only include guards) -- so
@@ -56,8 +65,10 @@ reason; what CAN be verified for real is the STRUCTURAL precondition C38's
 own reasoning rests on (which TU the primitive is actually compiled into),
 which this file does check, via C31(iii) below.
 
-THE TWO LEGS THIS FILE EVALUATES FOR REAL, AND THE ONE IT ATTEMPTED AND
-EXECUTED INTO A DIFFERENT, MORE PRECISE MISSING-PREREQUISITE FINDING:
+TE-77'S OWN TWO GENUINE CONSTRUCTIONS, AND THE ONE IT ATTEMPTED THAT TE-78
+LATER MADE REAL (TE-86's own four additions -- C31(i), C31(ii), C36(a),
+C31(iv)/C36(e) -- are described in the module header above, not repeated
+here):
 
   C31(iii) -- TU-local inline-primitive driver. MUST-ACCEPT: dumpbin over
   the TIP's own built objects shows `ReadCarriedScale` (the reproducible
@@ -82,21 +93,30 @@ EXECUTED INTO A DIFFERENT, MORE PRECISE MISSING-PREREQUISITE FINDING:
   already built, run against the hermetically-regenerated synthetic
   artifact: must complete and emit a digest, not refuse.
 
-  C36(b) -- our own epilogue edited, `superslm.lib` standing. ATTEMPTED
-  for real: a scratch COPY of the tree with `kExpBias` in `ps1_pool.cpp`
-  changed 127 -> 126 (a real, textual edit to a copy, never to the
-  tracked file) was reconfigured, rebuilt, and its own `semb_witness` run
-  -- and its digest was IDENTICAL to the tip's. Diagnosed by reading
-  (confirmed by the same execution): this round's `semb_witness` calls
-  only `semb_encode_document_for_witness` + `semb_seam_serialize_document`
-  (W-B's own seam digest) and never `semb_wa_pool_run` at all (grepped
-  both `witness_main.cpp` and `engine_adapter_interim.cpp`: zero hits) --
-  so `witness_sha`, as this round's witness actually computes it, is
-  W-B's digest ALONE, and no edit confined to the pooling epilogue can
-  move it yet. This is `MISSING PREREQUISITE`, not a failed construction
-  -- sec 4.4b's own three-component design (`witness_sha` = W-A's digest
-  ‖ W-B's digest ‖ W-Q's digest) has only its W-B component wired into
-  this round's witness.
+  C36(b) -- our own epilogue edited, `superslm.lib` standing. AT TE-77:
+  ATTEMPTED for real -- a scratch COPY of the tree with `kExpBias` in
+  `ps1_pool.cpp` changed 127 -> 126 (a real, textual edit to a copy, never
+  to the tracked file) was reconfigured, rebuilt, and its own
+  `semb_witness` run -- and its digest was IDENTICAL to the tip's.
+  Diagnosed by reading (confirmed by the same execution): that round's
+  `semb_witness` called only `semb_encode_document_for_witness` +
+  `semb_seam_serialize_document` (W-B's own seam digest) and never
+  `semb_wa_pool_run` at all -- so `witness_sha`, as TE-77's witness
+  computed it, was W-B's digest ALONE, and no edit confined to the
+  pooling epilogue could move it yet. That was `MISSING PREREQUISITE`,
+  not a failed construction -- sec 4.4b's own three-component design
+  (`witness_sha` = W-A's digest ‖ W-B's digest ‖ W-Q's digest) had only
+  its W-B component wired into that round's witness.
+
+  TE-89 (TE-88 review M-2): TE-78 wired `semb_wa_digest` (W-A) into
+  `witness_sha` (`witness_main.cpp`, confirmed present) -- which is what
+  makes this leg evaluable for real as of this round. `eval_c36_b()`
+  below runs the identical scratch-edit construction and reports a
+  genuine PASS or FAIL, decided by `_c36b_verdict()` (itself commissioned
+  by `_selftest_c36b_verdict_can_fail()` before the expensive scratch
+  rebuild ever runs) -- `MISSING PREREQUISITE` only if the scratch
+  configure/build/run itself cannot be attempted, never as a stand-in for
+  "the epilogue edit was applied but did not move the digest."
 
 USAGE: `python tests/witness_structural_matrix.py` prints the JSON report
 and exits 0 only if every EVALUATED (non-missing) leg passed -- a
@@ -109,6 +129,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -120,6 +141,12 @@ from typing import Dict, List, Optional
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENGINE_PREFIX = REPO_ROOT / "build" / "_engine_install"
 SCRATCH_ROOT = REPO_ROOT / "build" / "_scratch" / "witness_matrix"
+# TE-89 (TE-88 review M-5): the compiler every scratch tree below is
+# configured with -- None until main() derives it from the REAL build
+# directory's own CMakeCache.txt, below. build_witness_in() passes it
+# through explicitly when set, rather than trusting cmake -G Ninja's own
+# default resolution (observed: cl.exe, even when grading build/clang).
+CXX_COMPILER: Optional[str] = None
 
 # TE-80 (TE-76 review F-6, Significant): the build directory this matrix
 # grades is no longer a hardcoded "build/msvc" -- it is set from
@@ -133,6 +160,64 @@ SCRATCH_ROOT = REPO_ROOT / "build" / "_scratch" / "witness_matrix"
 BUILD_DIR = REPO_ROOT / "build" / "msvc"
 
 RESULTS: List[Dict] = []
+
+
+def _read_cmake_cache(build_dir: Path) -> Dict[str, str]:
+    """Parses build_dir/CMakeCache.txt into a flat {name: value} dict.
+
+    TE-89 (TE-88 review M-5): the scratch trees this matrix configures used
+    to hardcode a single, shared ENGINE_PREFIX and SCRATCH_ROOT and pass no
+    compiler at all to their own `cmake -G Ninja` calls -- exactly the
+    layout dependence TE-80 F-6 already fixed for BUILD_DIR itself. Two
+    concrete failures that produced: a run from build/clang and a run from
+    build/msvc raced on the SAME SCRATCH_ROOT if run concurrently, and
+    every scratch rebuild (C31(i), C31(ii), the C31(iii)/C36(b) must-reject
+    reconfigures) was compiled with whatever compiler CMake's own default
+    resolution picked -- executed: cl.exe, in BOTH the MSVC and the Clang
+    ctest passes (M-5's own reading of build/_scratch/witness_matrix/
+    c31ii_g1/build/CMakeCache.txt). Reading the REAL graded build
+    directory's own cache removes both hardcodes: main() below derives
+    SCRATCH_ROOT, ENGINE_PREFIX and CXX_COMPILER from it once BUILD_DIR is
+    known, and every eval_* function already reads those three module
+    globals rather than a local constant."""
+    out: Dict[str, str] = {}
+    cache_path = build_dir / "CMakeCache.txt"
+    if not cache_path.exists():
+        return out
+    for line in cache_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        if ":" not in line or "=" not in line:
+            continue
+        name, rest = line.split(":", 1)
+        _, _, value = rest.partition("=")
+        out[name.strip()] = value
+    return out
+
+
+def read_artifact_manifest(build_dir: Path) -> Dict[str, str]:
+    """TE-89 (TE-88 review C-1): CMakeLists.txt's own file(GENERATE) call
+    writes `<build_dir>/semb_artifact_manifest.json` at configure time from
+    $<TARGET_FILE:...> -- CMake's own, always-correct-for-the-platform
+    resolution of a target's real output path (the right executable suffix
+    and static-library prefix/suffix for whatever platform configured this
+    build, never assumed by this python process). Reading it here is what
+    lets build_witness_in() and eval_c31_ii()'s own .lib swap, below, stop
+    hardcoding "semb_witness.exe" / "superembedder.lib" -- names that are
+    simply wrong on ubuntu-latest and macos-latest, where a genuinely
+    successful build's own real output is named differently and the old
+    hardcoded lookup reported an EVALUATED FAIL rather than the PASS the
+    platform earned."""
+    manifest_path = build_dir / "semb_artifact_manifest.json"
+    if not manifest_path.exists():
+        raise RuntimeError(
+            f"artifact manifest not found: {manifest_path} -- this build directory's own configure "
+            f"did not generate it (CMakeLists.txt's own file(GENERATE) call writes "
+            f"semb_artifact_manifest.json at configure time; a build directory from before this "
+            f"round needs a fresh configure)"
+        )
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
 
 
 def leg_result(name: str, expected: str, observed: str, passed: bool, missing: bool = False):
@@ -205,8 +290,28 @@ def copy_repo(dest: Path) -> Path:
 
 def patch_text(path: Path, old: str, new: str, label: str):
     text = path.read_text(encoding="utf-8")
-    if old not in text:
+    count = text.count(old)
+    if count == 0:
         raise RuntimeError(f"{label}: anchor text not found in {path} -- cannot apply the patch")
+    # TE-89 (TE-88 review S-1): this used to call str.replace(old, new, 1),
+    # which replaces the FIRST occurrence unconditionally -- a comment
+    # elsewhere in the file that happened to quote the anchor verbatim (as
+    # witness_main.cpp's own C31(ii) comment used to, ahead of the real
+    # include eval_c31_i() targets) silently absorbed the mutation instead
+    # of the real site, and the leg still "passed" only because the
+    # resulting malformed #include line was accepted by every toolchain
+    # here as a warning, not an error. Mirrors
+    # tools/ci/run_configure_matrix.py's own `assert text.count(anchor) ==
+    # 1` discipline: a non-unique anchor is refused here, structurally, for
+    # every caller of this shared helper, rather than left to each call
+    # site to remember.
+    if count != 1:
+        raise RuntimeError(
+            f"{label}: anchor text is not unique in {path} -- found {count} occurrences, expected "
+            f"exactly 1 (StandardsDocument.md sec 5.4: a mutation applied through a non-unique "
+            f"anchor lands on whichever occurrence str.replace() happens to pick, not necessarily "
+            f"the real site the leg means to mutate)"
+        )
     path.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
@@ -216,18 +321,28 @@ def build_witness_in(src_dir: Path, build_dir: Path) -> Path:
     callers read the exception message as the leg's own `observed`."""
     cmake = _find_cmake()
     rmtree(build_dir)
-    configure = subprocess.run(
-        [cmake, "-G", "Ninja", "-S", str(src_dir), "-B", str(build_dir),
-         "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_PREFIX_PATH={ENGINE_PREFIX}"],
-        capture_output=True, text=True, cwd=str(src_dir),
-    )
+    configure_cmd = [cmake, "-G", "Ninja", "-S", str(src_dir), "-B", str(build_dir),
+                      "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_PREFIX_PATH={ENGINE_PREFIX}"]
+    if CXX_COMPILER:
+        # TE-89 (TE-88 review M-5): the SAME compiler BUILD_DIR (the real
+        # directory being graded) was itself configured with -- without
+        # this, `cmake -G Ninja` resolves its own default (observed: cl.exe
+        # first on the Community developer shell's own PATH), so a run
+        # from build/clang silently exercised every scratch construction
+        # under MSVC anyway.
+        configure_cmd.append(f"-DCMAKE_CXX_COMPILER={CXX_COMPILER}")
+    configure = subprocess.run(configure_cmd, capture_output=True, text=True, cwd=str(src_dir))
     if configure.returncode != 0:
         raise RuntimeError(f"configure failed (rc={configure.returncode}):\n{configure.stdout[-2000:]}\n{configure.stderr[-2000:]}")
+    # TE-89 (TE-88 review C-1): the manifest configure just generated names
+    # this build's own REAL executable path -- never a hardcoded
+    # "semb_witness.exe", which does not exist on ubuntu-latest/macos-latest.
+    manifest = read_artifact_manifest(build_dir)
+    exe = Path(manifest["semb_witness"])
     build = subprocess.run([cmake, "--build", str(build_dir), "--target", "semb_witness"],
                            capture_output=True, text=True, cwd=str(src_dir))
     if build.returncode != 0:
         raise RuntimeError(f"build failed (rc={build.returncode}):\n{build.stdout[-2000:]}\n{build.stderr[-2000:]}")
-    exe = build_dir / "semb_witness.exe"
     if not exe.exists():
         raise RuntimeError(f"build reported success but {exe} does not exist")
     return exe
@@ -329,8 +444,17 @@ def eval_c31_iii():
             "int main(int argc, char** argv) {\n"
             "  // TE-77 C31(iii) MUST-REJECT construction: taking this inline function's own\n"
             "  // address ODR-uses it, forcing a local definition into THIS TU.\n"
+            "  //\n"
+            "  // TE-89 (TE-88 review M-5, found once M-5's own fix let this scratch build run\n"
+            "  // under the REAL compiler being graded for the first time, exposing it under\n"
+            "  // Clang 18.1.8 -O2): a `(void)`-discarded address was NOT reliable -- Clang can\n"
+            "  // prove the discarded pointer's own VALUE is never used and eliminate the whole\n"
+            "  // materialization, leaving no reference to the symbol in the object at all.\n"
+            "  // Printing the address is an OBSERVABLE use (real stderr I/O) neither compiler\n"
+            "  // can prove away, so a real relocation against the symbol must exist.\n"
             "  auto _semb_test_hazard = &superslm_marshal::ReadCarriedScale;\n"
-            "  (void)_semb_test_hazard;",
+            "  std::fprintf(stderr, \"_semb_test_hazard=%p\\n\", "
+            "reinterpret_cast<const void*>(_semb_test_hazard));",
             "C31(iii) must-reject hazard call",
         )
         mutant_exe = build_witness_in(scratch, scratch / "build")
@@ -356,7 +480,15 @@ def eval_c31_iii():
 def eval_c31_v():
     name = "C31(v) a correctly-built witness must NOT refuse (the positive construction)"
     try:
-        exe = BUILD_DIR / "semb_witness.exe"
+        # TE-89 (TE-88 review C-1): the graded BUILD_DIR's own manifest
+        # names its real semb_witness path -- never a hardcoded
+        # "semb_witness.exe", which does not exist on ubuntu-latest/
+        # macos-latest.
+        try:
+            exe = Path(read_artifact_manifest(BUILD_DIR)["semb_witness"])
+        except RuntimeError as ex:
+            leg_missing(name, f"could not resolve the built semb_witness path: {ex}")
+            return
         if not exe.exists():
             leg_missing(name, f"{exe} does not exist -- build it first")
             return
@@ -435,7 +567,14 @@ def eval_c36_b():
     # configure/build/run failure, in the SECOND try block below, stays
     # MISSING_PREREQUISITE.
     name = "C36(b) our own epilogue edited, superslm.lib standing, must refuse (witness_sha must move)"
-    exe = BUILD_DIR / "semb_witness.exe"
+    # TE-89 (TE-88 review C-1): the graded BUILD_DIR's own manifest names
+    # its real semb_witness path -- never a hardcoded "semb_witness.exe",
+    # which does not exist on ubuntu-latest/macos-latest.
+    try:
+        exe = Path(read_artifact_manifest(BUILD_DIR)["semb_witness"])
+    except RuntimeError as ex:
+        leg_missing(name, f"could not resolve the built semb_witness path: {ex}")
+        return
     if not exe.exists():
         leg_missing(name, f"{exe} does not exist -- build it first")
         return
@@ -505,7 +644,7 @@ def eval_c31_i():
     scratch = SCRATCH_ROOT / "c31i_source_added_after_digest"
     try:
         copy_repo(scratch)
-        build_witness_in(scratch, scratch / "build")  # must-accept: green baseline
+        exe = build_witness_in(scratch, scratch / "build")  # must-accept: green baseline
     except Exception as ex:  # noqa: BLE001
         leg_result(name, "must-accept: a normal build is unaffected; must-reject: the post-build "
                          "re-verification fails with the drift status after an untracked header is "
@@ -518,10 +657,18 @@ def eval_c31_i():
     try:
         new_header.write_text("#pragma once\n#define SEMB_ADDED_AFTER_WITNESS_DIGEST 1\n",
                               encoding="utf-8")
+        # TE-89 (TE-88 review S-1): anchored on the `\n\nnamespace {` suffix
+        # -- the same anchor eval_c31_ii() already uses -- rather than the
+        # bare #include line alone. The bare line used to also match a
+        # comment in witness_main.cpp that quoted it verbatim, making the
+        # anchor non-unique; patch_text() now refuses a non-unique anchor
+        # regardless, but this leg no longer relies on that refusal never
+        # firing here in the first place.
         patch_text(
             witness_main,
-            '#include "superembedder/witness_abi.h"',
-            '#include "superembedder/witness_abi.h"\n#include "superembedder/added_after_witness_digest.h"',
+            '#include "superembedder/witness_abi.h"\n\nnamespace {',
+            '#include "superembedder/witness_abi.h"\n'
+            '#include "superembedder/added_after_witness_digest.h"\n\nnamespace {',
             "C31(i) source-added-after-digest include",
         )
     except Exception as ex:  # noqa: BLE001 -- the mutation itself was never applied
@@ -537,25 +684,45 @@ def eval_c31_i():
                                  capture_output=True, text=True)
     out = build_proc2.stdout + build_proc2.stderr
     # Mirrors c34_leg_d's own refinement (TE-71 O-2): the literal condition
-    # ("agrees": false, the post-build verifier's own drift signal) is
-    # distinct from the rc precondition, so a leg that merely observes a
+    # is distinct from the rc precondition, so a leg that merely observes a
     # nonzero rc for an unrelated reason cannot masquerade as this leg
-    # firing correctly.
-    found_expected_string = '"agrees": false' in out
-    passed = build_proc2.returncode != 0 and found_expected_string
+    # firing correctly. TE-89 (TE-88 review S-3): the primary condition is
+    # now the NAMED status semb_source_hash.py's cmd_verify() prints on
+    # disagreement -- SEMB_WITNESS_FOREIGN_BUILD, this target's own name
+    # for sec 4.4d item 1's drift (grep-able, matching every other named
+    # SEMB_* refusal in this project) -- with the JSON field kept as a
+    # secondary confirmation, since cmd_verify() always emits both
+    # together.
+    found_named_status = "SEMB_WITNESS_FOREIGN_BUILD" in out
+    found_json_field = '"agrees": false' in out
+    # TE-89 (TE-88 review S-4): the drifted binary must not survive the
+    # failed build (sec 4.4d item 1's own "before any executable exists to
+    # misbehave") -- `exe` is the SAME path build_witness_in() returned for
+    # the must-accept build above (the manifest is generated once, at
+    # configure, and this rebuild does not reconfigure), so it names the
+    # real artifact cmd_verify()'s own disagreement branch must have
+    # deleted.
+    stale_artifact_removed = not exe.exists()
+    passed = (build_proc2.returncode != 0 and found_named_status and found_json_field
+              and stale_artifact_removed)
     if passed:
-        observed = (f"rebuild correctly FAILED (rc={build_proc2.returncode}) with a drift status "
-                    f"after a header was added post-digest and the TU rebuilt without reconfiguring")
+        observed = (f"rebuild correctly FAILED (rc={build_proc2.returncode}) with the named "
+                    f"SEMB_WITNESS_FOREIGN_BUILD status after a header was added post-digest and "
+                    f"the TU rebuilt without reconfiguring; the drifted {exe} was removed and does "
+                    f"not survive the failed build")
     else:
-        observed = (f"FAIL (must-reject not met): the rebuild returned rc={build_proc2.returncode} "
-                    f"and 'agrees\": false' present={found_expected_string} after a new header was "
-                    f"added to the witness's own TU's include closure and the tree rebuilt WITHOUT "
-                    f"reconfiguring -- the semb_witness target carries no post-build "
-                    f"semb_verify_source_provenance() call at this tip, so nothing catches the "
-                    f"drift and the rebuild silently succeeds. Output tail: {out[-800:]}")
+        observed = (f"FAIL (must-reject not met): the rebuild returned rc={build_proc2.returncode}; "
+                    f"'SEMB_WITNESS_FOREIGN_BUILD' present={found_named_status}; 'agrees\": false' "
+                    f"present={found_json_field}; drifted artifact removed={stale_artifact_removed} "
+                    f"({exe}) after a new header was added to the witness's own TU's include "
+                    f"closure and the tree rebuilt WITHOUT reconfiguring -- the semb_witness target "
+                    f"carries no post-build semb_verify_source_provenance() call at this tip, so "
+                    f"nothing catches the drift and the rebuild silently succeeds. Output tail: "
+                    f"{out[-800:]}")
     leg_result(name, "must-accept: a normal build is unaffected; must-reject: the post-build "
-                     "re-verification fails with the drift status (\"agrees\": false, rc!=0) after "
-                     "an untracked header is added and the tree rebuilds without reconfiguring",
+                     "re-verification fails with the named SEMB_WITNESS_FOREIGN_BUILD status "
+                     "(rc!=0) AND deletes the drifted artifact, after an untracked header is added "
+                     "and the tree rebuilds without reconfiguring",
                observed, passed)
 
 
@@ -648,8 +815,12 @@ def eval_c31_ii():
 
         accept_digest = run_witness(g1_exe, artifact)  # must-accept: unswapped, computes as today
 
-        g1_lib = g1 / "build" / "superembedder.lib"
-        g2_lib = g2 / "build" / "superembedder.lib"
+        # TE-89 (TE-88 review C-1): each build directory's own manifest
+        # names its real `superembedder` archive path -- never a hardcoded
+        # "superembedder.lib", which does not exist on ubuntu-latest/
+        # macos-latest (libsuperembedder.a there).
+        g1_lib = Path(read_artifact_manifest(g1 / "build")["superembedder"])
+        g2_lib = Path(read_artifact_manifest(g2 / "build")["superembedder"])
         if not g1_lib.exists() or not g2_lib.exists():
             raise RuntimeError(f"expected static lib not found: g1={g1_lib.exists()} g2={g2_lib.exists()}")
         shutil.copy2(g2_lib, g1_lib)  # swap, no reconfigure
@@ -718,29 +889,30 @@ def _find_engine_perturbation_script() -> Optional[Path]:
 
 
 def eval_c36_a():
-    # TE-86 (D-SLM6157, sec 4.4d item 4): "your cell is the check that the
-    # script exists under tools/, runs its recipe against a scratch clone
-    # (never D:\SuperSLM), and reports witness_sha moved." RED AT THE TIP:
-    # the script does not exist yet (grepped -- no tools/*.py mentions
-    # EmbedEntry + forward_sites.cpp).
-    #
-    # CONTRACT THIS LEG REQUIRES OF THE SCRIPT (stated here because sec
-    # 4.4d leaves the script's own CLI/output undefined beyond its
-    # internal recipe -- this is the minimal, documented interface this
-    # check needs to grade it as a real oracle rather than by static
-    # reading alone; stated again in this seat's own handoff packet):
-    # invoked as `python <script> --scratch-root <dir>`, the script must
-    # (1) perform its whole clone/perturb/build/compare recipe entirely
-    # under <dir> (this check independently greps the script's own source
-    # to confirm it never references D:\SuperSLM as a clone target --
-    # literal-path safety, not merely trusting --scratch-root is honored),
-    # and (2) print a final stdout line matching `^witness_sha_moved:
-    # (true|false)$`.
-    name = "C36(a) engine arithmetic change confined to a non-inline .cpp must refuse -- promoted script"
+    # TE-89 (TE-88 review S-2, ruled D-SLM6191): this leg used to RUN the
+    # script's own whole clone/build/install recipe as part of `ctest` --
+    # sec 4.4d item 4 rules that out by name ("Not a per-push CI leg -- it
+    # needs a fresh engine clone, the same reason C35's two-installation
+    # construction is not one -- run at every pin bump, alongside C35"),
+    # and D-SLM6161 holds hosted CI scarce. Running it anyway meant every
+    # push performed at least two network clones of the engine, two engine
+    # builds and installs, and two scratch SuperEmbedder builds, on three
+    # runners (TE-88 review, executed: ~50 MB of scratch state and a real
+    # `git clone` in the leg's own captured LastTest.log). D-SLM6191's
+    # disposition: unwire the recipe from ctest; this leg checks that the
+    # script EXISTS and that its own argparse/output CONTRACT matches what
+    # callers (this leg, README.md's own Pin bump procedure) depend on --
+    # never that the recipe still produces witness_sha_moved: true, which
+    # is exactly what running it here would cost. The recipe itself runs at
+    # every pin bump (README.md), not under ctest.
+    name = ("C36(a) engine arithmetic change confined to a non-inline .cpp must refuse -- promoted "
+             "script's EXISTENCE and CONTRACT only (D-SLM6191: the recipe itself is unwired from "
+             "ctest and runs at every pin bump instead, see README.md's own Pin bump procedure)")
     script = _find_engine_perturbation_script()
     if script is None:
-        leg_result(name, "a script under tools/ exists, runs D-SLM6075's own recipe against a "
-                         "SCRATCH clone (never D:\\SuperSLM), and reports witness_sha_moved: true",
+        leg_result(name, "a script under tools/ exists, its own --help documents --scratch-root, "
+                         "it never references D:\\SuperSLM as a clone target, and its source prints "
+                         "a final witness_sha_moved: (true|false) line",
                   "FAIL: no script under tools/ matches D-SLM6075's own recipe markers (EmbedEntry "
                   "+ forward_sites.cpp) -- none exists yet", False)
         return
@@ -748,26 +920,31 @@ def eval_c36_a():
     script_text = script.read_text(encoding="utf-8", errors="ignore")
     if "D:\\SuperSLM" in script_text or "D:/SuperSLM" in script_text:
         leg_result(name, "the script never references D:\\SuperSLM as a clone target",
-                  f"FAIL: {script} literally references D:\\SuperSLM -- this leg refuses to run a "
+                  f"FAIL: {script} literally references D:\\SuperSLM -- this leg refuses to trust a "
                   f"script that could target the real engine checkout in place", False)
         return
 
-    scratch_root = SCRATCH_ROOT / "c36a_engine_perturbation"
-    rmtree(scratch_root)
-    scratch_root.mkdir(parents=True)
-    proc = subprocess.run([sys.executable, str(script), "--scratch-root", str(scratch_root)],
-                          capture_output=True, text=True, cwd=str(REPO_ROOT))
-    out = proc.stdout + proc.stderr
-    moved = "witness_sha_moved: true" in out
-    passed = proc.returncode == 0 and moved
-    leg_result(name, "a script under tools/ exists, runs D-SLM6075's own recipe against a SCRATCH "
-                     "clone (never D:\\SuperSLM), and reports witness_sha_moved: true",
-               f"rc={proc.returncode}; witness_sha_moved: true present={moved}; output tail: "
-               f"{out[-800:]}", passed)
+    # Contract check only -- no clone, no engine build, no install. `--help`
+    # exercises the script's own argparse (a real, if cheap, execution --
+    # StandardsDocument.md sec 5.4: verified at source AND by execution,
+    # never by reading alone) and confirms it still documents
+    # --scratch-root; a static scan of the source confirms the documented
+    # final output line's own shape is still present.
+    help_proc = subprocess.run([sys.executable, str(script), "--help"],
+                               capture_output=True, text=True, cwd=str(REPO_ROOT))
+    help_out = help_proc.stdout + help_proc.stderr
+    has_scratch_root_arg = "--scratch-root" in help_out
+    has_output_contract = bool(re.search(r"witness_sha_moved:\s*\{", script_text))
+    passed = help_proc.returncode == 0 and has_scratch_root_arg and has_output_contract
+    leg_result(name, "--help exits 0 and documents --scratch-root; the source contains the "
+                     "documented final `witness_sha_moved: {...}` print",
+               f"--help rc={help_proc.returncode}; --scratch-root documented={has_scratch_root_arg}; "
+               f"witness_sha_moved output-contract pattern present={has_output_contract}; help tail: "
+               f"{help_out[-400:]}", passed)
 
 
 def main(argv: List[str]) -> int:
-    global BUILD_DIR
+    global BUILD_DIR, ENGINE_PREFIX, SCRATCH_ROOT, CXX_COMPILER
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", default=None,
                      help="TE-80 F-6: the real build directory to grade (CMake's own "
@@ -776,7 +953,33 @@ def main(argv: List[str]) -> int:
     args = ap.parse_args(argv)
     if args.build_dir:
         BUILD_DIR = Path(args.build_dir).resolve()
-    print(f"witness_structural_matrix: grading build directory {BUILD_DIR}", file=sys.stderr)
+
+    # TE-89 (TE-88 review M-5): SCRATCH_ROOT, ENGINE_PREFIX and
+    # CXX_COMPILER are now derived from the REAL build directory being
+    # graded -- its own CMakeCache.txt is the ground truth for which
+    # compiler and which engine prefix it was actually configured with.
+    # Nesting SCRATCH_ROOT under BUILD_DIR also removes the cross-build
+    # race a shared REPO_ROOT/build/_scratch/witness_matrix had between a
+    # concurrent build/msvc and build/clang run. The REPO_ROOT-relative
+    # defaults declared at module scope remain the fallback for a manual
+    # invocation whose BUILD_DIR has never been configured (no
+    # CMakeCache.txt to read yet) -- matching BUILD_DIR's own established
+    # fallback convention (TE-80 F-6) exactly.
+    cache = _read_cmake_cache(BUILD_DIR)
+    if cache:
+        SCRATCH_ROOT = BUILD_DIR / "_scratch" / "witness_matrix"
+        cache_prefix = cache.get("CMAKE_PREFIX_PATH")
+        if cache_prefix:
+            # CMAKE_PREFIX_PATH can be a ";"-separated list; the engine
+            # install is the only entry this project's own configure ever
+            # sets it to (cmake -DCMAKE_PREFIX_PATH=<engine prefix>).
+            ENGINE_PREFIX = Path(cache_prefix.split(";")[0])
+        cache_compiler = cache.get("CMAKE_CXX_COMPILER")
+        if cache_compiler:
+            CXX_COMPILER = cache_compiler
+    print(f"witness_structural_matrix: grading build directory {BUILD_DIR} "
+          f"(engine_prefix={ENGINE_PREFIX}, cxx_compiler={CXX_COMPILER or '<cmake default>'}, "
+          f"scratch_root={SCRATCH_ROOT})", file=sys.stderr)
 
     eval_c31_i()
     eval_c31_ii()

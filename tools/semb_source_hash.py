@@ -32,6 +32,15 @@ two ways:
 Both subcommands share the digest formula in provenance_lib.digest_members so
 the two readings cannot drift apart independently of the real inputs.
 
+TE-89 (TE-88 review S-3, S-4): `verify`'s own disagreement branch prints a
+caller-supplied named status (`--status-name`, default SEMB_SOURCE_SET_DRIFT)
+as both a JSON field and a bare grep-able line -- sec 4.4d requires the drift
+to fail "by name," and a JSON field alone is not one. On disagreement it also
+deletes the target's own real build output (resolved from the same `ninja -t
+query` this subcommand already runs) so a drifted artifact does not survive a
+failed post-build re-verification for a later `ctest` re-run, manual
+invocation, or copy-out step to pick up.
+
 FIX ROUND (TE-65, F-1): the prior `configure` computed its covered set as
 `SOURCES union rglob(HEADER_ROOTS)` and demanded byte-for-byte agreement with
 the real compiled closure at verify time. That is not what Sec4.4 specifies
@@ -341,23 +350,49 @@ def cmd_verify(args: argparse.Namespace) -> int:
         return 1
     sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
 
+    _OBJECT_SUFFIXES = (".obj", ".o")
+
+    # TE-89 (TE-88 review C-1, found by real execution under WSL Ubuntu/
+    # GCC 13.4: the two-query design below assumed CMake's own Ninja
+    # generator ALWAYS wraps a target behind a "phony" alias pointing at a
+    # differently-named real output file (true for a STATIC LIBRARY target,
+    # whose bare name "superembedder" differs from its real archive name
+    # "libsuperembedder.a"/"superembedder.lib"). On Linux, an EXECUTABLE
+    # target whose bare CMake name and real output file are the IDENTICAL
+    # string ("semb_witness", no platform suffix) gets no phony alias at
+    # all -- `ninja -t query semb_witness` returns the LINK STEP's own
+    # inputs directly, and the second query this code used to always run
+    # would instead query the first (misidentified) input -- the witness's
+    # own COMPILE step's object file -- and find no further objects,
+    # reporting SEMB_SOURCE_NO_OBJECTS on a perfectly healthy build.
     phony_out = _ninja_query(build, args.ninja, args.target)
-    lib_targets = _parse_query_inputs(phony_out)
-    if not lib_targets:
+    first_level = _parse_query_inputs(phony_out)
+    if not first_level:
         print(json.dumps({"error": "SEMB_SOURCE_TARGET_NOT_FOUND", "target": args.target}))
         return 1
-    lib_out = _ninja_query(build, args.ninja, lib_targets[0])
+    if any(s.endswith(_OBJECT_SUFFIXES) for s in first_level):
+        # The target's own bare name IS the real link-step build edge
+        # already -- no phony alias exists to hop through.
+        target_output = (build / args.target).resolve()
+        link_inputs = first_level
+    else:
+        # The target name is a phony alias for a DIFFERENTLY-named real
+        # file (a static library's own archive name, or a Windows
+        # executable's own ".exe"-suffixed name) -- resolve the real file
+        # (also the artifact S-4's own stale-artifact deletion below
+        # deletes on disagreement), then query ITS OWN inputs.
+        target_output = (build / first_level[0]).resolve()
+        link_inputs = _parse_query_inputs(_ninja_query(build, args.ninja, first_level[0]))
     # TE-87: a target that LINKS (an executable, e.g. semb_witness) lists
-    # its linked LIBRARIES among this query's own "input:" block, not only
-    # its own compiled object files (a target that only ARCHIVES, e.g.
+    # its linked LIBRARIES among its own "input:" block, not only its own
+    # compiled object files (a target that only ARCHIVES, e.g.
     # superembedder, does not). A .lib/.a is not a translation unit --
     # `ninja -t deps` has no header-dependency entry for it, and its OWN
     # source closure is that library's own producer's own concern (already
     # covered independently by ITS OWN semb_compute_source_provenance()
     # call, where one exists) -- so only genuine compiled-object entries
     # are kept here.
-    _OBJECT_SUFFIXES = (".obj", ".o")
-    obj_files = [s for s in _parse_query_inputs(lib_out) if s.endswith(_OBJECT_SUFFIXES)]
+    obj_files = [s for s in link_inputs if s.endswith(_OBJECT_SUFFIXES)]
     if not obj_files:
         print(json.dumps({"error": "SEMB_SOURCE_NO_OBJECTS", "target": args.target}))
         return 1
@@ -395,16 +430,51 @@ def cmd_verify(args: argparse.Namespace) -> int:
     # path-invariant, matching engine_tree_sha's own stated invariant.
 
     recomputed = digest_members(members)
+    agrees = recomputed == sidecar["semb_source_sha"]
     result = {
         "configure_time_semb_source_sha": sidecar["semb_source_sha"],
         "recomputed_semb_source_sha": recomputed,
-        "agrees": recomputed == sidecar["semb_source_sha"],
+        "agrees": agrees,
+        # TE-89 (TE-88 review S-3): §4.4d requires the drift to fail the
+        # build "by name" -- a JSON field alone ("agrees": false) is not a
+        # name a consumer can grep for the way every other refusal in this
+        # project is (SEMB_SOURCE_SET_DRIFT, SEMB_PIN_UNSAFE_BUILD_DIR,
+        # ...). `status` carries the caller-supplied name on disagreement,
+        # None on agreement -- and the SAME name is also printed as a bare
+        # line below so a caller need not parse JSON to find it.
+        "status": None if agrees else args.status_name,
         "real_file_count": len(members),
         "configure_time_file_count": len(sidecar["covered_files"]),
         "out_of_root_files_excluded": out_of_root,
     }
+    if not agrees:
+        # TE-89 (TE-88 review S-4): §4.4d item 1's own "before any
+        # executable exists to misbehave" -- this verify step runs
+        # POST_BUILD, after the drifted target has already been linked, so
+        # "the build failed" and "the drifted output still exists on disk"
+        # were both true at once. A subsequent ctest re-run, a manual
+        # invocation, or a copy-out step reads the drifted artifact and has
+        # no way to know it is drifted. Deleting the target's own real
+        # output on disagreement closes that window: only a build that
+        # re-links, and therefore re-verifies, leaves an artifact behind.
+        try:
+            if target_output.exists():
+                target_output.unlink()
+                result["stale_artifact_removed"] = True
+            else:
+                result["stale_artifact_removed"] = False
+        except OSError as ex:
+            result["stale_artifact_removed"] = False
+            result["stale_artifact_removal_error"] = str(ex)
+        result["stale_artifact_path"] = str(target_output)
     print(json.dumps(result))
-    return 0 if result["agrees"] else 2
+    if not agrees:
+        # A bare, grep-able status line -- CMake's add_custom_command()
+        # COMMENT and this project's own build logs are read as text, not
+        # parsed as JSON, and every other named SEMB_* refusal in this
+        # project is findable this way.
+        print(args.status_name)
+    return 0 if agrees else 2
 
 
 def main() -> int:
@@ -439,6 +509,12 @@ def main() -> int:
     v.add_argument("--ninja", default="ninja")
     v.add_argument("--target", required=True)
     v.add_argument("--sidecar", required=True)
+    v.add_argument("--status-name", default="SEMB_SOURCE_SET_DRIFT",
+                    help="TE-89 (TE-88 review S-3): the named SEMB_* status printed and put in the "
+                         "result JSON's own 'status' field on disagreement -- SEMB_SOURCE_SET_DRIFT "
+                         "for the superembedder library (C34, the default, unchanged), "
+                         "SEMB_WITNESS_FOREIGN_BUILD for the semb_witness executable (C31(i), sec "
+                         "4.4d item 1).")
     v.set_defaults(func=cmd_verify)
 
     args = ap.parse_args()

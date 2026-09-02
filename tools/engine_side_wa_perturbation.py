@@ -7,15 +7,24 @@ sec 8, C36 row (a)) -- to a named, re-runnable script. The construction
 itself is already proven, executed twice, real, PASS both times (D-SLM6075);
 what this script adds is durability, not a new proof.
 
-RECIPE (unchanged from D-SLM6075's own manual run, both executed this
-session against the tip's own build log,
-`Claude/Brunel/te78-u0b-witness-composition-2026-09-02.md` sec 3):
+RECIPE (D-SLM6075's own manual run, executed against the tip's own build
+log, `Claude/Brunel/te78-u0b-witness-composition-2026-09-02.md` sec 3, plus
+a must-accept step TE-89 adds -- TE-88 review S-8):
 
   1. Build a BASELINE: clone the pinned engine tag (this repo's own
      superslm.lock, `tag=`) into a scratch directory, install it, and
      build+run a scratch `semb_witness` against it -- an unperturbed
      reading.
-  2. Build a MUTANT: clone the SAME pinned tag into a SECOND scratch
+  2. Build a SECOND, independently cloned+built+installed BASELINE of the
+     SAME pinned tag (TE-89, S-8's own must-accept) and require its
+     witness_sha to equal the first baseline's, exactly. Without this,
+     `witness_sha_moved: true` in step 4 below is equally consistent with
+     "the perturbation moved the digest" and with "any second build moves
+     the digest" -- ordinary, undetected nondeterminism -- and the leg
+     could never fail on the property it exists to catch. This step
+     raises (an infrastructure-shaped failure, not a printed
+     witness_sha_moved reading) if the two baselines disagree.
+  3. Build a MUTANT: clone the SAME pinned tag into a THIRD scratch
      directory, perturb ONE non-inline arithmetic site --
      `EmbedEntry` in `src/forward/forward_sites.cpp`, D-SLM6075's own
      site -- commit the edit, then force-move the clone's own LOCAL tag
@@ -27,10 +36,11 @@ session against the tip's own build log,
      clone the tracked repo never sees) so the CONSTRUCTION under test
      (does witness_sha move) can be isolated from the guard, which is a
      separate, correctly-firing check on a genuinely dirty clone.
-  3. Install the mutant via `pin_superslm.py --reuse-clone`, and
+  4. Install the mutant via `pin_superslm.py --reuse-clone`, and
      build+run a scratch `semb_witness` against it -- the mutant
      reading.
-  4. Compare the two `witness_sha` values and print the verdict.
+  5. Compare the mutant reading against the (now must-accept-commissioned)
+     baseline and print the verdict.
 
 NEVER TOUCHES THE TRACKED, LOCAL SUPERSLM ENGINE CHECKOUT this project
 treats as read-only. Every clone, build, and install in this recipe
@@ -48,14 +58,16 @@ USAGE
 Prints, as its final stdout line: `witness_sha_moved: true` (the expected,
 correct reading -- the engine-side edit is visible to witness_sha) or
 `witness_sha_moved: false` (a real product defect: the edit is invisible).
-Exit code reflects whether the RECIPE completed (0 = both readings were
-taken and compared, whatever the comparison found; nonzero = an
-infrastructure failure -- a clone, build, or install step itself failed,
-never a reading of "false").
+Exit code reflects whether the RECIPE completed (0 = the must-accept held
+and both readings were taken and compared, whatever the comparison found;
+nonzero = an infrastructure failure -- a clone, build, or install step
+itself failed, OR the must-accept step failed (two unperturbed baselines
+disagreed) -- never a reading of "false").
 """
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import stat
 import subprocess
@@ -246,13 +258,34 @@ def generate_synthetic_artifact(*, lock: Path, out_path: Path, workdir: Path,
     run(cmd)
 
 
+def read_artifact_manifest(build_dir: Path) -> dict:
+    """TE-89 (TE-88 review C-1): matches
+    tests/witness_structural_matrix.py's own read_artifact_manifest() --
+    CMakeLists.txt's own file(GENERATE) call writes
+    `<build_dir>/semb_artifact_manifest.json` at configure time from
+    $<TARGET_FILE:...>, CMake's own always-correct-for-the-platform
+    resolution of a target's real output path. This is what lets
+    build_witness() below stop hardcoding "semb_witness.exe" -- a name
+    that does not exist on ubuntu-latest/macos-latest, where this script
+    also runs (at every pin bump, not only on Windows)."""
+    manifest_path = build_dir / "semb_artifact_manifest.json"
+    if not manifest_path.exists():
+        raise RuntimeError(
+            f"artifact manifest not found: {manifest_path} -- this build directory's own configure "
+            f"did not generate it (CMakeLists.txt's own file(GENERATE) call, "
+            f"semb_artifact_manifest.json)"
+        )
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
 def build_witness(*, prefix: Path, lock: Path, build_dir: Path, cmake: str, ninja: str) -> Path:
     rmtree(build_dir)
     run([cmake, "-G", "Ninja", "-S", str(REPO_ROOT), "-B", str(build_dir),
          "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_MAKE_PROGRAM={ninja}",
          f"-DCMAKE_PREFIX_PATH={prefix}", f"-DSEMB_ENGINE_LOCK_FILE={lock}"])
+    manifest = read_artifact_manifest(build_dir)
+    exe = Path(manifest["semb_witness"])
     run([cmake, "--build", str(build_dir), "--target", "semb_witness"])
-    exe = build_dir / "semb_witness.exe"
     if not exe.exists():
         raise RuntimeError(f"build reported success but {exe} does not exist")
     return exe
@@ -296,8 +329,10 @@ def main(argv: list[str]) -> int:
     log(f"pinned tag (from {tracked_lock}): {tag}")
 
     baseline_dir = scratch_root / "baseline"
+    baseline2_dir = scratch_root / "baseline2"
     mutant_dir = scratch_root / "mutant"
     rmtree(baseline_dir)
+    rmtree(baseline2_dir)
     rmtree(mutant_dir)
 
     # -------------------------------------------------------------- baseline --
@@ -317,6 +352,40 @@ def main(argv: list[str]) -> int:
 
     baseline_sha = run_witness(baseline_exe, artifact_path)
     log(f"baseline witness_sha = {baseline_sha}")
+
+    # ------------------------------------------------- baseline2 (must-accept) --
+    # TE-89 (TE-88 review S-8): `differ=True` between baseline and mutant
+    # decides a GATE cell (C36(a)), and nothing before this round
+    # established that two UNPERTURBED builds agree -- without that, a
+    # differing mutant reading is equally consistent with "the perturbation
+    # moved the digest" (the property this script exists to catch) and
+    # with "any second build moves the digest" (ordinary, undetected
+    # nondeterminism), and the leg could never fail. A second,
+    # independently cloned, built, and installed copy of the SAME pinned
+    # tag -- never touched by perturb_embed_entry() -- must reproduce the
+    # first baseline's own witness_sha exactly before the mutant reading
+    # below is trusted either way.
+    log("=== baseline2: a SECOND, independently cloned+built+installed unperturbed pinned engine "
+        "(must-accept) ===")
+    baseline2_lock = baseline2_dir / "superslm.lock"
+    write_scratch_lock(baseline2_lock, tag)
+    baseline2_prefix = baseline2_dir / "engine_install"
+    pin_engine(lock=baseline2_lock, prefix=baseline2_prefix, workdir=baseline2_dir / "engine_workdir",
+               cmake=cmake, ninja=ninja, source=engine_source)
+    baseline2_exe = build_witness(prefix=baseline2_prefix, lock=baseline2_lock,
+                                   build_dir=baseline2_dir / "semb_build", cmake=cmake, ninja=ninja)
+    baseline2_sha = run_witness(baseline2_exe, artifact_path)
+    log(f"baseline2 witness_sha = {baseline2_sha}")
+    if baseline2_sha != baseline_sha:
+        raise RuntimeError(
+            f"MUST-ACCEPT FAILED: two independently cloned, built, and installed UNPERTURBED "
+            f"copies of the SAME pinned engine tag ({tag}) produced DIFFERENT witness_sha values "
+            f"(baseline={baseline_sha}, baseline2={baseline2_sha}). Without this holding, a "
+            f"differing mutant reading below is equally consistent with 'the perturbation moved "
+            f"the digest' and with 'any second build moves the digest' -- this script's own "
+            f"witness_sha_moved verdict cannot be trusted either way until the must-accept holds."
+        )
+    log("baseline2 == baseline -- must-accept holds; the mutant reading below is now meaningful")
 
     # ---------------------------------------------------------------- mutant --
     log("=== mutant: EmbedEntry perturbed (D-SLM6075's own site) ===")

@@ -26,16 +26,24 @@ severity, not a G0-blocking gap.
 RE-PINNED, TE-87 (sec 4.4d's own Note: "refuse by name for each"):
 `pin_superslm.py` now validates `--reuse-clone` directly, before
 `resolve_commit()` ever runs (`_validate_reuse_clone()`), and refuses by
-NAME for each of the two members this file constructs --
+NAME for each of the two members this file constructed at TE-87 --
 `SEMB_PIN_REUSE_CLONE_NOT_FOUND` for a missing directory,
 `SEMB_PIN_REUSE_CLONE_TAG_MISMATCH` for a present directory that does not
 carry the pinned tag. The pin below moved with the behavior it pins, in
 the same round that changed the behavior -- the generic `command failed`
 wrapper this file pinned at TE-86 no longer appears on either leg.
 
-Usage: `python tests/pin_superslm_reuse_clone_invalid_test.py` runs both
-legs and exits 0 only if both observed behaviors match what this file
-pins.
+RE-PINNED AGAIN, TE-89 (TE-88 review M-3): `SEMB_PIN_REUSE_CLONE_TAG_MISMATCH`
+also fired for a directory that EXISTS but was never a git repository at
+all -- a condition distinct from "a real checkout that lacks the pinned
+tag." `_validate_reuse_clone()` now probes `git rev-parse --git-dir`
+first and refuses SEMB_PIN_REUSE_CLONE_NOT_A_REPO for that case
+specifically; `leg_not_a_git_repo_directory()` below constructs it and
+pins the corrected, separate status.
+
+Usage: `python tests/pin_superslm_reuse_clone_invalid_test.py` runs all
+three legs and exits 0 only if every observed behavior matches what this
+file pins.
 """
 from __future__ import annotations
 
@@ -93,6 +101,24 @@ def leg_missing_directory() -> tuple[bool, str]:
     return _assert_named_refusal(proc, "SEMB_PIN_REUSE_CLONE_NOT_FOUND")
 
 
+def leg_not_a_git_repo_directory() -> tuple[bool, str]:
+    """TE-89 (TE-88 review M-3): a directory that EXISTS but was never a
+    git repository at all -- distinct from leg_wrong_tag_directory()'s own
+    directory below, which IS a real git repository, just not one carrying
+    the pinned tag. Before TE-89, `_validate_reuse_clone()`'s own `git
+    rev-parse <tag>^{commit}` call reported SEMB_PIN_REUSE_CLONE_TAG_MISMATCH
+    for both conditions identically; this leg pins the corrected, separate
+    status."""
+    target = SCRATCH / "not_a_repo"
+    _rmtree(target)
+    target.mkdir(parents=True)
+    (target / "unrelated.txt").write_text(
+        "TE-89 M-3 scratch directory -- exists, but is never `git init`'d.\n", encoding="utf-8"
+    )
+    proc = _run_pin(target, SCRATCH / "prefix_not_a_repo")
+    return _assert_named_refusal(proc, "SEMB_PIN_REUSE_CLONE_NOT_A_REPO")
+
+
 def leg_wrong_tag_directory() -> tuple[bool, str]:
     target = SCRATCH / "wrong_tag_repo"
     _rmtree(target)
@@ -115,6 +141,8 @@ def main(argv: list[str]) -> int:
     SCRATCH.mkdir(parents=True, exist_ok=True)
     legs = [
         ("--reuse-clone against a MISSING directory", leg_missing_directory),
+        ("--reuse-clone against a PRESENT directory that is not a git repository at all",
+         leg_not_a_git_repo_directory),
         ("--reuse-clone against a PRESENT directory at the wrong tag/commit", leg_wrong_tag_directory),
     ]
     all_passed = True

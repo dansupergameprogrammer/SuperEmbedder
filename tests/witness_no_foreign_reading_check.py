@@ -29,26 +29,37 @@ token inside a comment or a string literal does not false-positive.
      send*/recv*, POSIX popen, the Win32 named-pipe family, or
      WSAStartup.
 
-Any hit refuses. Two constructions, both real, both fired by this
-module's own run_construction() (shared with
-tests/witness_structural_matrix.py's C31(iv) and C36(e) legs, which
-import it rather than re-implementing it -- sec 8's own framing: one
-property, two cell names, one shared implementation):
+Any hit refuses. Constructions, all real, all fired by this module's own
+run_construction() (shared with tests/witness_structural_matrix.py's
+C31(iv) and C36(e) legs, which import it rather than re-implementing it --
+sec 8's own framing: one property, two cell names, one shared
+implementation):
 
   MUST-ACCEPT -- the tip's own witness_main.cpp: zero hits (confirmed by
   reading, this session and TE-84's own; this module now makes it a
   check that can fail rather than a claim nobody runs).
-  MUST-REJECT -- a scratch COPY of witness_main.cpp (never the tracked
-  file) with one line inserted: a getenv("SEMB_WITNESS_SHA_OVERRIDE")
-  call whose result is assigned into the printed digest. The check must
-  flag it, by the getenv rule specifically.
+  MUST-REJECT, one per declared rule class (TE-89, TE-88 review S-7: only
+  getenv had one before this round -- the other two declared classes had
+  never been shown able to fire):
+    - getenv -- a scratch COPY with one line inserted:
+      getenv("SEMB_WITNESS_SHA_OVERRIDE") assigned into the printed
+      digest.
+    - file_open -- a scratch COPY opening a path DERIVED from model_path
+      (a sidecar file), never model_path itself -- the exact shape TE-89
+      found the carve-out (below) wrongly exempting when it was
+      evaluated over the whole LINE rather than the call's own argument.
+    - socket_or_ipc -- a scratch COPY calling socket(...).
+  MUST-ACCEPT regression (TE-89, S-7) -- a scratch COPY opening
+  model_path.c_str() ITSELF (the carve-out's own positive case) must
+  stay unflagged, confirming the argument-scoped carve-out below did not
+  become "never exempt anything."
 
 THIS CELL IS GREEN AT THE TIP BY DESIGN -- the property already holds --
-and both of its constructions fire now (unlike C31(i)/C31(ii)/C36(a),
-which are red at this tip for a real, named reason).
+and every one of its constructions fires now (unlike C31(i)/C31(ii)/
+C36(a), which are red at this tip for a real, named reason).
 
 Usage: `python tests/witness_no_foreign_reading_check.py --selftest` runs
-both constructions and exits 0 only if both fire correctly.
+every construction above and exits 0 only if all of them fire correctly.
 `python tests/witness_no_foreign_reading_check.py <file.cpp> ...` scans
 the given file(s) directly and exits 1 if any violation is found, 0
 otherwise -- used to grade an arbitrary file (e.g. a future W-Q
@@ -65,10 +76,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 WITNESS_MAIN = REPO_ROOT / "src" / "witness" / "witness_main.cpp"
 
 GETENV_PATTERN = re.compile(r"\b(?:std::)?getenv\s*\(")
+# TE-89 (TE-88 review S-7): every alternative now matches THROUGH its own
+# call's opening '(' (the constructor form gains `\s*\w*\s*\(` to consume
+# an optional local-variable name, e.g. `std::ifstream sidecar(`) --
+# find_foreign_reading_violations() uses the match's own end position to
+# locate and extract the call's real argument list, rather than treating
+# the carve-out as a whole-LINE substring test.
 FILE_OPEN_PATTERN = re.compile(
     r"\b(?:fopen|_wfopen|CreateFileA|CreateFileW)\s*\("
     r"|::open\s*\("
-    r"|\bstd::(?:ifstream|ofstream|fstream)\b"
+    r"|\bstd::(?:ifstream|ofstream|fstream)\b\s*\w*\s*\("
 )
 SOCKET_IPC_PATTERN = re.compile(
     r"\b(?:socket|connect|bind|listen|accept|send|sendto|recv|recvfrom|popen|"
@@ -79,6 +96,13 @@ SOCKET_IPC_PATTERN = re.compile(
 # 3's own carve-out: a file-open call against THIS path is not a foreign
 # read. Named by the variable witness_main.cpp itself uses.
 CLI_SUPPLIED_PATH_TOKEN = "model_path"
+# TE-89 (TE-88 review S-7): the carve-out exempts a file-open call whose
+# FIRST ARGUMENT, trimmed, is exactly one of these two spellings -- never a
+# call whose argument merely CONTAINS the token (`std::string(model_path) +
+# ".sidecar"` builds a DIFFERENT path and is not exempt) and never a call on
+# a line that merely mentions an unrelated identifier containing the
+# substring (the old whole-line check's other false-negative shape).
+_CLI_SUPPLIED_PATH_EXEMPT_ARGS = (CLI_SUPPLIED_PATH_TOKEN, f"{CLI_SUPPLIED_PATH_TOKEN}.c_str()")
 
 
 @dataclass(frozen=True)
@@ -173,6 +197,46 @@ def _strip_comments_and_strings(source: str) -> str:
     return "".join(out)
 
 
+def _match_paren_span(text: str, open_idx: int) -> int:
+    """Returns the index one past the matching ')' for the '(' at
+    `open_idx` in `text`. `text` must already be comment/string-blanked
+    (`_strip_comments_and_strings`'s own output) so a paren inside a
+    string literal or a comment cannot throw off the depth count. Raises
+    ValueError if the parens never balance -- a construction this scan
+    cannot parse is reported as a violation by the caller rather than
+    silently waved through (see find_foreign_reading_violations below)."""
+    assert text[open_idx] == "("
+    depth = 0
+    i = open_idx
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    raise ValueError(f"unbalanced parentheses starting at offset {open_idx}")
+
+
+def _first_top_level_argument(arg_text: str) -> str:
+    """The text of a call's FIRST argument -- up to the first comma at
+    paren-nesting depth 0 (a nested call's own commas, e.g.
+    `f(g(a, b), c)`, do not split the first argument early), or the whole
+    text when there is no such comma (a single-argument call)."""
+    depth = 0
+    for i, c in enumerate(arg_text):
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        elif c == "," and depth == 0:
+            return arg_text[:i]
+    return arg_text
+
+
 def find_foreign_reading_violations(path: Path) -> list[ForeignReadingViolation]:
     """Every forbidden call in `path`, resolved as above. Raises
     ValueError if `path` does not exist -- a missing file must never read
@@ -187,29 +251,69 @@ def find_foreign_reading_violations(path: Path) -> list[ForeignReadingViolation]
     stripped_lines = stripped.splitlines()
     raw_lines = raw.splitlines()
     violations: list[ForeignReadingViolation] = []
+
+    # getenv and socket/IPC carry no carve-out at all -- a per-line scan is
+    # sufficient and stays unchanged.
     for lineno, line in enumerate(stripped_lines, start=1):
         raw_line = raw_lines[lineno - 1] if lineno - 1 < len(raw_lines) else ""
         if GETENV_PATTERN.search(line):
             violations.append(ForeignReadingViolation(path, lineno, "getenv", raw_line))
         if SOCKET_IPC_PATTERN.search(line):
             violations.append(ForeignReadingViolation(path, lineno, "socket_or_ipc", raw_line))
-        if FILE_OPEN_PATTERN.search(line):
-            # sec 4.4d item 3's own carve-out: a file-open call against the
-            # CLI-supplied artifact path is not a foreign read -- flagged
-            # only when the CLI-supplied path token is ABSENT from the
-            # same line.
-            if CLI_SUPPLIED_PATH_TOKEN not in line:
-                violations.append(ForeignReadingViolation(path, lineno, "file_open", raw_line))
+
+    # TE-89 (TE-88 review S-7): the file-open rule's own carve-out used to
+    # be evaluated over the WHOLE LINE (`CLI_SUPPLIED_PATH_TOKEN not in
+    # line`), which exempted a call whenever the token appeared ANYWHERE
+    # on the line -- including inside an expression that builds a
+    # DIFFERENT path from it (`std::ifstream sidecar(std::string(model_path)
+    # + ".sidecar")` reads a different file and was wrongly exempted) and a
+    # call on a line that merely mentions an unrelated identifier whose
+    # name happens to contain the substring. This scans the whole
+    # comment/string-blanked TEXT (a call's own argument list is not
+    # bounded to one line in general, though this project's own style
+    # keeps it there) and requires the call's FIRST ARGUMENT, trimmed, to
+    # equal EXACTLY `model_path` or `model_path.c_str()` before exempting
+    # it -- an expression that merely contains that identifier is flagged.
+    for m in FILE_OPEN_PATTERN.finditer(stripped):
+        open_idx = m.end() - 1
+        lineno = stripped.count("\n", 0, m.start()) + 1
+        raw_line = raw_lines[lineno - 1] if lineno - 1 < len(raw_lines) else ""
+        try:
+            close_idx = _match_paren_span(stripped, open_idx)
+        except ValueError:
+            # A call this scan cannot parse is reported, not exempted --
+            # never waved through because the carve-out could not be
+            # evaluated.
+            violations.append(ForeignReadingViolation(path, lineno, "file_open", raw_line))
+            continue
+        first_arg = _first_top_level_argument(stripped[open_idx + 1:close_idx - 1]).strip()
+        if first_arg in _CLI_SUPPLIED_PATH_EXEMPT_ARGS:
+            continue
+        violations.append(ForeignReadingViolation(path, lineno, "file_open", raw_line))
+
+    violations.sort(key=lambda v: v.line)
     return violations
 
 
+def _inject(text: str, anchor: str, insert: str) -> str:
+    if anchor not in text:
+        raise ValueError("anchor text not found")
+    return text.replace(anchor, anchor + "\n" + insert, 1)
+
+
 def run_construction() -> tuple[bool, str]:
-    """Both constructions, real, executed: MUST-ACCEPT against the tip's
-    own witness_main.cpp, MUST-REJECT against a scratch copy with one
-    getenv(...) line inserted and assigned into the printed digest.
-    Returns (passed, message) -- passed True only if BOTH fire correctly.
-    Shared by this module's own --selftest and by
-    tests/witness_structural_matrix.py's C31(iv)/C36(e) legs."""
+    """MUST-ACCEPT against the tip's own witness_main.cpp, plus one
+    MUST-REJECT construction per rule class this module declares (TE-89,
+    TE-88 review S-7: the file-open and socket/IPC classes previously had
+    no must-reject at all -- only getenv did, which meant only one of
+    three declared classes had ever been shown able to fire), plus a
+    MUST-ACCEPT regression check that the file-open carve-out's own
+    positive case (a call that genuinely opens model_path itself) still
+    exempts correctly now that the carve-out is argument-scoped rather
+    than line-scoped. Returns (passed, message) -- passed True only if
+    EVERY construction fires correctly. Shared by this module's own
+    --selftest and by tests/witness_structural_matrix.py's C31(iv)/C36(e)
+    legs."""
     if not WITNESS_MAIN.exists():
         return False, f"MUST-ACCEPT could not run: {WITNESS_MAIN} does not exist"
 
@@ -220,37 +324,84 @@ def run_construction() -> tuple[bool, str]:
 
     scratch_dir = REPO_ROOT / "build" / "_scratch" / "witness_no_foreign_reading_check"
     scratch_dir.mkdir(parents=True, exist_ok=True)
-    scratch_file = scratch_dir / "witness_main_mustreject.cpp"
     text = WITNESS_MAIN.read_text(encoding="utf-8")
     anchor = "  // witness_sha = SHA-256(W-A || W-B || W-Q), sec 4.4b's own formula.\n" \
              "  uint8_t witness_sha[32];"
     if anchor not in text:
-        return False, (f"MUST-REJECT could not be constructed: the anchor text used to insert the "
-                        f"getenv(...) override is no longer present in {WITNESS_MAIN} -- update this "
-                        f"check's own anchor to match the current source")
-    injected = text.replace(
-        anchor,
-        "  // witness_sha = SHA-256(W-A || W-B || W-Q), sec 4.4b's own formula.\n"
-        "  uint8_t witness_sha[32];\n"
+        return False, (f"constructions could not be built: the anchor text used to insert each "
+                        f"one is no longer present in {WITNESS_MAIN} -- update this check's own "
+                        f"anchor to match the current source")
+
+    messages: list[str] = []
+
+    # MUST-REJECT (getenv) -- unchanged from TE-86.
+    getenv_file = scratch_dir / "witness_main_mustreject_getenv.cpp"
+    getenv_file.write_text(_inject(
+        text, anchor,
         "  // TE-86 MUST-REJECT construction only -- never present at the tip.\n"
         "  if (const char* semb_test_override = getenv(\"SEMB_WITNESS_SHA_OVERRIDE\")) {\n"
         "    std::memcpy(witness_sha, semb_test_override, sizeof(witness_sha));\n"
         "  }",
-        1,
-    )
-    scratch_file.write_text(injected, encoding="utf-8")
-
-    reject_violations = find_foreign_reading_violations(scratch_file)
-    getenv_hits = [v for v in reject_violations if v.kind == "getenv"]
+    ), encoding="utf-8")
+    getenv_hits = [v for v in find_foreign_reading_violations(getenv_file) if v.kind == "getenv"]
     if not getenv_hits:
-        return False, (f"MUST-REJECT FAILED: the scratch copy with an inserted "
+        return False, (f"MUST-REJECT (getenv) FAILED: the scratch copy with an inserted "
                         f"getenv(\"SEMB_WITNESS_SHA_OVERRIDE\") line was NOT flagged -- the check "
-                        f"cannot detect the hazard it exists to catch. All violations found: "
-                        f"{[str(v) for v in reject_violations]}")
+                        f"cannot detect the hazard it exists to catch.")
+    messages.append(f"MUST-REJECT (getenv): flagged at {getenv_hits[0]}")
 
-    return True, (f"MUST-ACCEPT: {WITNESS_MAIN} -- 0 violations. MUST-REJECT: scratch copy with one "
-                  f"inserted getenv(\"SEMB_WITNESS_SHA_OVERRIDE\") line assigned into witness_sha -- "
-                  f"flagged at {getenv_hits[0]}")
+    # MUST-REJECT (file_open, TE-89 S-7) -- a path DERIVED from model_path
+    # but not EQUAL to it (a sidecar file): the exact shape the review
+    # found the old line-scoped carve-out wrongly exempting.
+    file_open_file = scratch_dir / "witness_main_mustreject_file_open.cpp"
+    file_open_file.write_text(_inject(
+        text, anchor,
+        "  // TE-89 S-7 MUST-REJECT construction only -- never present at the tip. Opens a path\n"
+        "  // DERIVED from model_path (a sidecar file), never model_path itself.\n"
+        "  std::ifstream semb_test_sidecar(std::string(model_path) + \".sidecar\");",
+    ), encoding="utf-8")
+    file_open_hits = [v for v in find_foreign_reading_violations(file_open_file) if v.kind == "file_open"]
+    if not file_open_hits:
+        return False, (f"MUST-REJECT (file_open, derived path) FAILED: a scratch copy opening a "
+                        f"path DERIVED from model_path (std::string(model_path) + \".sidecar\") was "
+                        f"NOT flagged -- the carve-out is exempting more than the CLI-supplied path "
+                        f"itself.")
+    messages.append(f"MUST-REJECT (file_open, derived path): flagged at {file_open_hits[0]}")
+
+    # MUST-REJECT (socket_or_ipc, TE-89 S-7).
+    socket_file = scratch_dir / "witness_main_mustreject_socket.cpp"
+    socket_file.write_text(_inject(
+        text, anchor,
+        "  // TE-89 S-7 MUST-REJECT construction only -- never present at the tip.\n"
+        "  int semb_test_sock = socket(2, 1, 0);\n"
+        "  (void)semb_test_sock;",
+    ), encoding="utf-8")
+    socket_hits = [v for v in find_foreign_reading_violations(socket_file) if v.kind == "socket_or_ipc"]
+    if not socket_hits:
+        return False, (f"MUST-REJECT (socket_or_ipc) FAILED: a scratch copy calling "
+                        f"socket(2, 1, 0) was NOT flagged -- the check cannot detect the hazard it "
+                        f"exists to catch.")
+    messages.append(f"MUST-REJECT (socket_or_ipc): flagged at {socket_hits[0]}")
+
+    # MUST-ACCEPT regression (TE-89 S-7): a call whose argument genuinely
+    # IS model_path (not merely mentions it) must still be exempted --
+    # confirms the argument-scoped carve-out did not become "never exempt
+    # anything."
+    carveout_file = scratch_dir / "witness_main_mustaccept_carveout.cpp"
+    carveout_file.write_text(_inject(
+        text, anchor,
+        "  // TE-89 S-7 MUST-ACCEPT construction only -- never present at the tip. Opens\n"
+        "  // model_path ITSELF -- sec 4.4d item 3's own carve-out -- must NOT be flagged.\n"
+        "  std::ifstream semb_test_model_open(model_path.c_str());",
+    ), encoding="utf-8")
+    carveout_hits = [v for v in find_foreign_reading_violations(carveout_file) if v.kind == "file_open"]
+    if carveout_hits:
+        return False, (f"MUST-ACCEPT (carve-out) FAILED: a scratch copy opening "
+                        f"model_path.c_str() ITSELF was flagged -- the carve-out no longer exempts "
+                        f"the one case sec 4.4d item 3 says it should: {[str(v) for v in carveout_hits]}")
+    messages.append("MUST-ACCEPT (carve-out): model_path.c_str() open correctly NOT flagged")
+
+    return True, (f"MUST-ACCEPT: {WITNESS_MAIN} -- 0 violations. " + "; ".join(messages))
 
 
 def main(argv: list[str]) -> int:
