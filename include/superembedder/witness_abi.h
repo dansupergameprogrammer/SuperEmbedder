@@ -27,6 +27,18 @@ extern "C" {
 // by this function's own source.
 void semb_wa_digest(uint8_t out_digest[32]);
 
+// sec 8 C31(ii) (SEMB_WITNESS_DETACHED_LINK, sec 4.4d item 2): writes this
+// LIBRARY's own compiled-in copy of the per-configure build-generation
+// token (32 ASCII hex characters, no terminator needed -- the token is a
+// fixed 32-hex-char/128-bit value, so this always writes exactly 32 bytes)
+// to out_token[0..31]. The bytes come from the library's own compiled
+// object -- never a file read -- so the witness executable can compare
+// them against its OWN compiled-in copy of the identical token
+// (cmake/templates/semb_witness_build_generation.h.in) at process start,
+// before computing anything: the two agree if and only if the witness and
+// the library it links were configured together.
+void semb_library_build_generation(char out_token[32]);
+
 }  // extern "C"
 
 #endif  // SEMB_WITNESS_ABI_H

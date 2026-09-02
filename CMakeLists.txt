@@ -43,6 +43,20 @@ configure_file(
 	@ONLY
 )
 
+# sec 8 C31(ii) (SEMB_WITNESS_DETACHED_LINK, sec 4.4d item 2): a per-configure
+# random 128-bit hex token, baked into a generated header the same way the
+# four pin fields above are -- compiled into both the library and the
+# witness executable's own TU, so the two copies are identical if and only
+# if both were configured together. string(RANDOM ...) with no RANDOM_SEED
+# given reseeds from the current time on every configure (CMake's own
+# documented behavior), which is what makes this token PER-CONFIGURE.
+string(RANDOM LENGTH 32 ALPHABET "0123456789abcdef" SEMB_WITNESS_BUILD_GENERATION_TOKEN)
+configure_file(
+	"${CMAKE_SOURCE_DIR}/cmake/templates/semb_witness_build_generation.h.in"
+	"${CMAKE_BINARY_DIR}/generated/semb_witness_build_generation.h"
+	@ONLY
+)
+
 # ---------------------------------------------------------------------------
 # The superembedder library. TE-63 adds the arithmetic: PS-1's pooling
 # epilogue + W-A's primitive driver (ps1_pool.cpp), the seam serialisation
@@ -55,12 +69,18 @@ set(SEMB_LIBRARY_SOURCES
 	src/superembedder/ps1_pool.cpp
 	src/superembedder/seam_serialize.cpp
 	src/superembedder/wa_digest.cpp
+	src/superembedder/witness_build_generation.cpp
 	src/superembedder/engine_adapter_interim.cpp
 )
 
 semb_compute_source_provenance(superembedder
 	SOURCES ${SEMB_LIBRARY_SOURCES}
-	INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include" "${SEMB_ENGINE_PREFIX}/include"
+	# "${CMAKE_BINARY_DIR}/generated" added for
+	# src/superembedder/witness_build_generation.cpp's own
+	# #include "semb_witness_build_generation.h" (sec 8 C31(ii)) -- the
+	# real compiler invocation this macro drives needs the identical
+	# include path the actual target build uses to resolve it.
+	INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include" "${SEMB_ENGINE_PREFIX}/include" "${CMAKE_BINARY_DIR}/generated"
 	OUT_HEADER "${CMAKE_BINARY_DIR}/generated/semb_provenance.h"
 )
 
@@ -94,11 +114,40 @@ target_include_directories(semb PRIVATE "${CMAKE_BINARY_DIR}/generated")
 # live in the library, not here.
 # ---------------------------------------------------------------------------
 add_executable(semb_witness src/witness/witness_main.cpp)
+
+# sec 8 C31(i) (SEMB_WITNESS_FOREIGN_BUILD, sec 4.4d item 1): the same
+# source-provenance digest/re-verify pair already proven for the
+# `superembedder` library target (C34), applied to `semb_witness` as a
+# second, independent target -- a rebuild whose compiled closure disagrees
+# with the configure-time digest fails the BUILD, by name, before any
+# executable exists to misbehave.
+semb_compute_source_provenance(semb_witness
+	SOURCES src/witness/witness_main.cpp
+	# "${CMAKE_BINARY_DIR}/generated" added for witness_main.cpp's own
+	# #include "semb_witness_build_generation.h" (sec 8 C31(ii)).
+	INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include" "${SEMB_ENGINE_PREFIX}/include" "${CMAKE_BINARY_DIR}/generated"
+	OUT_HEADER "${CMAKE_BINARY_DIR}/generated/semb_witness_provenance.h"
+	# A distinct sidecar name -- `superembedder`'s own call above uses the
+	# default, unparameterized name; without an explicit override here
+	# this call would silently overwrite THAT sidecar (both default to
+	# the same file otherwise), corrupting superembedder's own POST_BUILD
+	# re-verification (cmake/SourceProvenance.cmake's own SIDECAR_NAME
+	# comment).
+	SIDECAR_NAME "semb_witness_source_provenance.json"
+)
+set(SEMB_WITNESS_SOURCE_PROVENANCE_SIDECAR "${SEMB_SOURCE_PROVENANCE_SIDECAR}")
+
 # Links the engine directly too (not only transitively through
 # superembedder, which links it PRIVATE) — this TU calls
 # superslm::Sha256/ToHex directly for the seam digest, sec 4.4b's own "the
 # same routine model_sha uses."
 target_link_libraries(semb_witness PRIVATE superembedder superslm::superslm)
+# sec 8 C31(ii): witness_main.cpp includes the generated build-generation
+# token header directly (semb_witness_build_generation.h) -- not exposed
+# through superembedder's own PUBLIC include dirs, since that header lives
+# in the same PRIVATE generated dir the library itself uses.
+target_include_directories(semb_witness PRIVATE "${CMAKE_BINARY_DIR}/generated")
+semb_verify_source_provenance(semb_witness SIDECAR "${SEMB_WITNESS_SOURCE_PROVENANCE_SIDECAR}")
 
 # ---------------------------------------------------------------------------
 # Tests: the negative-configure matrix (C33's provenance legs, C34's

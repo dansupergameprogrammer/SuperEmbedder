@@ -64,6 +64,12 @@
 #include "superembedder/seam_abi.h"
 #include "superslm/sha256.h"
 
+// TE-86's own C31(ii) leg (tests/witness_structural_matrix.py::eval_c31_ii)
+// patches a scratch copy of this file at the exact anchor
+// '#include "superembedder/witness_abi.h"\n\nnamespace {' -- the new
+// generated-header include below is placed BEFORE witness_abi.h's own
+// include, not after, so that anchor stays byte-identical.
+#include "semb_witness_build_generation.h"
 #include "superembedder/witness_abi.h"
 
 namespace {
@@ -107,6 +113,30 @@ void ComputeWQPlaceholderDigest(uint8_t out[32]) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // sec 8 C31(ii) (SEMB_WITNESS_DETACHED_LINK, sec 4.4d item 2): at
+  // process start, before anything else runs, compare this TU's own
+  // compiled-in build-generation token against the LINKED LIBRARY's own
+  // compiled-in copy, read through its C ABI accessor rather than a file.
+  // The two are identical bytes if and only if both were configured
+  // together -- linking this witness executable against a superembedder
+  // library built from a SEPARATE configure (a detached link) makes the
+  // accessor return a different token than this TU's own, caught here
+  // before any digest, before argument parsing, before anything else.
+  {
+    const char* const kThisBuildGeneration = SEMB_WITNESS_BUILD_GENERATION_TOKEN;
+    char library_build_generation[32];
+    semb_library_build_generation(library_build_generation);
+    if (std::memcmp(kThisBuildGeneration, library_build_generation, 32) != 0) {
+      std::fprintf(stderr,
+                    "witness: SEMB_WITNESS_DETACHED_LINK -- this build's own compiled-in "
+                    "build-generation token does not match the linked library's own copy "
+                    "(this=%.32s, library=%.32s); the witness executable and the "
+                    "superembedder library it links were not configured together\n",
+                    kThisBuildGeneration, library_build_generation);
+      return 1;
+    }
+  }
+
   std::string model_path;
   std::string tokens_csv;
   size_t chunk_budget = 0;

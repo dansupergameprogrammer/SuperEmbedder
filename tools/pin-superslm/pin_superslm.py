@@ -241,6 +241,35 @@ def resolve_commit(clone: Path, tag: str) -> str:
     return proc.stdout.strip().splitlines()[-1].strip()
 
 
+def _validate_reuse_clone(clone: Path, tag: str) -> None:
+    """TE-87 (sec 4.4d's own Note, D-SLM6164/Mendeleev F3): `--reuse-clone`
+    (test-only: skips the normal clone step and uses an existing checkout
+    directly) used to reach `resolve_commit()`'s own `git rev-parse
+    <tag>^{commit}` call for BOTH a missing directory and a present
+    directory that does not carry the pinned tag, and fell through to
+    `run()`'s own generic `SystemExit(f"command failed ({rc}): {cmd}")` --
+    loud and non-zero-exit, but not a NAMED refusal the way every other
+    failure mode in this tool is. This validates the two conditions
+    directly, before `resolve_commit()` ever runs, and refuses by name for
+    each."""
+    if not clone.exists() or not clone.is_dir():
+        raise SystemExit(
+            f"SEMB_PIN_REUSE_CLONE_NOT_FOUND: --reuse-clone points at {clone}, which does not "
+            f"exist as a directory. --reuse-clone skips the normal clone step and requires an "
+            f"existing checkout already in place -- point it at a real checkout, or omit the flag "
+            f"to let this tool clone one."
+        )
+    proc = subprocess.run(["git", "-C", str(clone), "rev-parse", f"{tag}^{{commit}}"],
+                           capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise SystemExit(
+            f"SEMB_PIN_REUSE_CLONE_TAG_MISMATCH: --reuse-clone points at {clone}, but the pinned "
+            f"tag '{tag}' does not resolve to a commit there (git: {proc.stderr.strip()}). "
+            f"--reuse-clone requires an existing checkout that already carries the pinned tag, "
+            f"whether as the current branch tip or a local tag pointing at it."
+        )
+
+
 def configure_engine(clone: Path, build: Path, cmake: str, ninja: str, generator: str,
                       fresh_build: bool = False) -> None:
     # TE-73 R-1 (Critical): this used to be a bare `if build.exists():
@@ -629,6 +658,7 @@ def main() -> int:
     workdir = args.workdir.resolve()
     if args.reuse_clone:
         clone = args.reuse_clone.resolve()
+        _validate_reuse_clone(clone, tag)
         log(f"reusing existing checkout at {clone} (--reuse-clone)")
         # TE-71 Q-1: this run does NOT create workdir/src on this path --
         # `clone` may not even be under `workdir` at all. Tracked so final

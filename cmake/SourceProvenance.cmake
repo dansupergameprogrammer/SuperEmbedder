@@ -29,7 +29,7 @@ if(DEFINED CACHE{SEMB_SOURCE_SHA})
 endif()
 
 function(semb_compute_source_provenance target)
-	cmake_parse_arguments(ARG "" "OUT_HEADER" "SOURCES;INCLUDE_DIRS" ${ARGN})
+	cmake_parse_arguments(ARG "" "OUT_HEADER;SIDECAR_NAME" "SOURCES;INCLUDE_DIRS" ${ARGN})
 
 	# Leg (b): every declared source must exist on disk before it is hashed —
 	# checked here (not only inside the python helper) so the FATAL_ERROR
@@ -63,7 +63,24 @@ function(semb_compute_source_provenance target)
 	endif()
 	set(SEMB_ENGINE_PATH_RECORDED "${SEMB_ENGINE_PREFIX}" CACHE INTERNAL "engine path this build directory was last configured against")
 
-	set(_sidecar "${CMAKE_CURRENT_BINARY_DIR}/generated/semb_source_provenance.json")
+	# TE-87 (sec 8 C31(i)): the sidecar filename USED TO be a single
+	# hardcoded literal, correct only as long as exactly one target ever
+	# called this function per build directory. Applying this pair to a
+	# SECOND target (semb_witness) with the default name unchanged would
+	# have both calls write the SAME file -- the second call's own
+	# execute_process() silently overwrites the first target's sidecar,
+	# so its POST_BUILD verify step reads the WRONG target's digest and
+	# fails a build that is actually clean. SIDECAR_NAME defaults to the
+	# ORIGINAL literal ("semb_source_provenance.json") so the existing
+	# `superembedder` call site (and tools/ci/run_configure_matrix.py's
+	# own hardcoded read of that exact path, C33/C34's own legs) is
+	# UNCHANGED; a second target passes its own distinct SIDECAR_NAME.
+	if(ARG_SIDECAR_NAME)
+		set(_sidecar_name "${ARG_SIDECAR_NAME}")
+	else()
+		set(_sidecar_name "semb_source_provenance.json")
+	endif()
+	set(_sidecar "${CMAKE_CURRENT_BINARY_DIR}/generated/${_sidecar_name}")
 	get_filename_component(_out_header_dir "${ARG_OUT_HEADER}" DIRECTORY)
 	file(MAKE_DIRECTORY "${_out_header_dir}")
 

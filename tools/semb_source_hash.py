@@ -271,6 +271,16 @@ def _ninja_query(build: Path, ninja: str, target: str) -> str:
 
 
 def _parse_query_inputs(text: str) -> list[str]:
+    # TE-87 (sec 8 C31(i)): `ninja -t query` marks an IMPLICIT input with a
+    # leading "| " on the same line (e.g. "| superembedder.lib" for a link
+    # step's linked libraries) and an ORDER-ONLY input with "|| " -- proven
+    # absent from this project's own STATIC-LIBRARY archive-step queries
+    # (the only shape this function was exercised against before this
+    # target), and present the moment a target that LINKS OTHER LIBRARIES
+    # (an executable, semb_witness) is queried the same way. An order-only
+    # input is not a real content dependency and stays skipped; an
+    # IMPLICIT input is a genuine input and is kept, with the marker
+    # stripped so the caller sees the real path rather than "| <path>".
     lines = text.splitlines()
     out = []
     in_input = False
@@ -284,6 +294,8 @@ def _parse_query_inputs(text: str) -> list[str]:
             item = line.strip()
             if item in ("", "phony") or item.startswith("||"):
                 continue
+            if item.startswith("| "):
+                item = item[2:].strip()
             out.append(item)
     return out
 
@@ -335,7 +347,17 @@ def cmd_verify(args: argparse.Namespace) -> int:
         print(json.dumps({"error": "SEMB_SOURCE_TARGET_NOT_FOUND", "target": args.target}))
         return 1
     lib_out = _ninja_query(build, args.ninja, lib_targets[0])
-    obj_files = _parse_query_inputs(lib_out)
+    # TE-87: a target that LINKS (an executable, e.g. semb_witness) lists
+    # its linked LIBRARIES among this query's own "input:" block, not only
+    # its own compiled object files (a target that only ARCHIVES, e.g.
+    # superembedder, does not). A .lib/.a is not a translation unit --
+    # `ninja -t deps` has no header-dependency entry for it, and its OWN
+    # source closure is that library's own producer's own concern (already
+    # covered independently by ITS OWN semb_compute_source_provenance()
+    # call, where one exists) -- so only genuine compiled-object entries
+    # are kept here.
+    _OBJECT_SUFFIXES = (".obj", ".o")
+    obj_files = [s for s in _parse_query_inputs(lib_out) if s.endswith(_OBJECT_SUFFIXES)]
     if not obj_files:
         print(json.dumps({"error": "SEMB_SOURCE_NO_OBJECTS", "target": args.target}))
         return 1

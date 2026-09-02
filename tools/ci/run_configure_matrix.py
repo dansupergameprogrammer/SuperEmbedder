@@ -1011,10 +1011,27 @@ def c34_leg_g_preprocess_failure_raises():
     leg, not a silent pass). Neither mechanism can be broken without this
     leg going red on its own compiler; no single revert makes it red on
     all three, because no single commit covers all three compilers'
-    closure functions."""
+    closure functions.
+
+    TE-87 (sec 8 C31(ii)): the second #include used to be
+    "semb_engine_pin.h" -- reachable via CMAKE_BINARY_DIR/generated,
+    which superembedder's own semb_compute_source_provenance() call did
+    NOT declare at the time this leg was written, so the include failed
+    to resolve during provenance compute exactly as this leg requires.
+    TE-87 legitimately ADDED that directory to superembedder's own
+    declared INCLUDE_DIRS (witness_build_generation.cpp's own new
+    #include "semb_witness_build_generation.h" needs it, matching what
+    the real target's build already resolves) -- closing the specific
+    gap this leg's construction depended on, which made the induced
+    failure stop firing (configure succeeded, returncode 0) rather than
+    raising SEMB_SOURCE_PREPROCESS_FAILED. Replaced with a header name
+    that exists NOWHERE in the scratch tree at all, so this leg's own
+    construction no longer depends on which directories superembedder's
+    real INCLUDE_DIRS does or does not declare -- future-proof against
+    the identical collision recurring."""
     src = copy_repo(SCRATCH / "c34g_src")
     (src / "src" / "uses_gen.cpp").write_text(
-        '#include "superembedder/version.h"\n#include "semb_engine_pin.h"\nint semb_uses_gen() { return 0; }\n',
+        '#include "superembedder/version.h"\n#include "semb_test_c34g_header_that_exists_nowhere.h"\nint semb_uses_gen() { return 0; }\n',
         encoding="utf-8",
     )
     cmakelists = src / "CMakeLists.txt"
@@ -1068,7 +1085,20 @@ def c34_leg_i_build_dir_placement_invariant():
     SCRATCH, not nested inside it -- both configures were out-of-root, so
     N-8's exclusion caught the generated header at both placements and the
     leg passed with the exclusion removed. build_in is now genuinely inside
-    the source root, at src/build/semb."""
+    the source root, at src/build/semb.
+
+    TE-87 (sec 8 C31(ii)): this leg used to PATCH superembedder's own
+    semb_compute_source_provenance() INCLUDE_DIRS to add
+    CMAKE_BINARY_DIR/generated itself, because the tracked CMakeLists.txt
+    did not declare it at the time this leg was written. TE-87
+    legitimately added that directory to the TRACKED superembedder call
+    (witness_build_generation.cpp's own new #include needs it) -- the
+    patch step below is now removed rather than re-targeted: its own
+    anchor was no longer superembedder's unique INCLUDE_DIRS line once
+    semb_witness's own new provenance call started sharing the identical
+    three-directory text (the old `count == 1` assertion started failing
+    with count 2), and the directory this leg needs is now present in
+    the tracked file without any patch at all."""
     src = copy_repo(SCRATCH / "c34i_src")
     (src / "src" / "uses_gen.cpp").write_text(
         '#include "superembedder/version.h"\n#include "semb_engine_pin.h"\nint semb_uses_gen() { return 0; }\n',
@@ -1086,17 +1116,6 @@ def c34_leg_i_build_dir_placement_invariant():
         f"anchor not found or not unique: {text.count(old_sources_block)}"
     )
     text = text.replace(old_sources_block, new_sources_block, 1)
-    old_include_dirs = (
-        'INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include" "${SEMB_ENGINE_PREFIX}/include"'
-    )
-    new_include_dirs = (
-        'INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include" "${SEMB_ENGINE_PREFIX}/include" '
-        '"${CMAKE_BINARY_DIR}/generated"'
-    )
-    assert text.count(old_include_dirs) == 1, (
-        f"anchor not found or not unique: {text.count(old_include_dirs)}"
-    )
-    text = text.replace(old_include_dirs, new_include_dirs, 1)
     cmakelists.write_text(text, encoding="utf-8")
 
     # TE-71 Q-2: build_in used to be SCRATCH/"c34i_build_in" -- a SIBLING of
