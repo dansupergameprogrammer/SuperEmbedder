@@ -27,6 +27,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pin-superslm"))
+from pin_superslm import DEFAULT_REMOTE  # noqa: E402 — TE-65 F-17: one constant, not two
+
 REPO_ROOT: Path
 ENGINE_PREFIX: Path
 CMAKE: str
@@ -221,7 +224,7 @@ def c33_leg_e_dirty_clone(pin_tool: Path, lock_path_template: Path):
     subprocess.run(
         ["git", "clone", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.longpaths=true",
          "--branch", tag, "--single-branch",
-         "https://github.com/dansupergameprogrammer/SuperSLM.git", str(clone_dir)],
+         DEFAULT_REMOTE, str(clone_dir)],
         check=True, capture_output=True, text=True,
     )
     dirty_file = clone_dir / "src" / "sha256.cpp"
