@@ -724,7 +724,31 @@ def c34_leg_g_preprocess_failure_raises():
     src/version.cpp's own SOURCES declaration does not cover. The compiler
     resolves one real header (superembedder/version.h) before failing to
     resolve the second, reproducing the reviewer's own "some output, then a
-    fatal error" shape rather than an immediate failure."""
+    fatal error" shape rather than an immediate failure.
+
+    TE-71 Q-3: N-5's own repair is inside _msvc_closure only --
+    _gcc_clang_closure has raised on any nonzero preprocessor exit since
+    37bef58 (TE-65 F-1), unrelated to N-5, and _resolve_closure dispatches
+    to _msvc_closure only when compiler_id == "MSVC". Reverting N-5's own
+    condition therefore has no effect on this leg under GCC/Clang -- it was
+    never exercising N-5 there, and was silently green on two of three CI
+    runners regardless of whether N-5's own fix existed.
+
+    This leg is honestly two pins, one per governing mechanism, not one:
+    under MSVC it discriminates N-5's own condition (verified TE-69:
+    reverting `if proc.returncode != 0:` to `if proc.returncode != 0 and
+    not headers:` in _msvc_closure -> red). Under GCC/Clang it discriminates
+    F-1's own raise instead -- the mechanism that ACTUALLY governs this
+    leg's result on those compilers -- verified this round: disabling
+    _gcc_clang_closure's raise (`if proc.returncode != 0:` -> `if False:`)
+    makes this leg fail under Clang 18.1.8 too, though on a different
+    expected string (SEMB_SOURCE_NOT_IN_OWN_CLOSURE, N-6's own check, fires
+    because the now-unraised failure yields an empty closure for a source
+    that visibly names #includes -- still a real, verified failure of the
+    leg, not a silent pass). Neither mechanism can be broken without this
+    leg going red on its own compiler; no single revert makes it red on
+    all three, because no single commit covers all three compilers'
+    closure functions."""
     src = copy_repo(SCRATCH / "c34g_src")
     (src / "src" / "uses_gen.cpp").write_text(
         '#include "superembedder/version.h"\n#include "semb_engine_pin.h"\nint semb_uses_gen() { return 0; }\n',
