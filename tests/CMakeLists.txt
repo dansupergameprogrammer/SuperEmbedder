@@ -58,7 +58,13 @@ add_compile_definitions(SEMB_TEST_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}")
 # ---------------------------------------------------------------------------
 function(semb_add_cxx_test name)
 	add_executable(${name} ${ARGN})
-	target_link_libraries(${name} PRIVATE superembedder)
+	# TE-80: linked directly (not only transitively through superembedder,
+	# whose own link to it is PRIVATE and therefore does not propagate
+	# include dirs to a downstream target) -- src/witness/witness_main.cpp
+	# takes the identical direct link for the identical reason (it calls
+	# superslm::Sha256/ToHex too). A test that does not itself include an
+	# engine header pays nothing extra for this.
+	target_link_libraries(${name} PRIVATE superembedder superslm::superslm)
 	target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 	add_test(NAME ${name} COMMAND ${name} WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
 endfunction()
@@ -89,6 +95,10 @@ semb_add_cxx_test(c39_seam_digest_test c39_seam_digest_test.cpp)
 # C40 -- the chunk budget is inert to the output.
 semb_add_cxx_test(c40_chunk_budget_inertness_test c40_chunk_budget_inertness_test.cpp)
 
+# TE-80: the owed assertion for TE-76 review F-7 (kSembEncodeHiddenTooLarge
+# fires on a real hidden_size > kSembWitnessMaxHidden, before any write).
+semb_add_cxx_test(c_f7_hidden_too_large_test c_f7_hidden_too_large_test.cpp)
+
 # ---------------------------------------------------------------------------
 # Python-driven cells, matching tools/ci/run_configure_matrix.py's own
 # convention (a script that runs real checks and reports a leg table),
@@ -101,9 +111,24 @@ add_test(
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
+# TE-80: the owed assertion for TE-76 review F-4 (semb_assert_precise_fp()'s
+# own printed target list must name a real test target, not merely be
+# non-empty) -- runs its own fresh, throwaway configure of the real tree.
 add_test(
+	NAME c14_build_config_target_list_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c14_build_config_target_list_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+add_test(
+	# TE-80 F-6: the script's own build directory is now the REAL one
+	# CMake/ctest is actually configured and run from (CMAKE_BINARY_DIR),
+	# never a hardcoded "build/msvc" -- so a run from build/clang (or any
+	# other directory) grades that build's own objects and binaries, not
+	# whichever one happened to be hardcoded.
 	NAME witness_structural_matrix
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/witness_structural_matrix.py"
+		--build-dir "${CMAKE_BINARY_DIR}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 

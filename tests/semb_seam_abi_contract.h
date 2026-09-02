@@ -47,7 +47,20 @@ SembSerializeStatus semb_seam_serialize_document(const int8_t* codes, const int6
 enum SembEncodeStatus : int32_t {
   kSembEncodeOk = 0,
   kSembEncodeEngineRefused = 1,
+  // TE-80 (TE-76 review F-7, closed by TE-79 in engine_adapter_interim.cpp):
+  // the real hidden_size, known only after the model opens, exceeds
+  // kSembWitnessMaxHidden -- refused BEFORE codes_out/m_out/e_out/
+  // *hidden_out are written. Mirrors include/superembedder/seam_abi.h
+  // exactly.
+  kSembEncodeHiddenTooLarge = 2,
 };
+
+// Mirrors include/superembedder/seam_abi.h's kSembWitnessMaxHidden
+// exactly: the fixed ceiling this verb enforces on the real hidden_size
+// before writing anything, since it cannot take a real capacity
+// parameter without breaking every existing extern "C" caller's fixed
+// signature.
+constexpr size_t kSembWitnessMaxHidden = 64;
 
 SembEncodeStatus semb_encode_document_for_witness(const char* model_path,
                                                    const int32_t* token_ids, size_t n,

@@ -40,7 +40,23 @@ enum SembWaPoolStatus : int32_t {
   kSembAccumulatorOverflow = 2,
   kSembPooledSubnormal = 3,
   kSembPooledOverflow = 4,
+  // TE-80 (TE-76 review F-2, closed by TE-79 in ps1_pool.cpp): the pooled
+  // positions' own minimum carried exponent (e_min) domain, refused
+  // BEFORE any alignment/scaling shift, in int64_t (a width e_min already
+  // lives in, so the check itself cannot overflow). See
+  // kSembWaPoolMaxAbsEMin below -- mirrors include/superembedder/pool_abi.h
+  // exactly (TE-79 F-15's own standing caution: extern "C" linkage does
+  // not check this by itself; kept in sync by hand).
+  kSembEMinDomainExceeded = 5,
 };
+
+// Mirrors include/superembedder/pool_abi.h's kSembWaPoolMaxAbsEMin
+// exactly: the largest |e_min| semb_wa_pool_run accepts before refusing
+// kSembEMinDomainExceeded. 1,000,000 -- generous against the measured
+// carried range ([-160, 154]) and the width past which any accumulator
+// this library can construct (<= 128 bits) already resolves to
+// zero/subnormal/infinity regardless.
+constexpr int64_t kSembWaPoolMaxAbsEMin = 1000000;
 
 extern "C" {
 
