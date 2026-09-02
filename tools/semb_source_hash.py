@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -110,6 +111,16 @@ def _gcc_clang_closure(compiler: str, source: Path, include_dirs: list[str], std
 
 
 def _resolve_closure(compiler_id: str, compiler: str, source: Path, include_dirs: list[str], std: str) -> list[Path]:
+    # TE-69 P-3: SEMB_TEST_FORCE_EMPTY_CLOSURE is a test-only escape hatch
+    # (never set in normal use, matching the SEMB_TEST_SKIP_FP_DIRECTIVE
+    # pattern in cmake/BuildFlags.cmake) that makes this function return an
+    # empty closure regardless of what the real compiler resolves --
+    # letting N-6's own subset assertion be driven to its must-reject
+    # through a REAL `cmake -S -B` configure (a permanent matrix leg) rather
+    # than only a standalone Python-level monkeypatch, which is how N-6 was
+    # verified in TE-67 and again in TE-69 but never wired in.
+    if os.environ.get("SEMB_TEST_FORCE_EMPTY_CLOSURE"):
+        return []
     if compiler_id == "MSVC":
         return _msvc_closure(compiler, source, include_dirs, std)
     return _gcc_clang_closure(compiler, source, include_dirs, std)

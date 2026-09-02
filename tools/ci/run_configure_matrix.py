@@ -145,7 +145,7 @@ def detect_compiler_id() -> str:
 
 
 
-def run_cmake_configure(src: Path, build: Path, prefix: Path, extra_defines=None) -> tuple[int, str]:
+def run_cmake_configure(src: Path, build: Path, prefix: Path, extra_defines=None, extra_env=None) -> tuple[int, str]:
     rmtree(build)
     cmd = [
         CMAKE, "-G", GENERATOR, "-S", str(src), "-B", str(build),
@@ -155,7 +155,11 @@ def run_cmake_configure(src: Path, build: Path, prefix: Path, extra_defines=None
         cmd.append(f"-DCMAKE_MAKE_PROGRAM={NINJA}")
     for k, v in (extra_defines or {}).items():
         cmd.append(f"-D{k}={v}")
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    env = None
+    if extra_env:
+        env = dict(os.environ)
+        env.update(extra_env)
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
     return proc.returncode, proc.stdout + proc.stderr
 
 
@@ -599,6 +603,97 @@ def c34_leg_f_header_edit_moves_digest():
     })
 
 
+def c34_leg_g_preprocess_failure_raises():
+    """TE-69 P-3, a permanent leg for N-5. A second library source whose
+    only #include is reachable through CMAKE_BINARY_DIR/generated -- an
+    include directory the real target has (via the generated header) but
+    the provenance call is not given, matching what src/main.cpp needs but
+    src/version.cpp's own SOURCES declaration does not cover. The compiler
+    resolves one real header (superembedder/version.h) before failing to
+    resolve the second, reproducing the reviewer's own "some output, then a
+    fatal error" shape rather than an immediate failure."""
+    src = copy_repo(SCRATCH / "c34g_src")
+    (src / "src" / "uses_gen.cpp").write_text(
+        '#include "superembedder/version.h"\n#include "semb_engine_pin.h"\nint semb_uses_gen() { return 0; }\n',
+        encoding="utf-8",
+    )
+    cmakelists = src / "CMakeLists.txt"
+    text = cmakelists.read_text(encoding="utf-8")
+    old_sources = 'SOURCES src/version.cpp\n\tINCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include"'
+    new_sources = 'SOURCES src/version.cpp src/uses_gen.cpp\n\tINCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include"'
+    assert text.count(old_sources) == 1, f"anchor not found or not unique: {text.count(old_sources)}"
+    text = text.replace(old_sources, new_sources, 1)
+    text = text.replace(
+        "add_library(superembedder STATIC src/version.cpp)",
+        "add_library(superembedder STATIC src/version.cpp src/uses_gen.cpp)",
+        1,
+    )
+    cmakelists.write_text(text, encoding="utf-8")
+    rc, out = run_cmake_configure(src, SCRATCH / "c34g_build", ENGINE_PREFIX)
+    record("C34(g) preprocess failure raises, not truncates (N-5)", "SEMB_SOURCE_PREPROCESS_FAILED", rc, out)
+
+
+def c34_leg_h_empty_resolver_refused():
+    """TE-69 P-3, a permanent leg for N-6. SEMB_TEST_FORCE_EMPTY_CLOSURE
+    drives the real cmd_configure() through a real `cmake -S -B` to its own
+    must-reject: a resolver reporting nothing at all against this project's
+    real, #include-bearing src/version.cpp."""
+    src = copy_repo(SCRATCH / "c34h_src")
+    rc, out = run_cmake_configure(src, SCRATCH / "c34h_build", ENGINE_PREFIX,
+                                   extra_env={"SEMB_TEST_FORCE_EMPTY_CLOSURE": "1"})
+    record("C34(h) empty resolver refused (N-6)", "SEMB_SOURCE_NOT_IN_OWN_CLOSURE", rc, out)
+
+
+def c34_leg_i_build_dir_placement_invariant():
+    """TE-69 P-3, a permanent leg for N-8. The g-leg's own generated-header-
+    reaching source, configured at two different -B locations (nested
+    inside the source root, and a sibling outside it) -- must produce an
+    IDENTICAL semb_source_sha and an identical covered_count at both, and
+    the post-build re-verification must agree at both."""
+    src = copy_repo(SCRATCH / "c34i_src")
+    (src / "src" / "uses_gen.cpp").write_text(
+        '#include "superembedder/version.h"\n#include "semb_engine_pin.h"\nint semb_uses_gen() { return 0; }\n',
+        encoding="utf-8",
+    )
+    cmakelists = src / "CMakeLists.txt"
+    text = cmakelists.read_text(encoding="utf-8")
+    old_sources = 'SOURCES src/version.cpp\n\tINCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include"'
+    new_sources = 'SOURCES src/version.cpp src/uses_gen.cpp\n\tINCLUDE_DIRS "${CMAKE_SOURCE_DIR}/include" "${CMAKE_BINARY_DIR}/generated"'
+    assert text.count(old_sources) == 1, f"anchor not found or not unique: {text.count(old_sources)}"
+    text = text.replace(old_sources, new_sources, 1)
+    text = text.replace(
+        "add_library(superembedder STATIC src/version.cpp)",
+        "add_library(superembedder STATIC src/version.cpp src/uses_gen.cpp)",
+        1,
+    )
+    cmakelists.write_text(text, encoding="utf-8")
+
+    build_in = SCRATCH / "c34i_build_in"  # nested inside src (the project's own documented layout)
+    rc_in, out_in = run_cmake_configure(src, build_in, ENGINE_PREFIX)
+    build_out = SCRATCH.parent / "c34i_build_out_of_root"  # a sibling of SCRATCH, outside src
+    rc_out, out_out = run_cmake_configure(src, build_out, ENGINE_PREFIX)
+
+    def extract(build_dir: Path):
+        sidecar = build_dir / "generated" / "semb_source_provenance.json"
+        if not sidecar.exists():
+            return None
+        return json.loads(sidecar.read_text(encoding="utf-8"))["semb_source_sha"]
+
+    sha_in = extract(build_in) if rc_in == 0 else None
+    sha_out = extract(build_out) if rc_out == 0 else None
+    passed = rc_in == 0 and rc_out == 0 and sha_in is not None and sha_in == sha_out
+    RESULTS.append({
+        "leg": "C34(i) semb_source_sha invariant to -B placement (N-8)",
+        "expected": "identical semb_source_sha regardless of -B location",
+        "returncode": [rc_in, rc_out],
+        "want_fail": False,
+        "found_expected_string": passed,
+        "passed": passed,
+        "output_tail": f"in-root={sha_in} out-of-root={sha_out}",
+    })
+    rmtree(build_out)
+
+
 # ---------------------------------------------------------------------------
 # C14 legs (TE-65 F-4/F-5 rewrite: BuildFlags.cmake no longer has a per-target
 # registry to strip a flag from -- the directive is directory-wide and the
@@ -859,6 +954,9 @@ def main() -> int:
     c34_leg_c_engine_path_changed()
     c34_leg_d_source_added_after_digest(NINJA)
     c34_leg_f_header_edit_moves_digest()
+    c34_leg_g_preprocess_failure_raises()
+    c34_leg_h_empty_resolver_refused()
+    c34_leg_i_build_dir_placement_invariant()
 
     c14_run_all_legs()
 
