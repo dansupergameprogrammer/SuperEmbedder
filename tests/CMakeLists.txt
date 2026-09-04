@@ -245,3 +245,63 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/w_a_population.py"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+
+# ---------------------------------------------------------------------------
+# TE-92 (U1, the first frozen public raw-text vertical slice): the red suite
+# for sec 3.1's five frozen verbs -- semb_encoder_open / _close / _dims,
+# semb_encode, semb_status_name -- against tests/semb_public_abi_contract.h.
+#
+# The two C++ cells link against symbols the product does not define at
+# main@1a040a4, so they are EXCLUDE_FROM_ALL: the default build of the tree
+# stays green, and tests/u1_raw_text_cells_check.py builds them on demand and
+# reports an unresolved frozen symbol as RED-UNIMPLEMENTED by name (the same
+# red-by-name shape c12b_row_digest_check uses for an unbuilt instrument).
+# ---------------------------------------------------------------------------
+foreach(_semb_u1_cell u1_raw_text_contract_test u1_raw_text_parity_test)
+	add_executable(${_semb_u1_cell} EXCLUDE_FROM_ALL ${_semb_u1_cell}.cpp)
+	target_link_libraries(${_semb_u1_cell} PRIVATE superembedder superslm::superslm)
+	target_include_directories(${_semb_u1_cell} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+endforeach()
+
+# The converter-emitted Qwen3-Embedding-0.6B tokenizer artifact (3.4 MB, never
+# committed; regenerated bit-for-bit by tools/tokenizer/regenerate_qwen3_tokenizer_artifact.py
+# and held to tests/fixtures/tokenizer/qwen3-embedding-0.6b-tokenizer.manifest.json).
+# Empty = the product legs report MISSING PREREQUISITE; with SEMB_C12B_MODEL it
+# turns the real-pair legs on.
+set(SEMB_U1_TOKENIZER "" CACHE FILEPATH
+	"U1 raw-text product cells: the converter-emitted Qwen3-Embedding-0.6B tokenizer .sslm (empty = MISSING PREREQUISITE)")
+set(_semb_u1_args --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}")
+if(NOT SEMB_C12B_MODEL STREQUAL "")
+	list(APPEND _semb_u1_args --model "${SEMB_C12B_MODEL}")
+endif()
+if(NOT SEMB_U1_TOKENIZER STREQUAL "")
+	list(APPEND _semb_u1_args --tokenizer "${SEMB_U1_TOKENIZER}")
+endif()
+add_test(
+	NAME u1_raw_text_cells_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_raw_text_cells_check.py" ${_semb_u1_args}
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# The public header pin: include/superembedder/semb.h must declare the five
+# verbs, the opaque handle, both IN structs and the reachable status names
+# exactly as the contract header does (extern "C" checks names, not types).
+add_test(
+	NAME u1_public_header_parity_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_public_header_parity_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# The parity oracle's own commissioning (expected GREEN on unmodified main):
+# through the EXISTING interim path and C12b's instrument, an omitted, doubled
+# or wrong trailing special token moves the emitted vector on every row, so
+# equality with that oracle pins the frozen path's composition.
+set(_semb_u1_mut_args --instrument "${_semb_c12b_instrument}" --build-dir "${CMAKE_BINARY_DIR}")
+if(NOT SEMB_C12B_MODEL STREQUAL "")
+	list(APPEND _semb_u1_mut_args --model "${SEMB_C12B_MODEL}")
+endif()
+add_test(
+	NAME u1_trailing_special_mutants_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_trailing_special_mutants_check.py" ${_semb_u1_mut_args}
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)

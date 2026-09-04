@@ -1,0 +1,10 @@
+{
+ "add_bos_token": false,
+ "add_prefix_space": false,
+ "clean_up_tokenization_spaces": false,
+ "eos_token": "<|im_end|>",
+ "pad_token": "<|endoftext|>",
+ "model_max_length": 64,
+ "tokenizer_class": "Qwen2Tokenizer",
+ "chat_template": null
+}
