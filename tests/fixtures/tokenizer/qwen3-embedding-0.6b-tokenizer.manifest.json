@@ -1,0 +1,39 @@
+{
+  "schema": "semb_tokenizer_artifact_manifest_v1",
+  "minted": "2026-09-04",
+  "minted_by": "tools/tokenizer/regenerate_qwen3_tokenizer_artifact.py --mint",
+  "artifact": {
+    "name": "qwen3-embedding-0.6b-tokenizer.sslm",
+    "sha256": "2ba15e621e28f4f58046a89a4e4b1e3e6ea8c4e1a4f5397238634b589082b9d3",
+    "bytes": 3465492
+  },
+  "checkpoint": {
+    "repo": "Qwen/Qwen3-Embedding-0.6B",
+    "revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+    "tokenizer_json_sha256": "def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a",
+    "tokenizer_config_json_sha256": "253153d0738ceb4c668d2eff957714dd2bea0b56de772a9fdccd96cbf517e6a0"
+  },
+  "converter": {
+    "tool": "tools/convert_tokenizer.py",
+    "engine_tag": "v1.4.0",
+    "engine_commit": "faef137de9502ee1951e8853c6518649288ae0dd",
+    "clone_head": "faef137de9502ee1951e8853c6518649288ae0dd",
+    "emit_command": "C:\\Users\\dansu\\AppData\\Local\\Programs\\Python\\Python313\\python.exe convert_tokenizer.py --ckpt D:\\hf_cache\\hub\\models--Qwen--Qwen3-Embedding-0.6B\\snapshots\\97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3 --emit D:\\SuperEmbedder\\.worktrees\\te92-u1-tokenizer-suite\\build\\_scratch\\qwen3-embedding-0.6b-tokenizer.sslm"
+  },
+  "verification": {
+    "command": "C:\\Users\\dansu\\AppData\\Local\\Programs\\Python\\Python313\\python.exe convert_tokenizer.py --ckpt D:\\hf_cache\\hub\\models--Qwen--Qwen3-Embedding-0.6B\\snapshots\\97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3 --verify D:\\SuperEmbedder\\.worktrees\\te92-u1-tokenizer-suite\\tests\\fixtures\\tokenizer\\tokenizer_golden_corpus.jsonl --verify-post-processor D:\\SuperEmbedder\\.worktrees\\te92-u1-tokenizer-suite\\tests\\fixtures\\tokenizer\\tokenizer_golden_corpus.jsonl",
+    "exit_code": 0,
+    "bpe_parity": "PASS",
+    "post_processor_parity": "PASS",
+    "trailing_special_id": 151643,
+    "stdout": [
+      "44 lines, 0 mismatches, Unicode 15.1.0",
+      "",
+      "post-processor-parity: 44 lines, 0 mismatches, trailing_special_id=151643"
+    ]
+  },
+  "corpus": {
+    "path": "tests/fixtures/tokenizer/tokenizer_golden_corpus.jsonl",
+    "sha256": "c9e137cf6357762ed640a58c9ca8206b16984c294b0c09a97f6c43edd65380a7"
+  }
+}
