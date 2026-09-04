@@ -1,9 +1,9 @@
-// src/superembedder/engine_adapter_interim.cpp -- TE-63 (U0 slice B): THE
-// interim adapter, and the only one (`Claude/Plans/SuperEmbedder_Plan.md`
-// sec 4.3: "the skeleton composes the forward from SuperSLM's installed
-// C++ headers behind SuperEmbedder's own engine-adapter seam, calling
-// EmbedEntry + RunLayerLoopChunkBatched"). This is the ONE translation
-// unit in this library that names EmbedEntry, RunLayerLoopChunkBatched,
+// src/superembedder/engine_adapter_interim.cpp -- THE interim adapter, and
+// the only one (`Claude/Plans/SuperEmbedder_Plan.md` sec 4.3: "the skeleton
+// composes the forward from SuperSLM's installed C++ headers behind
+// SuperEmbedder's own engine-adapter seam, calling EmbedEntry +
+// RunLayerLoopChunkBatched"). This is the ONE translation unit in this
+// library that names EmbedEntry, RunLayerLoopChunkBatched, RunLayerLoop,
 // MarshalLayer or SslmModel::Load -- `tests/c39_singleton_check.py` is the
 // structural check that enforces this (sec 8, C39/C31 clause 3: W-A's
 // drivers and this adapter are compiled INTO the library; the engine's
@@ -11,24 +11,38 @@
 // translation unit, never re-compiled inside a sibling TU).
 //
 // Ported from `Claude/Vitruvius/t2217-fold4-probe/cost/semb_encoder_interim.cpp`
-// (the plan's own named starting point, sec 4.3: "this TU is the reference
-// implementation U1 adopts as engine_adapter_interim.cpp") under product
-// discipline: the probe's `#include "sslm_marshal.h"` is corrected to the
-// engine's actual installed header name, `<superslm/layer_marshal.h>`
-// (confirmed installed and exporting MarshalLayer/ReadCarriedScale/
-// WidenGainToInt32/PreflightScanWscFolds/LayerBacking -- brief's own
-// "facts verified this session"); the probe's two must-fail hazard
-// `#ifdef` blocks (FOLD9_MUSTFAIL_ENCODER_DRIFT/BUDGET_HAZARD) are not
-// carried over -- they were the probe's own commissioning constructions
-// for ITS identity/inertness cells, never part of the specified adapter,
-// and this file is the specified adapter, not a probe.
+// (TE-63, U0 slice B) under product discipline; see that round's build log
+// for the port's own dispositions. U1 slice 1 (C12b first) adds, in this
+// same TU:
 //
-// THIS TU'S OWN SEAM: `semb_encode_document_for_witness` (tests/
-// semb_seam_abi_contract.h) opens the artifact, marshals every layer,
-// embeds every token, and runs the chunk-batched forward at the caller's
-// chunk budget -- one call, no persistent handle, matching the ABI
-// contract's own one-shot shape (there is no separate open/close verb at
-// U0; that is U1's `semb_encoder_open`).
+//   * the HANDLE surface (include/superembedder/encoder_abi.h): the artifact
+//     read ONCE into owned memory at open, every layer AND the final norm
+//     marshaled once, the K/V workspace sized once from the artifact's own
+//     geometry, and many documents encoded against that one handle -- the
+//     shape a bake over 239 documents needs and the one-shot witness verb
+//     below (which re-opens the 633 MB artifact per call) cannot supply;
+//   * `q_width` threaded EXPLICITLY to both forward entry points
+//     (`num_attention_heads * head_dim`), the way `sslm_prefill` itself does.
+//     The U0 port relied on the parameter's default (0 = "derive as
+//     hidden_size"), which is bit-identical for every square incumbent and
+//     WRONG for the ratified candidate (hidden_size 1024, heads*head_dim
+//     2048, sec 4.2 Track A) -- exactly the "silent-undercount defect" the
+//     engine's own header names for this call site, and exactly C12b's
+//     "the port is wrong" attribution, found by reading the production
+//     caller before the first real-artifact run rather than by a red digest
+//     after it. The witness verb inherits the fix; U0's synthetic fixture is
+//     square, so its committed anchors are unaffected by construction (and
+//     C39 grades that by execution);
+//   * PS-N's selection (sec 3.2): the engine's own final norm applied to
+//     the ONE selected position, through the same `RmsNormSite` under the
+//     same "final_norm" site name and site constant the engine's own
+//     generation loop uses;
+//   * the per-token leg (the engine's single-token `RunLayerLoop`, one
+//     position at a time against the same K/V store), so C12b's third
+//     attribution -- "the entry-point substitution is not bit-identical after
+//     all" -- is decided by running both entry points on the same document in
+//     the same process, per row, never inherited from the header's claim.
+#include "superembedder/encoder_abi.h"
 #include "superembedder/seam_abi.h"
 
 #include <cstring>
@@ -45,9 +59,22 @@ using superslm_marshal::MarshalLayer;
 using superslm_marshal::PreflightScanWscFolds;
 using superslm_marshal::ReadCarriedScale;
 using superslm_marshal::ReadFile;
+using superslm_marshal::WidenGainToInt32;
 
 namespace semb {
 namespace {
+
+// The engine's own status NAME for the most recent refusal on this thread,
+// returned through every verb's `out_engine_status_name` (sec 8 C4: the
+// name crosses the seam, never the enum). A marshal refusal carries the
+// marshal's own diagnostic string instead, since MarshalLayer reports
+// through a std::string rather than a status.
+thread_local std::string t_last_engine_status;
+
+const char* SetEngineStatus(const std::string& s) {
+  t_last_engine_status = s;
+  return t_last_engine_status.c_str();
+}
 
 struct EncoderModel {
   std::vector<uint8_t> model_bytes;
@@ -56,28 +83,35 @@ struct EncoderModel {
   std::vector<LayerWeights> layers;
   const int8_t* embed_weights = nullptr;
   CarriedScale embed_site_constant{};
+  std::vector<int32_t> final_norm_gain;
+  CarriedScale final_norm_site_constant{};
   std::vector<uint8_t> workspace;
   size_t hidden_size = 0;
   uint32_t num_layers = 0;
+  size_t q_width = 0;
   int64_t context_cap = 0;
   bool option_g_fused = false;
+  int32_t appended_token_id = -1;
 };
 
-// Opens the artifact and marshals every layer. Returns nullptr on any
-// failure -- the caller reports kSembEncodeEngineRefused; the exact
-// SslmModelStatus/SslmForwardStatus is not yet propagated across the seam
-// at U0 (sec 8 C4's own "never propagated as an engine enum across the
-// seam" rule is U1's mapping to SEMB_ENGINE_REFUSED; this seam is a
-// two-valued witness call, not the product's own bake path).
-EncoderModel* EncoderOpen(const std::string& model_path) {
+// Opens the artifact and marshals every layer plus the final norm. Returns
+// nullptr on any failure with the engine's own status name (or the marshal's
+// diagnostic) in `*engine_status_name`.
+EncoderModel* EncoderOpen(const std::string& model_path, const char** engine_status_name) {
   auto m = new EncoderModel();
   if (!ReadFile(model_path.c_str(), m->model_bytes)) {
+    if (engine_status_name) *engine_status_name = SetEngineStatus("ReadFileFailed");
     delete m;
     return nullptr;
   }
   std::string model_err;
-  if (SslmModel::Load(m->model_bytes.data(), m->model_bytes.size(), m->view, &model_err) !=
-      SslmModelStatus::Ok) {
+  const SslmModelStatus ms =
+      SslmModel::Load(m->model_bytes.data(), m->model_bytes.size(), m->view, &model_err);
+  if (ms != SslmModelStatus::Ok) {
+    if (engine_status_name) {
+      *engine_status_name =
+          SetEngineStatus(std::string(SslmModelStatusName(ms)) + ": " + model_err);
+    }
     delete m;
     return nullptr;
   }
@@ -85,6 +119,7 @@ EncoderModel* EncoderOpen(const std::string& model_path) {
   const uint32_t num_kv_heads = m->view.config.num_key_value_heads;
   m->num_layers = m->view.config.num_hidden_layers;
   m->hidden_size = m->view.config.hidden_size;
+  m->q_width = static_cast<size_t>(num_heads) * m->view.config.head_dim;
   m->context_cap = static_cast<int64_t>(m->view.config.context_cap);
   m->option_g_fused = m->view.option_g_fused_k_landing;
 
@@ -94,24 +129,41 @@ EncoderModel* EncoderOpen(const std::string& model_path) {
   for (uint32_t l = 0; l < m->num_layers; ++l) {
     std::string merr;
     if (!MarshalLayer(m->view, l, num_heads, num_kv_heads, m->backings[l], m->layers[l], &merr)) {
+      if (engine_status_name) *engine_status_name = SetEngineStatus("MarshalLayer: " + merr);
       delete m;
       return nullptr;
     }
   }
   const SslmTensorView* embed_w = m->view.weights.Tensor("embed");
-  if (!embed_w) {
+  const SslmTensorView* final_gain_w = m->view.weights.Tensor("final_norm.gain");
+  if (!embed_w || !final_gain_w) {
+    if (engine_status_name) *engine_status_name = SetEngineStatus("MissingEmbedOrFinalNormTensor");
     delete m;
     return nullptr;
   }
   m->embed_weights = reinterpret_cast<const int8_t*>(embed_w->data);
-  bool ok = true;
-  m->embed_site_constant = ReadCarriedScale(m->view.composition_constants, "embed", &ok);
-  if (!ok) {
+  m->final_norm_gain = WidenGainToInt32(*final_gain_w);
+  if (m->final_norm_gain.size() != m->hidden_size) {
+    if (engine_status_name) *engine_status_name = SetEngineStatus("FinalNormGainWidthMismatch");
     delete m;
     return nullptr;
   }
-  // RunLayerLoopChunkBatched's own workspace requirement (forward_sites.h):
-  // num_hidden_layers * context_cap * num_kv_heads * head_dim * 2.
+  bool ok = true;
+  m->embed_site_constant = ReadCarriedScale(m->view.composition_constants, "embed", &ok);
+  if (!ok) {
+    if (engine_status_name) *engine_status_name = SetEngineStatus("MissingEmbedSiteConstant");
+    delete m;
+    return nullptr;
+  }
+  m->final_norm_site_constant = ReadCarriedScale(m->view.composition_constants, "final_norm", &ok);
+  if (!ok) {
+    if (engine_status_name) *engine_status_name = SetEngineStatus("MissingFinalNormSiteConstant");
+    delete m;
+    return nullptr;
+  }
+  // The forward's own workspace requirement (forward_sites.h), identical for
+  // both entry points: num_hidden_layers * context_cap * num_kv_heads *
+  // head_dim * 2.
   m->workspace.assign(static_cast<size_t>(m->num_layers) * static_cast<size_t>(m->context_cap) *
                            num_kv_heads * m->view.config.head_dim * 2,
                        0);
@@ -120,10 +172,13 @@ EncoderModel* EncoderOpen(const std::string& model_path) {
 
 void EncoderClose(EncoderModel* m) { delete m; }
 
-// The seam: embed every token, then run the chunk-batched forward at
-// `chunk_budget` (0 or >= n resolves to one whole-document call).
+// The seam: embed every token, then run the forward down `leg`. On the
+// chunk-batched leg `chunk_budget` (0 or >= n resolves to one whole-document
+// call) bounds each call's span; on the per-token leg every position runs
+// through the engine's single-token loop in order against the same K/V
+// store, exactly as the engine's own decode path drives it.
 SslmForwardStatus Encode(EncoderModel* m, const int32_t* tokens, size_t n, size_t chunk_budget,
-                          int8_t* codes_out, CarriedScale* scales_out) {
+                          SembForwardLeg leg, int8_t* codes_out, CarriedScale* scales_out) {
   if (n == 0) return SslmForwardStatus::InvalidLayerBudget;
   if (chunk_budget == 0 || chunk_budget > n) chunk_budget = n;
   const size_t hidden = m->hidden_size;
@@ -139,14 +194,48 @@ SslmForwardStatus Encode(EncoderModel* m, const int32_t* tokens, size_t n, size_
 
   std::memset(m->workspace.data(), 0, m->workspace.size());
   uint64_t kv_sat = 0;
-  for (size_t off = 0; off < n; off += chunk_budget) {
-    const size_t span = (off + chunk_budget <= n) ? chunk_budget : (n - off);
-    const SslmForwardStatus st = RunLayerLoopChunkBatched(
-        codes_out + off * hidden, scales_out + off, span, m->layers.data(), m->num_layers, hidden,
-        m->view.config.head_dim, m->view.config.num_key_value_heads,
-        m->view.config.intermediate_size, m->context_cap, static_cast<int64_t>(off),
-        m->view.rope_tables, m->workspace.data(), m->workspace.size(), m->option_g_fused, &kv_sat);
+  if (leg == kSembForwardLegChunkBatched) {
+    for (size_t off = 0; off < n; off += chunk_budget) {
+      const size_t span = (off + chunk_budget <= n) ? chunk_budget : (n - off);
+      const SslmForwardStatus st = RunLayerLoopChunkBatched(
+          codes_out + off * hidden, scales_out + off, span, m->layers.data(), m->num_layers, hidden,
+          m->view.config.head_dim, m->view.config.num_key_value_heads,
+          m->view.config.intermediate_size, m->context_cap, static_cast<int64_t>(off),
+          m->view.rope_tables, m->workspace.data(), m->workspace.size(), m->option_g_fused, &kv_sat,
+          /*site_prefix=*/{}, /*trace_hook_state=*/nullptr, /*q_width=*/m->q_width);
+      if (st != SslmForwardStatus::Ok) return st;
+    }
+    return SslmForwardStatus::Ok;
+  }
+
+  // The per-token leg. The K/V store carries state between positions; each
+  // position's residual starts from its own embedding, exactly as the
+  // chunk-batched path's own contract states.
+  SequenceLayerState seq;
+  seq.kv_saturation_count = 0;
+  seq.context_length = 0;
+  for (size_t p = 0; p < n; ++p) {
+    seq.hidden_codes = codes_out + p * hidden;
+    seq.hidden_scale = scales_out[p];
+    seq.layer_index = 0;
+    seq.context_length = static_cast<int64_t>(p);
+    SslmForwardStatus st;
+    if (m->option_g_fused) {
+      st = RunLayerLoop(seq, m->layers.data(), m->num_layers, m->num_layers, hidden,
+                        m->view.config.head_dim, m->view.config.num_key_value_heads,
+                        m->view.config.intermediate_size, m->context_cap, m->view.rope_tables,
+                        m->workspace.data(), m->workspace.size(), OptionGKLandingMode::kFused,
+                        /*site_prefix=*/{}, /*token_index=*/0, /*trace_hook_state=*/nullptr,
+                        /*q_width=*/m->q_width);
+    } else {
+      st = RunLayerLoop(seq, m->layers.data(), m->num_layers, m->num_layers, hidden,
+                        m->view.config.head_dim, m->view.config.num_key_value_heads,
+                        m->view.config.intermediate_size, m->context_cap, m->view.rope_tables,
+                        m->workspace.data(), m->workspace.size(), /*site_prefix=*/{},
+                        /*token_index=*/0, /*trace_hook_state=*/nullptr, /*q_width=*/m->q_width);
+    }
     if (st != SslmForwardStatus::Ok) return st;
+    scales_out[p] = seq.hidden_scale;
   }
   return SslmForwardStatus::Ok;
 }
@@ -154,13 +243,16 @@ SslmForwardStatus Encode(EncoderModel* m, const int32_t* tokens, size_t n, size_
 }  // namespace
 }  // namespace semb
 
+// ---------------------------------------------------------------------------
+// The U0 witness verb, unchanged in shape (one-shot: opens, encodes, closes).
+// ---------------------------------------------------------------------------
 extern "C" SembEncodeStatus semb_encode_document_for_witness(const char* model_path,
                                                                const int32_t* token_ids, size_t n,
                                                                size_t chunk_budget,
                                                                int8_t* codes_out, int64_t* m_out,
                                                                int64_t* e_out,
                                                                size_t* hidden_out) {
-  semb::EncoderModel* model = semb::EncoderOpen(model_path);
+  semb::EncoderModel* model = semb::EncoderOpen(model_path, nullptr);
   if (!model) return kSembEncodeEngineRefused;
 
   const size_t hidden = model->hidden_size;
@@ -177,8 +269,8 @@ extern "C" SembEncodeStatus semb_encode_document_for_witness(const char* model_p
   if (hidden_out) *hidden_out = hidden;
 
   std::vector<superslm::CarriedScale> scales(n);
-  const superslm::SslmForwardStatus st =
-      semb::Encode(model, token_ids, n, chunk_budget, codes_out, scales.data());
+  const superslm::SslmForwardStatus st = semb::Encode(
+      model, token_ids, n, chunk_budget, kSembForwardLegChunkBatched, codes_out, scales.data());
   if (st != superslm::SslmForwardStatus::Ok) {
     semb::EncoderClose(model);
     return kSembEncodeEngineRefused;
@@ -189,4 +281,173 @@ extern "C" SembEncodeStatus semb_encode_document_for_witness(const char* model_p
   }
   semb::EncoderClose(model);
   return kSembEncodeOk;
+}
+
+// ---------------------------------------------------------------------------
+// The handle surface (encoder_abi.h).
+// ---------------------------------------------------------------------------
+struct SembInterimEncoder {
+  semb::EncoderModel* model = nullptr;
+};
+
+namespace {
+
+const char* OkName() { return "Ok"; }
+
+}  // namespace
+
+extern "C" SembInterimStatus semb_interim_encoder_open(const char* model_path,
+                                                        int32_t appended_token_id,
+                                                        SembInterimEncoder** out_encoder,
+                                                        const char** out_engine_status_name) {
+  if (out_engine_status_name) *out_engine_status_name = OkName();
+  if (!model_path || !out_encoder) return kSembInterimNullArgument;
+  *out_encoder = nullptr;
+  const char* name = nullptr;
+  semb::EncoderModel* model = semb::EncoderOpen(model_path, &name);
+  if (!model) {
+    if (out_engine_status_name) *out_engine_status_name = name ? name : "Unknown";
+    return kSembInterimEngineRefused;
+  }
+  model->appended_token_id = appended_token_id;
+  auto enc = new SembInterimEncoder();
+  enc->model = model;
+  *out_encoder = enc;
+  return kSembInterimOk;
+}
+
+extern "C" void semb_interim_encoder_close(SembInterimEncoder* encoder) {
+  if (!encoder) return;
+  semb::EncoderClose(encoder->model);
+  delete encoder;
+}
+
+extern "C" SembInterimStatus semb_interim_encoder_geometry(const SembInterimEncoder* encoder,
+                                                            SembInterimGeometry* out_geometry) {
+  if (!encoder || !out_geometry) return kSembInterimNullArgument;
+  if (out_geometry->struct_size != sizeof(SembInterimGeometry)) return kSembInterimNullArgument;
+  const semb::EncoderModel* m = encoder->model;
+  out_geometry->hidden_size = m->view.config.hidden_size;
+  out_geometry->num_hidden_layers = m->view.config.num_hidden_layers;
+  out_geometry->num_attention_heads = m->view.config.num_attention_heads;
+  out_geometry->num_key_value_heads = m->view.config.num_key_value_heads;
+  out_geometry->head_dim = m->view.config.head_dim;
+  out_geometry->vocab_size = m->view.config.vocab_size;
+  out_geometry->context_cap = m->view.config.context_cap;
+  out_geometry->appended_token_id = m->appended_token_id;
+  return kSembInterimOk;
+}
+
+extern "C" SembInterimStatus semb_interim_encode_seam(
+    SembInterimEncoder* encoder, const int32_t* content_ids, size_t n_content, size_t chunk_budget,
+    SembForwardLeg leg, int8_t* codes_out, size_t codes_capacity, int64_t* m_out, int64_t* e_out,
+    size_t scales_capacity, size_t* out_positions, const char** out_engine_status_name) {
+  if (out_engine_status_name) *out_engine_status_name = OkName();
+  if (!encoder || !out_positions) return kSembInterimNullArgument;
+  if (n_content > 0 && !content_ids) return kSembInterimNullArgument;
+  if (n_content == 0) {
+    *out_positions = 0;
+    return kSembInterimInputEmpty;
+  }
+  if (leg != kSembForwardLegChunkBatched && leg != kSembForwardLegPerToken) {
+    *out_positions = n_content + 1;
+    return kSembInterimInvalidLeg;
+  }
+  semb::EncoderModel* m = encoder->model;
+  const size_t n = n_content + 1;  // the appended end token
+  *out_positions = n;
+  const size_t hidden = m->hidden_size;
+  if (codes_capacity < n * hidden || scales_capacity < n) return kSembInterimBufferTooSmall;
+  if (!codes_out || !m_out || !e_out) return kSembInterimNullArgument;
+
+  // SuperEmbedder's own code appends the single fixed end token id (sec 3.2)
+  // to the token-id sequence, never composed as text and re-tokenized.
+  std::vector<int32_t> tokens(n);
+  std::memcpy(tokens.data(), content_ids, n_content * sizeof(int32_t));
+  tokens[n_content] = m->appended_token_id;
+
+  std::vector<superslm::CarriedScale> scales(n);
+  const superslm::SslmForwardStatus st =
+      semb::Encode(m, tokens.data(), n, chunk_budget, leg, codes_out, scales.data());
+  if (st != superslm::SslmForwardStatus::Ok) {
+    if (out_engine_status_name) {
+      *out_engine_status_name = semb::SetEngineStatus(superslm::SslmForwardStatusName(st));
+    }
+    return kSembInterimEngineRefused;
+  }
+  for (size_t p = 0; p < n; ++p) {
+    m_out[p] = scales[p].m;
+    e_out[p] = scales[p].e;
+  }
+  return kSembInterimOk;
+}
+
+extern "C" SembInterimStatus semb_interim_ps_n_select(const SembInterimEncoder* encoder,
+                                                       const int8_t* codes, const int64_t* m,
+                                                       const int64_t* e, size_t n, size_t position,
+                                                       int8_t* out_codes, int64_t* out_m,
+                                                       int64_t* out_e,
+                                                       const char** out_engine_status_name) {
+  if (out_engine_status_name) *out_engine_status_name = OkName();
+  if (!encoder || !codes || !m || !e || !out_codes || !out_m || !out_e) {
+    return kSembInterimNullArgument;
+  }
+  if (position >= n) return kSembInterimPositionOutOfRange;
+  const semb::EncoderModel* model = encoder->model;
+  const size_t hidden = model->hidden_size;
+  const superslm::CarriedScale incoming{m[position], e[position]};
+  superslm::CarriedScale out_scale{};
+  // The engine's own final norm, under the same site name and site constant
+  // its generation loop applies before the head -- PS-N's post-final-norm
+  // source state (sec 3.2). The incoming scale is annihilated by the site's
+  // own scale-killing form (forward_sites.h's RmsNormSite contract).
+  const superslm::SslmForwardStatus st = superslm::RmsNormSite(
+      codes + position * hidden, model->final_norm_gain.data(), hidden, incoming,
+      model->final_norm_site_constant, out_codes, &out_scale, "final_norm");
+  if (st != superslm::SslmForwardStatus::Ok) {
+    if (out_engine_status_name) {
+      *out_engine_status_name = semb::SetEngineStatus(superslm::SslmForwardStatusName(st));
+    }
+    return kSembInterimEngineRefused;
+  }
+  *out_m = out_scale.m;
+  *out_e = out_scale.e;
+  return kSembInterimOk;
+}
+
+extern "C" SembInterimStatus semb_interim_encode_ps_n(
+    SembInterimEncoder* encoder, const int32_t* content_ids, size_t n_content, size_t chunk_budget,
+    float* out_vector, size_t out_capacity_bytes, size_t* out_required_bytes,
+    SembWaPoolStatus* out_dequantize_status, const char** out_engine_status_name) {
+  if (out_engine_status_name) *out_engine_status_name = OkName();
+  if (out_dequantize_status) *out_dequantize_status = kSembOk;
+  if (!encoder || !out_required_bytes) return kSembInterimNullArgument;
+  semb::EncoderModel* m = encoder->model;
+  const size_t hidden = m->hidden_size;
+  *out_required_bytes = hidden * sizeof(float);
+  if (n_content == 0) return kSembInterimInputEmpty;
+  if (out_capacity_bytes < hidden * sizeof(float)) return kSembInterimBufferTooSmall;
+  if (!out_vector || !content_ids) return kSembInterimNullArgument;
+
+  const size_t n = n_content + 1;
+  std::vector<int8_t> codes(n * hidden);
+  std::vector<int64_t> ms(n), es(n);
+  size_t positions = 0;
+  SembInterimStatus st = semb_interim_encode_seam(encoder, content_ids, n_content, chunk_budget,
+                                                  kSembForwardLegChunkBatched, codes.data(),
+                                                  codes.size(), ms.data(), es.data(), n,
+                                                  &positions, out_engine_status_name);
+  if (st != kSembInterimOk) return st;
+
+  // PS-N's position rule: the LAST position -- the appended end token's.
+  std::vector<int8_t> sel(hidden);
+  int64_t sel_m = 0, sel_e = 0;
+  st = semb_interim_ps_n_select(encoder, codes.data(), ms.data(), es.data(), n, n - 1, sel.data(),
+                                &sel_m, &sel_e, out_engine_status_name);
+  if (st != kSembInterimOk) return st;
+
+  const SembWaPoolStatus dq = semb_ps_n_dequantize(sel.data(), sel_m, sel_e, hidden, out_vector);
+  if (out_dequantize_status) *out_dequantize_status = dq;
+  if (dq != kSembOk) return kSembInterimDequantizeRefused;
+  return kSembInterimOk;
 }
