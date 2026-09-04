@@ -325,7 +325,7 @@ extern "C" void semb_interim_encoder_close(SembInterimEncoder* encoder) {
 extern "C" SembInterimStatus semb_interim_encoder_geometry(const SembInterimEncoder* encoder,
                                                             SembInterimGeometry* out_geometry) {
   if (!encoder || !out_geometry) return kSembInterimNullArgument;
-  if (out_geometry->struct_size != sizeof(SembInterimGeometry)) return kSembInterimNullArgument;
+  if (out_geometry->struct_size != sizeof(SembInterimGeometry)) return kSembInterimStructSizeMismatch;
   const semb::EncoderModel* m = encoder->model;
   out_geometry->hidden_size = m->view.config.hidden_size;
   out_geometry->num_hidden_layers = m->view.config.num_hidden_layers;

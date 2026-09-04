@@ -53,6 +53,7 @@ enum SembInterimStatus : int32_t {
   // The composed path's dequantize refused (`*out_dequantize_status` names
   // which corner); no vector was written.
   kSembInterimDequantizeRefused = 7,
+  kSembInterimStructSizeMismatch = 8,  // an IN struct's `struct_size` is not this build's
 };
 
 // Which of the two installed forward entry points runs the document. Both
