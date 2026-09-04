@@ -116,9 +116,21 @@ inline std::string RunCaptureStdout(const std::string& command) {
 // (`find_package(Python3 ...)`).
 inline std::string PythonExecutable() {
   const char* env = std::getenv("SEMB_TEST_PYTHON");
-  if (env && *env) return env;
+  if (env && *env) {
+#ifdef _WIN32
+    return std::string("call \"") + env + "\"";
+#else
+    return std::string("\"") + env + "\"";
+#endif
+  }
 #ifdef SEMB_TEST_PYTHON_EXECUTABLE
-  return SEMB_TEST_PYTHON_EXECUTABLE;
+#ifdef _WIN32
+  // _popen dispatches through cmd.exe /c. `call` avoids cmd.exe's special
+  // first-token quote stripping when the executable path itself is quoted.
+  return std::string("call \"") + SEMB_TEST_PYTHON_EXECUTABLE + "\"";
+#else
+  return std::string("\"") + SEMB_TEST_PYTHON_EXECUTABLE + "\"";
+#endif
 #else
   return "python";
 #endif

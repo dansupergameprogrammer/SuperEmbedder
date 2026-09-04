@@ -39,6 +39,7 @@ CMAKE: str
 GENERATOR: str
 NINJA: str
 PYEXE: str
+ENGINE_SOURCE: str
 SCRATCH: Path
 
 RESULTS = []
@@ -126,10 +127,18 @@ def detect_compiler_id() -> str:
         # plain set() call (found by execution: CMakeCache.txt has no such
         # key at all).
         for f in build_dir.glob("CMakeFiles/*/CMakeCXXCompiler.cmake"):
-            for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
-                m = re.match(r'\s*set\(CMAKE_CXX_COMPILER_ID\s+"([^"]+)"\)', line)
-                if m:
-                    return m.group(1)
+            text = f.read_text(encoding="utf-8", errors="replace")
+            compiler = re.search(r'(?m)^\s*set\(CMAKE_CXX_COMPILER_ID\s+"([^"]+)"\)', text)
+            frontend = re.search(
+                r'(?m)^\s*set\(CMAKE_CXX_COMPILER_FRONTEND_VARIANT\s+"([^"]+)"\)', text)
+            if compiler:
+                compiler_id = compiler.group(1)
+                # clang-cl is compiler ID Clang but consumes the same /fp:*
+                # command-line family as MSVC. C14 grades flags, so frontend
+                # identity is the load-bearing distinction here.
+                if compiler_id != "MSVC" and frontend and frontend.group(1) == "MSVC":
+                    return f"{compiler_id}-MSVC"
+                return compiler_id
         return None
 
     probe_src = SCRATCH / "_compiler_id_probe_src"
@@ -156,6 +165,11 @@ def detect_compiler_id() -> str:
     return found
 
 
+def uses_msvc_command_line() -> bool:
+    compiler_id = detect_compiler_id()
+    return compiler_id == "MSVC" or compiler_id.endswith("-MSVC")
+
+
 
 def run_cmake_configure(src: Path, build: Path, prefix: Path, extra_defines=None, extra_env=None) -> tuple[int, str]:
     rmtree(build)
@@ -174,6 +188,7 @@ def run_cmake_configure(src: Path, build: Path, prefix: Path, extra_defines=None
         # this (the later -D wins), matching c14_cxx_flags_release_fastmath's
         # own explicit Release request below.
         "-DCMAKE_BUILD_TYPE=Release",
+        f"-DPython3_EXECUTABLE={PYEXE}",
     ]
     if GENERATOR == "Ninja" and NINJA:
         cmd.append(f"-DCMAKE_MAKE_PROGRAM={NINJA}")
@@ -359,7 +374,13 @@ def c33_leg_d_floor():
 def c33_leg_d_exact_pin():
     src = copy_repo(SCRATCH / "c33d2_src")
     prefix = copy_prefix(SCRATCH / "c33d2_prefix")
-    edit_config_version(prefix, "1.4.0")
+    tag_line = next(line for line in (src / "superslm.lock").read_text(encoding="utf-8").splitlines()
+                    if line.startswith("tag="))
+    match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag_line.split("=", 1)[1])
+    if not match:
+        raise RuntimeError(f"C33(d) cannot construct a newer exact-pin mismatch from {tag_line!r}")
+    newer = f"{match.group(1)}.{int(match.group(2)) + 1}.0"
+    edit_config_version(prefix, newer)
     rc, out = run_cmake_configure(src, SCRATCH / "c33d2_build", prefix)
     record("C33(d) above floor, exact-pin mismatch", "SEMB_ENGINE_PIN_MISMATCH", rc, out)
 
@@ -380,7 +401,7 @@ def c33_leg_e_dirty_clone(pin_tool: Path, lock_path_template: Path):
     subprocess.run(
         ["git", "clone", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.longpaths=true",
          "--branch", tag, "--single-branch",
-         DEFAULT_REMOTE, str(clone_dir)],
+         ENGINE_SOURCE, str(clone_dir)],
         check=True, capture_output=True, text=True,
     )
     dirty_file = clone_dir / "src" / "sha256.cpp"
@@ -457,7 +478,7 @@ def c33_leg_e2_added_file_no_edit(pin_tool: Path, lock_path_template: Path):
     subprocess.run(
         ["git", "clone", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.longpaths=true",
          "--branch", tag, "--single-branch",
-         DEFAULT_REMOTE, str(clone_dir)],
+         ENGINE_SOURCE, str(clone_dir)],
         check=True, capture_output=True, text=True,
     )
     (clone_dir / "newhdr.h").write_text("#pragma once\n#define SEMB_N1_LEG_MARKER 1\n", encoding="utf-8")
@@ -635,7 +656,7 @@ def c33_leg_i_preexisting_build_survives(pin_tool: Path, lock_path_template: Pat
     subprocess.run(
         ["git", "clone", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.longpaths=true",
          "--branch", tag, "--single-branch",
-         DEFAULT_REMOTE, str(clone_dir)],
+         ENGINE_SOURCE, str(clone_dir)],
         check=True, capture_output=True, text=True,
     )
     lock = SCRATCH / "c33i_lock" / "superslm.lock"
@@ -720,7 +741,7 @@ def c33_leg_j_fresh_build_authorized_wipe(pin_tool: Path, lock_path_template: Pa
     subprocess.run(
         ["git", "clone", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.longpaths=true",
          "--branch", tag, "--single-branch",
-         DEFAULT_REMOTE, str(clone_dir)],
+         ENGINE_SOURCE, str(clone_dir)],
         check=True, capture_output=True, text=True,
     )
     lock = SCRATCH / "c33j_lock" / "superslm.lock"
@@ -801,7 +822,7 @@ def c33_leg_h_final_cleanup_preserves_user_files(pin_tool: Path, lock_path_templ
     subprocess.run(
         ["git", "clone", "-c", "core.autocrlf=false", "-c", "core.eol=lf", "-c", "core.longpaths=true",
          "--branch", tag, "--single-branch",
-         DEFAULT_REMOTE, str(clone_dir)],
+         ENGINE_SOURCE, str(clone_dir)],
         check=True, capture_output=True, text=True,
     )
 
@@ -1263,7 +1284,7 @@ def c14_cxx_flags_fastmath():
     passes -ffast-math, matching what cmake/BuildFlags.cmake itself checks
     for on that compiler family."""
     compiler_id = detect_compiler_id()
-    forbidden = "/fp:fast" if compiler_id == "MSVC" else "-ffast-math"
+    forbidden = "/fp:fast" if uses_msvc_command_line() else "-ffast-math"
     src = copy_repo(SCRATCH / "c14b_src")
     rc, out = run_cmake_configure(src, SCRATCH / "c14b_build", ENGINE_PREFIX,
                                    extra_defines={"CMAKE_CXX_FLAGS": forbidden})
@@ -1326,6 +1347,7 @@ def c14_unregistered_target():
     cmd = [
         CMAKE, "-G", GENERATOR, "-S", str(src), "-B", str(build),
         f"-DCMAKE_PREFIX_PATH={ENGINE_PREFIX}", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
+        f"-DPython3_EXECUTABLE={PYEXE}",
     ]
     if GENERATOR == "Ninja" and NINJA:
         cmd.append(f"-DCMAKE_MAKE_PROGRAM={NINJA}")
@@ -1337,7 +1359,7 @@ def c14_unregistered_target():
     # Ninja invocation drives, so using it as a compiler stand-in looked for
     # MSVC's spelling on a GCC compile line and could never find it.
     compiler_id = detect_compiler_id()
-    required_flag = "/fp:precise" if compiler_id == "MSVC" else "-ffp-contract=off"
+    required_flag = "/fp:precise" if uses_msvc_command_line() else "-ffp-contract=off"
     flag_in_real_command = False
     if proc.returncode == 0:
         cc_path = build / "compile_commands.json"
@@ -1391,7 +1413,7 @@ def c14_subdirectory_target():
     spelling is now chosen from detect_compiler_id(), matching what
     cmake/BuildFlags.cmake itself checks for on the real compiler in use."""
     compiler_id = detect_compiler_id()
-    forbidden = "/fp:fast" if compiler_id == "MSVC" else "-ffast-math"
+    forbidden = "/fp:fast" if uses_msvc_command_line() else "-ffast-math"
     src = copy_repo(SCRATCH / "c14f_src")
     # TE-63: this leg's own synthetic subdirectory used to be named "tests"
     # and inject its own add_subdirectory(tests) call. The root
@@ -1429,7 +1451,7 @@ def c14_cxx_flags_release_fastmath():
     meaningless to Clang, string(FIND) against -ffast-math never matches,
     and configure exits 0 -- a false FAIL."""
     compiler_id = detect_compiler_id()
-    forbidden = "/fp:fast" if compiler_id == "MSVC" else "-ffast-math"
+    forbidden = "/fp:fast" if uses_msvc_command_line() else "-ffast-math"
     src = copy_repo(SCRATCH / "c14g_src")
     rc, out = run_cmake_configure(src, SCRATCH / "c14g_build", ENGINE_PREFIX,
                                    extra_defines={"CMAKE_BUILD_TYPE": "Release",
@@ -1454,7 +1476,7 @@ def c14_run_all_legs():
 
 
 def main() -> int:
-    global REPO_ROOT, ENGINE_PREFIX, CMAKE, GENERATOR, NINJA, PYEXE, SCRATCH
+    global REPO_ROOT, ENGINE_PREFIX, CMAKE, GENERATOR, NINJA, PYEXE, ENGINE_SOURCE, SCRATCH
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo-root", required=True)
     ap.add_argument("--engine-prefix", required=True)
@@ -1475,6 +1497,7 @@ def main() -> int:
     GENERATOR = args.generator
     NINJA = args.ninja_executable
     PYEXE = args.python_executable
+    ENGINE_SOURCE = os.environ.get("SEMB_TEST_ENGINE_SOURCE", DEFAULT_REMOTE)
     SCRATCH = Path(args.scratch).resolve() if args.scratch else Path(tempfile.mkdtemp(prefix="semb_negconf_"))
     SCRATCH.mkdir(parents=True, exist_ok=True)
 

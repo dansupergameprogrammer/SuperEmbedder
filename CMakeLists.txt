@@ -18,6 +18,34 @@ include(EngineGuards)   # find_package(superslm), the two version guards, proven
 include(BuildFlags)     # the precise-FP flag (directory-wide) + semb_assert_precise_fp() (C14)
 include(SourceProvenance)  # semb_source_sha (C34)
 
+# C38's pin-bump-only construction needs to place one compile definition on
+# exactly one downstream target. The pinned SuperSLM tag is never modified:
+# tools/engine_side_wa_perturbation.py injects the matching branch into a
+# throwaway engine clone, then configures scratch SuperEmbedder builds with
+# this selector. Empty is the only production value.
+set(SEMB_C38_DEFINE_TARGET "" CACHE STRING
+	"C38 scratch construction only: empty, library, or witness")
+set_property(CACHE SEMB_C38_DEFINE_TARGET PROPERTY STRINGS "" library witness)
+if(NOT SEMB_C38_DEFINE_TARGET STREQUAL "" AND
+		NOT SEMB_C38_DEFINE_TARGET STREQUAL "library" AND
+		NOT SEMB_C38_DEFINE_TARGET STREQUAL "witness")
+	message(FATAL_ERROR
+		"SEMB_C38_DEFINE_TARGET must be empty, library, or witness; got '${SEMB_C38_DEFINE_TARGET}'")
+endif()
+if(NOT SEMB_C38_DEFINE_TARGET STREQUAL "")
+	set(_semb_c38_header "${SEMB_ENGINE_PREFIX}/include/superslm/layer_marshal.h")
+	if(NOT EXISTS "${_semb_c38_header}")
+		message(FATAL_ERROR "C38 scratch header not found: ${_semb_c38_header}")
+	endif()
+	file(READ "${_semb_c38_header}" _semb_c38_header_text)
+	string(FIND "${_semb_c38_header_text}" "SUPERSLM_C38_INLINE_PERTURBATION" _semb_c38_marker)
+	if(_semb_c38_marker EQUAL -1)
+		message(FATAL_ERROR
+			"SEMB_C38_DEFINE_TARGET was set, but the installed scratch engine header carries no "
+			"SUPERSLM_C38_INLINE_PERTURBATION branch")
+	endif()
+endif()
+
 # engine_path_sha (sec 4.3: "the build selects one adapter translation unit
 # in one branch of one variable... its bytes are engine_path_sha, manifest
 # provenance since two adapters computing the same vectors share an
@@ -102,6 +130,9 @@ target_include_directories(superembedder
 		"${CMAKE_BINARY_DIR}/generated"
 )
 target_link_libraries(superembedder PRIVATE superslm::superslm)
+if(SEMB_C38_DEFINE_TARGET STREQUAL "library")
+	target_compile_definitions(superembedder PRIVATE SUPERSLM_C38_INLINE_PERTURBATION=1)
+endif()
 semb_verify_source_provenance(superembedder SIDECAR "${SEMB_SOURCE_PROVENANCE_SIDECAR_superembedder}"
 	STATUS_NAME "SEMB_SOURCE_SET_DRIFT")
 
@@ -124,6 +155,9 @@ target_include_directories(semb PRIVATE "${CMAKE_BINARY_DIR}/generated")
 # live in the library, not here.
 # ---------------------------------------------------------------------------
 add_executable(semb_witness src/witness/witness_main.cpp)
+if(SEMB_C38_DEFINE_TARGET STREQUAL "witness")
+	target_compile_definitions(semb_witness PRIVATE SUPERSLM_C38_INLINE_PERTURBATION=1)
+endif()
 
 # sec 8 C31(i) (SEMB_WITNESS_FOREIGN_BUILD, sec 4.4d item 1): the same
 # source-provenance digest/re-verify pair already proven for the

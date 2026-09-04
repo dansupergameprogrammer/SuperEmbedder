@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""tools/engine_side_wa_perturbation.py -- TE-87 (U0 slice C, sec 4.4d item 4,
-D-SLM6157): promotes D-SLM6075's own manual construction for C36(a) --
+"""Pin-bump witness constructions for C36(a) and C38.
+
+TE-87 (U0 slice C, sec 4.4d item 4, D-SLM6157) promoted
+D-SLM6075's own manual construction for C36(a) --
 "an engine arithmetic change confined to a non-inline .cpp, this library
 byte-identical, must move witness_sha" (`Claude/Plans/SuperEmbedder_Plan.md`
 sec 8, C36 row (a)) -- to a named, re-runnable script. The construction
@@ -40,7 +42,20 @@ a must-accept step TE-89 adds -- TE-88 review S-8):
      build+run a scratch `semb_witness` against it -- the mutant
      reading.
   5. Compare the mutant reading against the (now must-accept-commissioned)
-     baseline and print the verdict.
+     baseline and print the C36(a) verdict.
+  6. Clone the same tag into a FOURTH scratch directory and inject a
+     `SUPERSLM_C38_INLINE_PERTURBATION` branch into the installed-inline
+     `ReadCarriedScale` primitive in `include/superslm/layer_marshal.h`.
+     The branch changes only the `embed` carried-scale exponent, and only
+     when its compile definition is visible in the translation unit that
+     instantiates the inline function. Commit and locally retag this clone
+     exactly as for the C36(a) mutant, then install it.
+  7. Against that one injected-header install, build three downstream
+     variants: no definition, definition private to `superembedder`, and
+     definition private to `semb_witness`. The no-definition and
+     witness-only readings must equal baseline; the library-definition
+     reading must differ. This proves both halves of C38 without requiring
+     a test hook in a released SuperSLM tag.
 
 NEVER TOUCHES THE TRACKED, LOCAL SUPERSLM ENGINE CHECKOUT this project
 treats as read-only. Every clone, build, and install in this recipe
@@ -54,10 +69,12 @@ a subprocess and never edited by this script.
 USAGE
   python tools/engine_side_wa_perturbation.py --scratch-root <dir>
       [--engine-source <path-or-url>] [--cmake <path>] [--ninja <path>]
+  python tools/engine_side_wa_perturbation.py --selftest-only
 
-Prints, as its final stdout line: `witness_sha_moved: true` (the expected,
-correct reading -- the engine-side edit is visible to witness_sha) or
-`witness_sha_moved: false` (a real product defect: the edit is invisible).
+Prints the C36(a) field `witness_sha_moved` and the C38 fields
+`c38_injected_branch_inert`, `c38_library_define_moved`, and
+`c38_witness_define_inert`. `--selftest-only` cheaply commissions the C38
+comparison logic and prints `c38_selftest: PASS`.
 Exit code reflects whether the RECIPE completed (0 = the must-accept held
 and both readings were taken and compared, whatever the comparison found;
 nonzero = an infrastructure failure -- a clone, build, or install step
@@ -248,6 +265,45 @@ def perturb_embed_entry(clone: Path, tag: str) -> None:
     run(["git", "-C", str(clone), "tag", "-f", tag, "HEAD"])
 
 
+def perturb_inline_read_carried_scale(clone: Path, tag: str) -> None:
+    """Injects C38's scratch-only branch into the real installed inline site.
+
+    The tracked engine checkout and released tag remain untouched. As with
+    perturb_embed_entry(), newline translation is disabled so the committed
+    blob and installed provenance snapshot are byte-identical on Windows.
+    """
+    target = clone / "include" / "superslm" / "layer_marshal.h"
+    if not target.exists():
+        raise RuntimeError(f"expected installed engine header not found: {target}")
+    with open(target, "r", encoding="utf-8", newline="") as f:
+        text = f.read()
+    old = (
+        "\treturn superslm::CarriedScale{superslm::SslmKeyedConstants::Value(*e, 0),\n"
+        "\t                               superslm::SslmKeyedConstants::Value(*e, 1)};\n"
+    )
+    new = (
+        "\tconst int64_t carried_m = superslm::SslmKeyedConstants::Value(*e, 0);\n"
+        "\tint64_t carried_e = superslm::SslmKeyedConstants::Value(*e, 1);\n"
+        "#if defined(SUPERSLM_C38_INLINE_PERTURBATION)\n"
+        "\t// Scratch-only C38 construction: a visible, material change at the real inline site.\n"
+        "\tif (name == \"embed\") ++carried_e;\n"
+        "#endif\n"
+        "\treturn superslm::CarriedScale{carried_m, carried_e};\n"
+    )
+    if old not in text:
+        raise RuntimeError(
+            f"ReadCarriedScale's return anchor was not found in {target} -- the pinned engine "
+            "header has moved; C38's scratch injection needs updating"
+        )
+    with open(target, "w", encoding="utf-8", newline="") as f:
+        f.write(text.replace(old, new, 1))
+
+    run(["git", "-C", str(clone), "-c", "user.email=semb-scratch@localhost",
+         "-c", "user.name=SuperEmbedder scratch perturbation", "commit", "-am",
+         "scratch perturbation for C38: gate ReadCarriedScale embed exponent"])
+    run(["git", "-C", str(clone), "tag", "-f", tag, "HEAD"])
+
+
 def generate_synthetic_artifact(*, lock: Path, out_path: Path, workdir: Path,
                                  source: str | None) -> None:
     cmd = [sys.executable,
@@ -278,11 +334,16 @@ def read_artifact_manifest(build_dir: Path) -> dict:
     return json.loads(manifest_path.read_text(encoding="utf-8"))
 
 
-def build_witness(*, prefix: Path, lock: Path, build_dir: Path, cmake: str, ninja: str) -> Path:
+def build_witness(*, prefix: Path, lock: Path, build_dir: Path, cmake: str, ninja: str,
+                  c38_define_target: str = "") -> Path:
     rmtree(build_dir)
-    run([cmake, "-G", "Ninja", "-S", str(REPO_ROOT), "-B", str(build_dir),
-         "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_MAKE_PROGRAM={ninja}",
-         f"-DCMAKE_PREFIX_PATH={prefix}", f"-DSEMB_ENGINE_LOCK_FILE={lock}"])
+    configure = [cmake, "-G", "Ninja", "-S", str(REPO_ROOT), "-B", str(build_dir),
+                 "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_MAKE_PROGRAM={ninja}",
+                 f"-DCMAKE_PREFIX_PATH={prefix}", f"-DSEMB_ENGINE_LOCK_FILE={lock}",
+                 f"-DPython3_EXECUTABLE={sys.executable}"]
+    if c38_define_target:
+        configure.append(f"-DSEMB_C38_DEFINE_TARGET={c38_define_target}")
+    run(configure)
     manifest = read_artifact_manifest(build_dir)
     exe = Path(manifest["semb_witness"])
     run([cmake, "--build", str(build_dir), "--target", "semb_witness"])
@@ -303,12 +364,34 @@ def run_witness(exe: Path, model_path: Path, tokens_csv: str = "3,17,42,5,90") -
     raise RuntimeError(f"witness ran but printed no witness_sha: {proc.stdout!r}")
 
 
+def c38_verdict(*, baseline: str, injected: str, library: str, witness: str) -> tuple[bool, bool, bool]:
+    """Returns C38's three independently reportable comparisons."""
+    return injected == baseline, library != baseline, witness == baseline
+
+
+def c38_selftest() -> None:
+    """Must-accept and must-reject commissioning for C38's verdict logic."""
+    accepted = c38_verdict(baseline="A", injected="A", library="B", witness="A")
+    rejected = (
+        c38_verdict(baseline="A", injected="B", library="B", witness="A"),
+        c38_verdict(baseline="A", injected="A", library="A", witness="A"),
+        c38_verdict(baseline="A", injected="A", library="B", witness="B"),
+    )
+    if accepted != (True, True, True) or any(all(reading) for reading in rejected):
+        raise RuntimeError(
+            f"C38 verdict self-test failed: accepted={accepted}, rejected={rejected}"
+        )
+    print("c38_selftest: PASS")
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--scratch-root", required=True, type=Path,
-                     help="every clone, build, and install this script performs lives entirely "
-                          "under this directory -- it is created if it does not exist.")
+    ap.add_argument("--scratch-root", type=Path,
+                      help="every clone, build, and install this script performs lives entirely "
+                           "under this directory -- it is created if it does not exist.")
+    ap.add_argument("--selftest-only", action="store_true",
+                    help="commission the C38 comparison logic without cloning or building")
     ap.add_argument("--engine-source", default=None,
                      help="git URL or local path to clone the pinned engine from (forwarded to "
                           "pin-superslm's own --source and to this script's own manual clone for "
@@ -317,6 +400,12 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--cmake", default=None, help="defaults to PATH, then the known VS install location")
     ap.add_argument("--ninja", default=None, help="defaults to PATH, then the known VS install location")
     args = ap.parse_args(argv)
+
+    if args.selftest_only:
+        c38_selftest()
+        return 0
+    if args.scratch_root is None:
+        ap.error("--scratch-root is required unless --selftest-only is used")
 
     scratch_root: Path = args.scratch_root.resolve()
     scratch_root.mkdir(parents=True, exist_ok=True)
@@ -331,9 +420,11 @@ def main(argv: list[str]) -> int:
     baseline_dir = scratch_root / "baseline"
     baseline2_dir = scratch_root / "baseline2"
     mutant_dir = scratch_root / "mutant"
+    inline_mutant_dir = scratch_root / "inline_mutant"
     rmtree(baseline_dir)
     rmtree(baseline2_dir)
     rmtree(mutant_dir)
+    rmtree(inline_mutant_dir)
 
     # -------------------------------------------------------------- baseline --
     log("=== baseline: unperturbed pinned engine ===")
@@ -409,6 +500,44 @@ def main(argv: list[str]) -> int:
     log(f"mutant={mutant_sha}")
     log(f"differ={moved}")
     print(f"witness_sha_moved: {'true' if moved else 'false'}")
+
+    # ------------------------------------------------------ C38 inline mutant --
+    log("=== C38: scratch-injected ReadCarriedScale branch ===")
+    inline_mutant_src = inline_mutant_dir / "engine_src"
+    clone_engine_manually(engine_source, tag, inline_mutant_src)
+    perturb_inline_read_carried_scale(inline_mutant_src, tag)
+
+    inline_mutant_lock = inline_mutant_dir / "superslm.lock"
+    write_scratch_lock(inline_mutant_lock, tag)
+    inline_mutant_prefix = inline_mutant_dir / "engine_install"
+    pin_engine(lock=inline_mutant_lock, prefix=inline_mutant_prefix,
+               workdir=inline_mutant_dir / "engine_workdir", cmake=cmake, ninja=ninja,
+               reuse_clone=inline_mutant_src)
+
+    injected_exe = build_witness(
+        prefix=inline_mutant_prefix, lock=inline_mutant_lock,
+        build_dir=inline_mutant_dir / "semb_build_inert", cmake=cmake, ninja=ninja)
+    library_exe = build_witness(
+        prefix=inline_mutant_prefix, lock=inline_mutant_lock,
+        build_dir=inline_mutant_dir / "semb_build_library", cmake=cmake, ninja=ninja,
+        c38_define_target="library")
+    witness_exe = build_witness(
+        prefix=inline_mutant_prefix, lock=inline_mutant_lock,
+        build_dir=inline_mutant_dir / "semb_build_witness", cmake=cmake, ninja=ninja,
+        c38_define_target="witness")
+
+    injected_sha = run_witness(injected_exe, artifact_path)
+    library_sha = run_witness(library_exe, artifact_path)
+    witness_sha = run_witness(witness_exe, artifact_path)
+    injected_inert, library_moved, witness_inert = c38_verdict(
+        baseline=baseline_sha, injected=injected_sha, library=library_sha, witness=witness_sha)
+    log(f"C38 baseline={baseline_sha}")
+    log(f"C38 injected/no-define={injected_sha}")
+    log(f"C38 library-define={library_sha}")
+    log(f"C38 witness-define={witness_sha}")
+    print(f"c38_injected_branch_inert: {'true' if injected_inert else 'false'}")
+    print(f"c38_library_define_moved: {'true' if library_moved else 'false'}")
+    print(f"c38_witness_define_inert: {'true' if witness_inert else 'false'}")
     return 0
 
 

@@ -52,18 +52,15 @@ TE-89 (TE-88 review M-2): TE-86 (D-SLM6155, D-SLM6156) built the
 detectors this investigation found absent -- C31(i) and C31(ii) are real,
 evaluated constructions below (`eval_c31_i`, `eval_c31_ii`), each red at
 this tip for the reason its own leg names; C31(iv) retires to the
-structural check `eval_c31_iv_and_c36_e` specifies, green by design. Only
-C38 remains `MISSING PREREQUISITE`, for the separate reason below.
+structural check `eval_c31_iv_and_c36_e` specifies, green by design.
 
-Similarly, `intmath.h` and `layer_marshal.h` (the only
-installed engine headers whose INLINE primitives the reproducible path
-actually calls -- `ReadCarriedScale`, confirmed the sole one in use) carry
-NO `#ifdef`-gated branch anywhere (grepped: only include guards) -- so
-C38's own literal "-D on an installed header's #ifdef branch" construction
-has no branch to toggle, and is `MISSING PREREQUISITE` for that specific
-reason; what CAN be verified for real is the STRUCTURAL precondition C38's
-own reasoning rests on (which TU the primitive is actually compiled into),
-which this file does check, via C31(iii) below.
+C38 is a pin-bump construction, not a per-push build: the pin-bump script
+injects a compile-time perturbation into `ReadCarriedScale` in a throwaway
+clone of the pinned engine, then proves that applying its `-D` to the
+`superembedder` library moves `witness_sha` while applying the same `-D`
+only to `semb_witness` does not. This matrix executes the script's cheap
+verdict self-test and checks its public output contract; the clone/build/run
+recipe itself executes once at every engine pin bump, beside C36(a).
 
 TE-77'S OWN TWO GENUINE CONSTRUCTIONS, AND THE ONE IT ATTEMPTED THAT TE-78
 LATER MADE REAL (TE-86's own four additions -- C31(i), C31(ii), C36(a),
@@ -147,6 +144,11 @@ SCRATCH_ROOT = REPO_ROOT / "build" / "_scratch" / "witness_matrix"
 # through explicitly when set, rather than trusting cmake -G Ninja's own
 # default resolution (observed: cl.exe, even when grading build/clang).
 CXX_COMPILER: Optional[str] = None
+CMAKE_EXECUTABLE: Optional[str] = None
+NINJA_EXECUTABLE: Optional[str] = None
+PYTHON_EXECUTABLE: str = sys.executable
+RC_COMPILER: Optional[str] = None
+MT_EXECUTABLE: Optional[str] = None
 
 # TE-80 (TE-76 review F-6, Significant): the build directory this matrix
 # grades is no longer a hardcoded "build/msvc" -- it is set from
@@ -319,10 +321,13 @@ def build_witness_in(src_dir: Path, build_dir: Path) -> Path:
     """Configures and builds ONLY what `semb_witness` needs in a scratch
     tree; returns the built executable's path. Raises on any failure --
     callers read the exception message as the leg's own `observed`."""
-    cmake = _find_cmake()
+    cmake = CMAKE_EXECUTABLE or _find_cmake()
     rmtree(build_dir)
     configure_cmd = [cmake, "-G", "Ninja", "-S", str(src_dir), "-B", str(build_dir),
-                      "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_PREFIX_PATH={ENGINE_PREFIX}"]
+                      "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_PREFIX_PATH={ENGINE_PREFIX}",
+                      f"-DPython3_EXECUTABLE={PYTHON_EXECUTABLE}"]
+    if NINJA_EXECUTABLE:
+        configure_cmd.append(f"-DCMAKE_MAKE_PROGRAM={NINJA_EXECUTABLE}")
     if CXX_COMPILER:
         # TE-89 (TE-88 review M-5): the SAME compiler BUILD_DIR (the real
         # directory being graded) was itself configured with -- without
@@ -331,6 +336,10 @@ def build_witness_in(src_dir: Path, build_dir: Path) -> Path:
         # from build/clang silently exercised every scratch construction
         # under MSVC anyway.
         configure_cmd.append(f"-DCMAKE_CXX_COMPILER={CXX_COMPILER}")
+    if RC_COMPILER:
+        configure_cmd.append(f"-DCMAKE_RC_COMPILER={RC_COMPILER}")
+    if MT_EXECUTABLE:
+        configure_cmd.append(f"-DCMAKE_MT={MT_EXECUTABLE}")
     configure = subprocess.run(configure_cmd, capture_output=True, text=True, cwd=str(src_dir))
     if configure.returncode != 0:
         raise RuntimeError(f"configure failed (rc={configure.returncode}):\n{configure.stdout[-2000:]}\n{configure.stderr[-2000:]}")
@@ -943,14 +952,70 @@ def eval_c36_a():
                f"{help_out[-400:]}", passed)
 
 
+def eval_c38_contract():
+    """Checks the durable, cheap half of C38's pin-bump construction.
+
+    The real construction needs a fresh engine clone and several builds, so
+    it runs once when the pin changes rather than under every ctest run. This
+    cell still makes the obligation structural: the shared pin-bump script
+    must name the installed inline site, expose both target-specific verdicts,
+    and prove its comparison function can accept and reject before any real
+    reading is trusted.
+    """
+    name = ("C38 installed-header inline perturbation pin-bump construction -- "
+            "script contract and verdict commissioning")
+    script = _find_engine_perturbation_script()
+    if script is None:
+        leg_result(name, "the pin-bump script carries and self-tests both C38 verdicts",
+                   "FAIL: the shared engine perturbation script was not found", False)
+        return
+
+    text = script.read_text(encoding="utf-8", errors="ignore")
+    required_source_markers = (
+        "ReadCarriedScale",
+        "layer_marshal.h",
+        "c38_library_define_moved:",
+        "c38_witness_define_inert:",
+        "--selftest-only",
+    )
+    missing = [marker for marker in required_source_markers if marker not in text]
+    selftest = subprocess.run(
+        [sys.executable, str(script), "--selftest-only"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+    )
+    output = selftest.stdout + selftest.stderr
+    passed = selftest.returncode == 0 and not missing and "c38_selftest: PASS" in output
+    leg_result(
+        name,
+        "script names ReadCarriedScale/layer_marshal.h, exposes both C38 result fields, and "
+        "--selftest-only exits 0 with c38_selftest: PASS",
+        f"selftest rc={selftest.returncode}; missing markers={missing}; output tail={output[-500:]}",
+        passed,
+    )
+
+
 def main(argv: List[str]) -> int:
     global BUILD_DIR, ENGINE_PREFIX, SCRATCH_ROOT, CXX_COMPILER
+    global CMAKE_EXECUTABLE, NINJA_EXECUTABLE, PYTHON_EXECUTABLE
+    global RC_COMPILER, MT_EXECUTABLE
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", default=None,
                      help="TE-80 F-6: the real build directory to grade (CMake's own "
                           "CMAKE_BINARY_DIR, passed by tests/CMakeLists.txt). Falls back to "
                           "REPO_ROOT/build/msvc only for a manual, non-ctest invocation.")
+    ap.add_argument("--cmake-executable", default=None)
+    ap.add_argument("--ninja-executable", default=None)
+    ap.add_argument("--python-executable", default=sys.executable)
+    ap.add_argument("--cxx-compiler", default=None)
+    ap.add_argument("--rc-compiler", default=None)
+    ap.add_argument("--mt-executable", default=None)
     args = ap.parse_args(argv)
+    CMAKE_EXECUTABLE = args.cmake_executable
+    NINJA_EXECUTABLE = args.ninja_executable
+    PYTHON_EXECUTABLE = args.python_executable
+    CXX_COMPILER = args.cxx_compiler
+    RC_COMPILER = args.rc_compiler
+    MT_EXECUTABLE = args.mt_executable
     if args.build_dir:
         BUILD_DIR = Path(args.build_dir).resolve()
 
@@ -974,6 +1039,12 @@ def main(argv: List[str]) -> int:
             # install is the only entry this project's own configure ever
             # sets it to (cmake -DCMAKE_PREFIX_PATH=<engine prefix>).
             ENGINE_PREFIX = Path(cache_prefix.split(";")[0])
+            if not ENGINE_PREFIX.is_absolute():
+                # CMake preserves a command-line relative prefix verbatim in
+                # CMakeCache.txt. The parent configure is launched from the
+                # repository root; scratch configures run from copied source
+                # trees, so carry that original base explicitly.
+                ENGINE_PREFIX = (REPO_ROOT / ENGINE_PREFIX).resolve()
         cache_compiler = cache.get("CMAKE_CXX_COMPILER")
         if cache_compiler:
             CXX_COMPILER = cache_compiler
@@ -994,18 +1065,7 @@ def main(argv: List[str]) -> int:
         sys.exit(1)
     eval_c36_b()
     eval_c31_iv_and_c36_e("C36(e)")
-    leg_missing("C38 a -D on an INSTALLED ENGINE HEADER's #ifdef branch, compiled into the LIBRARY, "
-                "must move witness_sha",
-                "no #ifdef-gated branch exists in any inline installed-header primitive the "
-                "reproducible path calls (grepped superslm/intmath.h and superslm/layer_marshal.h: "
-                "only include guards; the sole inline primitive actually called, ReadCarriedScale, "
-                "has no compile-time branch) -- there is no branch to toggle. The STRUCTURAL "
-                "precondition this clause's own reasoning rests on (which TU the primitive "
-                "compiles into) IS verified for real -- see C31(iii)")
-    leg_missing("C38 the SAME -D on the WITNESS EXECUTABLE's own TU must NOT move witness_sha "
-                "(the construction that shows a TU-local driver is blind)",
-                "tied to the same missing #ifdef as C38's first leg -- no branch exists to apply "
-                "the -D to on either target")
+    eval_c38_contract()
 
     report = {"results": RESULTS, "total": len(RESULTS),
               "passed": sum(1 for r in RESULTS if r["passed"]),

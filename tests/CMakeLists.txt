@@ -47,7 +47,11 @@ find_package(Python3 COMPONENTS Interpreter REQUIRED)
 # oracle with, threaded through as a compile definition so
 # subprocess_util.h's PythonExecutable() picks the SAME interpreter CMake
 # configured with, not whatever "python" resolves to on a caller's PATH.
-add_compile_definitions(SEMB_TEST_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}")
+# Use CMake-style slashes before embedding the path in a C++ string literal;
+# raw Windows backslashes otherwise become C++ escape sequences (for example
+# `\d`), silently producing an executable name with every separator removed.
+file(TO_CMAKE_PATH "${Python3_EXECUTABLE}" SEMB_TEST_PYTHON_EXECUTABLE_CMAKE)
+add_compile_definitions(SEMB_TEST_PYTHON_EXECUTABLE="${SEMB_TEST_PYTHON_EXECUTABLE_CMAKE}")
 
 # ---------------------------------------------------------------------------
 # semb_add_cxx_test(<name> <sources...>) -- one C++ test executable, linked
@@ -120,6 +124,11 @@ add_test(
 add_test(
 	NAME c14_build_config_target_list_check
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c14_build_config_target_list_check.py"
+		--ninja-executable "${CMAKE_MAKE_PROGRAM}"
+		--python-executable "${Python3_EXECUTABLE}"
+		--cxx-compiler "${CMAKE_CXX_COMPILER}"
+		--rc-compiler "${CMAKE_RC_COMPILER}"
+		--mt-executable "${CMAKE_MT}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
@@ -132,6 +141,12 @@ add_test(
 	NAME witness_structural_matrix
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/witness_structural_matrix.py"
 		--build-dir "${CMAKE_BINARY_DIR}"
+		--cmake-executable "${CMAKE_COMMAND}"
+		--ninja-executable "${CMAKE_MAKE_PROGRAM}"
+		--python-executable "${Python3_EXECUTABLE}"
+		--cxx-compiler "${CMAKE_CXX_COMPILER}"
+		--rc-compiler "${CMAKE_RC_COMPILER}"
+		--mt-executable "${CMAKE_MT}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 

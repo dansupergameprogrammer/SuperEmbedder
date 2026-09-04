@@ -51,6 +51,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ENGINE_PREFIX = REPO_ROOT / "build" / "_engine_install"
+NINJA_EXECUTABLE = "ninja"
+PYTHON_EXECUTABLE = sys.executable
+CXX_COMPILER = ""
+RC_COMPILER = ""
+MT_EXECUTABLE = ""
 
 # The target this check requires to appear in the assertion's own printed
 # list -- chosen as stated in the module docstring.
@@ -104,7 +109,12 @@ def run_fresh_configure(build_dir: Path) -> str:
         shutil.rmtree(build_dir, ignore_errors=True)
     result = subprocess.run(
         [cmake, "-G", "Ninja", "-S", str(REPO_ROOT), "-B", str(build_dir),
-         "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_PREFIX_PATH={ENGINE_PREFIX}"],
+         "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_PREFIX_PATH={ENGINE_PREFIX}",
+         f"-DCMAKE_MAKE_PROGRAM={NINJA_EXECUTABLE}",
+         f"-DPython3_EXECUTABLE={PYTHON_EXECUTABLE}",
+         f"-DCMAKE_CXX_COMPILER={CXX_COMPILER}",
+         f"-DCMAKE_RC_COMPILER={RC_COMPILER}",
+         f"-DCMAKE_MT={MT_EXECUTABLE}"],
         capture_output=True, text=True, cwd=str(REPO_ROOT),
     )
     if result.returncode != 0:
@@ -114,6 +124,7 @@ def run_fresh_configure(build_dir: Path) -> str:
 
 
 def main(argv: list) -> int:
+    global NINJA_EXECUTABLE, PYTHON_EXECUTABLE, CXX_COMPILER, RC_COMPILER, MT_EXECUTABLE
     # TE-83 (TE-81 review N-6, Minor): the USAGE line below documented
     # [--build-dir <scratch build dir>] while this function never read
     # argv at all -- a document claiming what the code does not deliver
@@ -123,7 +134,17 @@ def main(argv: list) -> int:
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", default=None)
+    ap.add_argument("--ninja-executable", default="ninja")
+    ap.add_argument("--python-executable", default=sys.executable)
+    ap.add_argument("--cxx-compiler", default="")
+    ap.add_argument("--rc-compiler", default="")
+    ap.add_argument("--mt-executable", default="")
     args = ap.parse_args(argv)
+    NINJA_EXECUTABLE = args.ninja_executable
+    PYTHON_EXECUTABLE = args.python_executable
+    CXX_COMPILER = args.cxx_compiler
+    RC_COMPILER = args.rc_compiler
+    MT_EXECUTABLE = args.mt_executable
 
     # Commissioning: the defective (pre-F-4) list must be REJECTED.
     defective_line = extract_target_list_line(DEFECTIVE_LIST_LINE)

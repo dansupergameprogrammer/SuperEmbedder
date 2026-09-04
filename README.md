@@ -6,10 +6,12 @@ vector-search guarantee — [SuperFAISS](https://github.com/dansupergameprogramm
 is bit-identical from the bank onward; SuperEmbedder makes the path bit-identical
 from the raw text in.
 
-**Status: U0 scaffold landed 2026-09-01 (TE-61).** The repository builds: the
-engine pin, the two configure guards, the build-flag assertion, and CI exist.
-The encoder itself — the pooling epilogue, the interim TU, the witness
-drivers — is not yet built (TE-63). See [Build](#build) below.
+**Status: U0 encoder core is real and pinned to SuperSLM v1.4.0.** The
+`superembedder` library opens a real `.sslm` artifact through the interim
+engine adapter, encodes token IDs, captures the exact `{codes,m,e}` seam,
+applies PS-1 pooling, and serializes the W-B witness. `semb_witness` executes
+that path end to end. The `semb` user CLI is still the U0 version/pin stub;
+the durable public open/encode/bake/query surface is U1.
 
 ## Relationship to the sibling projects
 
@@ -56,15 +58,19 @@ need a fresh engine clone and a fresh engine build, which is exactly what
 makes them unsuitable as per-push CI legs (`Claude/Plans/SuperEmbedder_Plan.md`
 sec 4.4d item 4; D-SLM6161 holds hosted CI scarce):
 
-- **`tools/engine_side_wa_perturbation.py`** (sec 8 C36(a), D-SLM6157,
-  D-SLM6191) — clones the newly-pinned tag twice (an unperturbed baseline
-  pair, and a mutant with one non-inline engine arithmetic site
-  perturbed), builds and installs each, and asserts `witness_sha` agrees
-  between the two unperturbed baselines and differs for the mutant. Run:
+- **`tools/engine_side_wa_perturbation.py`** (sec 8 C36(a) and C38,
+  D-SLM6157/D-SLM6191) — builds two independent unperturbed baselines, a
+  mutant with one non-inline engine arithmetic site perturbed, and a fourth
+  scratch engine whose installed `ReadCarriedScale` header carries C38's
+  compile-time branch. It asserts the baselines agree, the non-inline mutant
+  moves `witness_sha`, the injected branch is inert by default, a library-only
+  definition moves `witness_sha`, and a witness-only definition is inert. The
+  released SuperSLM tag is never edited; both mutations live only in throwaway
+  clones under the requested scratch root. Run:
   `python tools/engine_side_wa_perturbation.py --scratch-root <scratch dir>`.
-  `tests/witness_structural_matrix.py`'s own C36(a) leg checks only that
-  this script exists and that its argparse/output contract matches what
-  this suite depends on — it does not run the recipe under `ctest`.
+  `tests/witness_structural_matrix.py` checks the durable C36(a)/C38 script
+  contract and commissions C38's verdict logic via `--selftest-only`; it does
+  not repeat the clone/build recipe under every `ctest` run.
 - **C35's own two-installation construction** (`Claude/Plans/SuperEmbedder_Plan.md`
   sec 8, C35) — two independent SuperEmbedder installations, each built
   against its own `tools/pin-superslm` run, exercising the thirteen
