@@ -1,0 +1,26 @@
+{
+  "schema": "semb_c12b_corpus_manifest_v1",
+  "minted": "2026-09-04",
+  "minted_by": "tools/c12b/mint_c12b_corpus.py (this file; selection rule imported from the archived T-1777 generator, never re-authored)",
+  "selection_rule": "140 id: class-proportional, evenly-spaced sample of shopkeeper_corpus_v1.jsonl (600 records) via t1777_build_corpus.sample_id_corpus(140); 99 ood: t1777_ood_corpus.OOD_DOCUMENTS in order",
+  "shopkeeper_corpus_sha256": "640a5770da9e093446e2aece8b3b7e2869476963e54039af1e897ec750e4d9ae",
+  "tokenizer": {
+    "repo": "Qwen/Qwen3-Embedding-0.6B",
+    "revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+    "tokenizer_json_sha256": "def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a",
+    "transformers_version": "5.13.1",
+    "tokenizers_version": "0.22.2",
+    "appended_token_id": 151643,
+    "append_rule_proven_per_document": true
+  },
+  "documents": 239,
+  "id": 140,
+  "ood": 99,
+  "content_tokens_total": 2727,
+  "content_tokens_min": 4,
+  "content_tokens_max": 23,
+  "files": {
+    "corpus-239.jsonl": "275b0749a25cfd141e747111d4cbed66d7772ce58a50b5c13a394c5c0da222c0",
+    "corpus-239.tokens.tsv": "3702a18fd494daee3fc9b50294c22b47953704efa879726de8f6f5e807cd8488"
+  }
+}
