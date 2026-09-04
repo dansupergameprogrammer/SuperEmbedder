@@ -124,6 +124,7 @@ add_test(
 add_test(
 	NAME c14_build_config_target_list_check
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c14_build_config_target_list_check.py"
+		--engine-prefix "${SEMB_ENGINE_PREFIX}"
 		--ninja-executable "${CMAKE_MAKE_PROGRAM}"
 		--python-executable "${Python3_EXECUTABLE}"
 		--cxx-compiler "${CMAKE_CXX_COMPILER}"
@@ -180,6 +181,65 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/ps1_reference.py" --selftest
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+# C12b (sec 8, D-SLM4648) -- forward identity by per-row byte digests through
+# ONE instrument over ONE fixed corpus: tests/c12b_row_digest_check.py's own
+# docstring names its cells (S1 must-accept, S2 the entry-point substitution,
+# S3 chunk-budget inertness, S4 the PS-N wrong-position MUST-REJECT, S5 the
+# C1' exact-rational oracle, R1 the real Qwen3-Embedding-0.6B artifact). The
+# instrument is a product target (src/c12b/); until it exists this cell is
+# registered against an EMPTY instrument path and reports red-unimplemented
+# by name rather than failing to configure (the same red-first shape TE-62
+# used for cells whose product did not exist yet).
+if(TARGET semb_c12b_row_digest)
+	set(_semb_c12b_instrument "$<TARGET_FILE:semb_c12b_row_digest>")
+else()
+	set(_semb_c12b_instrument "")
+endif()
+# The real artifact is never committed (633 MB); a configure that names it
+# (-DSEMB_C12B_MODEL=<path.sslm>) turns R1 from MISSING PREREQUISITE into a
+# graded leg; -DSEMB_C12B_MINT_ANCHORS=ON makes that leg a MINTING run.
+set(SEMB_C12B_MODEL "" CACHE FILEPATH "C12b R1: the real Qwen3-Embedding-0.6B .sslm (empty = MISSING PREREQUISITE)")
+option(SEMB_C12B_MINT_ANCHORS "C12b R1: write tests/fixtures/c12b/anchors-*.tsv from this run instead of grading against it" OFF)
+set(_semb_c12b_args
+	--instrument "${_semb_c12b_instrument}"
+	--build-dir "${CMAKE_BINARY_DIR}"
+	--engine-pin "${SEMB_LOCK_TAG}@${SEMB_LOCK_COMMIT}")
+if(NOT SEMB_C12B_MODEL STREQUAL "")
+	list(APPEND _semb_c12b_args --model "${SEMB_C12B_MODEL}")
+endif()
+if(SEMB_C12B_MINT_ANCHORS)
+	list(APPEND _semb_c12b_args --mint-anchors)
+endif()
+add_test(
+	NAME c12b_row_digest_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c12b_row_digest_check.py" ${_semb_c12b_args}
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+add_test(
+	NAME ps_n_reference_oracle_selftest
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/ps_n_reference.py" --selftest
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+add_test(
+	NAME q_width_threading_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/q_width_threading_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+add_test(
+	NAME c12b_independent_commission_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c12b_independent_commission_check.py"
+		--instrument "${_semb_c12b_instrument}"
+		--build-dir "${CMAKE_BINARY_DIR}/_c12b_independent_commission"
+		--engine-prefix "${SEMB_ENGINE_PREFIX}"
+		--cmake-executable "${CMAKE_COMMAND}"
+		--ninja-executable "${CMAKE_MAKE_PROGRAM}"
+		--python-executable "${Python3_EXECUTABLE}"
+		--cxx-compiler "${CMAKE_CXX_COMPILER}"
+		--rc-compiler "${CMAKE_RC_COMPILER}"
+		--mt-executable "${CMAKE_MT}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
 add_test(
 	NAME w_a_population_oracle_check
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/w_a_population.py"

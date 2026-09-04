@@ -599,7 +599,12 @@ def eval_c36_b():
     try:
         copy_repo(scratch)
         patch_text(
-            scratch / "src" / "superembedder" / "ps1_pool.cpp",
+            # U1/C12b: `kExpBias` moved with the shared rounding body from
+            # ps1_pool.cpp into src/superembedder/binary32_construct.h (the ONE
+            # binary32 construction PS-1's epilogue and PS-N's dequantize now
+            # share); the mutation lands on the same constant at its new home,
+            # and it still reaches witness_sha through W-A exactly as before.
+            scratch / "src" / "superembedder" / "binary32_construct.h",
             "constexpr int kExpBias = 127;",
             "constexpr int kExpBias = 126;",
             "C36(b) epilogue edit",

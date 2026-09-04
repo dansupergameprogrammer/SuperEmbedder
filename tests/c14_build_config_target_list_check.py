@@ -124,7 +124,7 @@ def run_fresh_configure(build_dir: Path) -> str:
 
 
 def main(argv: list) -> int:
-    global NINJA_EXECUTABLE, PYTHON_EXECUTABLE, CXX_COMPILER, RC_COMPILER, MT_EXECUTABLE
+    global ENGINE_PREFIX, NINJA_EXECUTABLE, PYTHON_EXECUTABLE, CXX_COMPILER, RC_COMPILER, MT_EXECUTABLE
     # TE-83 (TE-81 review N-6, Minor): the USAGE line below documented
     # [--build-dir <scratch build dir>] while this function never read
     # argv at all -- a document claiming what the code does not deliver
@@ -134,12 +134,14 @@ def main(argv: list) -> int:
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", default=None)
+    ap.add_argument("--engine-prefix", default=str(ENGINE_PREFIX))
     ap.add_argument("--ninja-executable", default="ninja")
     ap.add_argument("--python-executable", default=sys.executable)
     ap.add_argument("--cxx-compiler", default="")
     ap.add_argument("--rc-compiler", default="")
     ap.add_argument("--mt-executable", default="")
     args = ap.parse_args(argv)
+    ENGINE_PREFIX = Path(args.engine_prefix).resolve()
     NINJA_EXECUTABLE = args.ninja_executable
     PYTHON_EXECUTABLE = args.python_executable
     CXX_COMPILER = args.cxx_compiler
