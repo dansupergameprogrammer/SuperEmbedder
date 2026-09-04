@@ -6,12 +6,19 @@ vector-search guarantee — [SuperFAISS](https://github.com/dansupergameprogramm
 is bit-identical from the bank onward; SuperEmbedder makes the path bit-identical
 from the raw text in.
 
-**Status: U0 encoder core is real and pinned to SuperSLM v1.4.0.** The
-`superembedder` library opens a real `.sslm` artifact through the interim
-engine adapter, encodes token IDs, captures the exact `{codes,m,e}` seam,
-applies PS-1 pooling, and serializes the W-B witness. `semb_witness` executes
-that path end to end. The `semb` user CLI is still the U0 version/pin stub;
-the durable public open/encode/bake/query surface is U1.
+**Status: the U1 public raw-text encoder slice is real and pinned to SuperSLM
+v1.4.0.** `include/superembedder/semb.h` exposes the frozen C ABI for
+encoder open/close, dimension discovery, raw UTF-8 encoding, and status names.
+Open reads the model and tokenizer artifacts exactly once, retains their bytes,
+validates the vocabulary join, and preallocates the declared workspace pool.
+Encode tokenizes the caller's sized span unchanged, appends token id 151643,
+runs the C12b-proven PS-N path, and returns caller-owned aligned float32 bytes.
+
+The token-id seam remains available internally for the witness and C12b cells;
+it is no longer the public header. The `semb` CLI is still the version/pin stub,
+and bake/bank/query plus the final certified fingerprint epoch remain later U1/U2
+slices. Fingerprints returned by this raw slice are therefore pre-certification
+identities and must not be persisted as final `.wvbank` compatibility keys.
 
 ## Relationship to the sibling projects
 

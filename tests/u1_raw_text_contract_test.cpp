@@ -41,6 +41,7 @@ namespace {
 
 int g_failures = 0;
 int g_cells = 0;
+constexpr size_t kRequiredSentinel = static_cast<size_t>(0xC5C5C5C5u);
 
 void Verdict(bool ok, const std::string& cell, const std::string& observed) {
   ++g_cells;
@@ -431,10 +432,10 @@ int main(int argc, char** argv) {
       {
         SentinelBuffer buf(need + 16);
         float* mis = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(buf.Data()) + 4);
-        req = 0;
+        req = kRequiredSentinel;
         s = semb_encode(enc, kDoc, sizeof(kDoc) - 1, mis, need, &req, &fp);
-        Verdict(s == st.misaligned_buffer && buf.Untouched(need + 16),
-                "K-08f a buffer 4 bytes off 16-byte alignment -> SEMB_MISALIGNED_BUFFER before any write",
+        Verdict(s == st.misaligned_buffer && req == kRequiredSentinel && buf.Untouched(need + 16),
+                "K-08f a buffer 4 bytes off 16-byte alignment -> SEMB_MISALIGNED_BUFFER before any output write",
                 std::string(Name(s)) + (buf.Untouched(need + 16) ? " untouched" : " WRITTEN"));
       }
       (void)semb_encoder_close(enc);
@@ -465,8 +466,10 @@ int main(int argc, char** argv) {
       Verdict((s == st.input_empty || s == st.null_argument) && buf.Untouched(need),
               "K-09f encode(utf8 NULL, len 0) is refused (SEMB_INPUT_EMPTY or SEMB_NULL_ARGUMENT), nothing written",
               std::string("observed ") + Name(s));
+      req = kRequiredSentinel;
       s = semb_encode(enc, "", 0, buf.Data(), need, &req, &fp);
-      Verdict(s == st.input_empty && buf.Untouched(need), "K-10a the empty string -> SEMB_INPUT_EMPTY (sec 8 C4), nothing written", Name(s));
+      Verdict(s == st.input_empty && req == kRequiredSentinel && buf.Untouched(need),
+              "K-10a the empty string -> SEMB_INPUT_EMPTY (sec 8 C4), nothing written", Name(s));
       s = semb_encode(enc, " ", 1, buf.Data(), need, &req, &fp);
       Verdict(s == st.ok, "K-10b a whitespace-only input is one token and is ACCEPTED under PS-N (D-SLM4729)", Name(s));
       const char bad1[] = {static_cast<char>(0xFF)};
@@ -478,8 +481,9 @@ int main(int argc, char** argv) {
           {bad3, sizeof(bad3), "truncated 3-byte sequence"}, {bad4, sizeof(bad4), "encoded surrogate U+D800"}};
       for (const auto& b : bads) {
         SentinelBuffer buf2(need);
+        req = kRequiredSentinel;
         s = semb_encode(enc, b.p, b.n, buf2.Data(), need, &req, &fp);
-        Verdict(s != st.ok && buf2.Untouched(need),
+        Verdict(s != st.ok && req == kRequiredSentinel && buf2.Untouched(need),
                 std::string("K-11 invalid UTF-8 (") + b.what + ") is rejected (sec 8 C4), nothing written",
                 std::string("observed ") + Name(s) + (buf2.Untouched(need) ? " untouched" : " WRITTEN"));
       }
@@ -504,8 +508,9 @@ int main(int argc, char** argv) {
       Verdict(s == st.ok, "K-12a a document of exactly context_cap positions (content + appended token) is accepted",
               std::string(Name(s)) + " content=" + std::to_string(at_cap.size()));
       SentinelBuffer b2(need);
+      req = kRequiredSentinel;
       s = semb_encode(enc, over_cap.data(), over_cap.size(), b2.Data(), need, &req, &fp);
-      Verdict(s != st.ok && b2.Untouched(need),
+      Verdict(s != st.ok && req == kRequiredSentinel && b2.Untouched(need),
               "K-12b context_cap+1 positions is refused (sec 8 C4: 'context_cap+1 -> rejected'), nothing written",
               std::string("observed ") + Name(s) + (b2.Untouched(need) ? " untouched" : " WRITTEN"));
       (void)semb_encoder_close(enc);
@@ -530,10 +535,11 @@ int main(int argc, char** argv) {
       Verdict(s == st.invalid_handle, "K-13d dims on a closed handle -> SEMB_INVALID_HANDLE", Name(s));
       const size_t need = a.dims * sizeof(float);
       SentinelBuffer buf(need);
-      size_t req = 0;
+      size_t req = kRequiredSentinel;
       semb_fingerprint fp = MakeFingerprint();
       s = semb_encode(copy, kDoc, sizeof(kDoc) - 1, buf.Data(), need, &req, &fp);
-      Verdict(s == st.invalid_handle && buf.Untouched(need), "K-13e encode on a closed handle -> SEMB_INVALID_HANDLE, nothing written", Name(s));
+      Verdict(s == st.invalid_handle && req == kRequiredSentinel && buf.Untouched(need),
+              "K-13e encode on a closed handle -> SEMB_INVALID_HANDLE, nothing written", Name(s));
     }
     semb_status s = semb_encoder_close(nullptr);
     Verdict(s == st.null_argument, "K-13f close(NULL) -> SEMB_NULL_ARGUMENT (sec 3.1 item 7: any required pointer NULL)", Name(s));
@@ -549,6 +555,22 @@ int main(int argc, char** argv) {
       Verdict(e1 != e2 && s == st.ok, "K-13g two handles are distinct; closing one leaves the other encoding",
               std::string(Name(s)));
       (void)semb_encoder_close(e2);
+    }
+    semb_encoder stale = OpenPair(a, st, "K-13h (setup stale)");
+    if (stale) {
+      (void)semb_encoder_close(stale);
+      semb_encoder replacement = OpenPair(a, st, "K-13h (setup replacement)");
+      if (replacement) {
+        uint32_t stale_dims = 0xC5C5C5C5u;
+        const semb_status dims_status = semb_encoder_dims(stale, &stale_dims);
+        const semb_status close_status = semb_encoder_close(stale);
+        Verdict(replacement != stale && dims_status == st.invalid_handle &&
+                    close_status == st.invalid_handle && stale_dims == 0xC5C5C5C5u,
+                "K-13h reopening cannot recycle a published address or make the stale handle valid again",
+                std::string("replacement ") + (replacement == stale ? "ALIASED" : "distinct") +
+                    "; dims=" + Name(dims_status) + "; close=" + Name(close_status));
+        (void)semb_encoder_close(replacement);
+      }
     }
   }
 

@@ -4,7 +4,7 @@
 // over the emitted `{codes, m, e}` seam bytes -- never only an aggregate.
 //
 // It calls the library's own entry points (include/superembedder/
-// encoder_abi.h, seam_abi.h) and performs no arithmetic of its own on the
+// encoder_interim_abi.h, seam_abi.h) and performs no arithmetic of its own on the
 // reproducible path: it is a loop, a serialiser and a digest -- the same
 // posture as the witness executable (sec 4.4b's structural law, clause 4).
 // The digest is the engine's own portable SHA-256 (superslm/sha256.h), one
@@ -51,7 +51,7 @@
 #include <string>
 #include <vector>
 
-#include "superembedder/encoder_abi.h"
+#include "superembedder/encoder_interim_abi.h"
 #include "superembedder/seam_abi.h"
 #include "superslm/sha256.h"
 

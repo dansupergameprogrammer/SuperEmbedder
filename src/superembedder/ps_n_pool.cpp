@@ -28,7 +28,7 @@
 
 #include "big_uint.h"
 #include "binary32_construct.h"
-#include "superembedder/encoder_abi.h"
+#include "superembedder/encoder_interim_abi.h"
 
 extern "C" SembWaPoolStatus semb_ps_n_dequantize(const int8_t* codes, int64_t m, int64_t e,
                                                   size_t hidden, float* out) {

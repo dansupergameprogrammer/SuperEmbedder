@@ -15,7 +15,7 @@
 // for the port's own dispositions. U1 slice 1 (C12b first) adds, in this
 // same TU:
 //
-//   * the HANDLE surface (include/superembedder/encoder_abi.h): the artifact
+//   * the interim handle surface (include/superembedder/encoder_interim_abi.h): the artifact
 //     read ONCE into owned memory at open, every layer AND the final norm
 //     marshaled once, the K/V workspace sized once from the artifact's own
 //     geometry, and many documents encoded against that one handle -- the
@@ -42,10 +42,13 @@
 //     attribution -- "the entry-point substitution is not bit-identical after
 //     all" -- is decided by running both entry points on the same document in
 //     the same process, per row, never inherited from the header's claim.
-#include "superembedder/encoder_abi.h"
+#include "superembedder/encoder_interim_abi.h"
 #include "superembedder/seam_abi.h"
 
 #include <cstring>
+#include <limits>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -77,6 +80,7 @@ const char* SetEngineStatus(const std::string& s) {
 }
 
 struct EncoderModel {
+  // SslmModelView borrows section storage from these exact bytes.
   std::vector<uint8_t> model_bytes;
   SslmModelView view;
   std::vector<LayerBacking> backings;
@@ -85,7 +89,12 @@ struct EncoderModel {
   CarriedScale embed_site_constant{};
   std::vector<int32_t> final_norm_gain;
   CarriedScale final_norm_site_constant{};
-  std::vector<uint8_t> workspace;
+  struct WorkspaceSlot {
+    std::vector<uint8_t> bytes;
+    bool in_use = false;
+  };
+  std::mutex workspace_mutex;
+  std::vector<WorkspaceSlot> workspaces;
   size_t hidden_size = 0;
   uint32_t num_layers = 0;
   size_t q_width = 0;
@@ -94,16 +103,10 @@ struct EncoderModel {
   int32_t appended_token_id = -1;
 };
 
-// Opens the artifact and marshals every layer plus the final norm. Returns
-// nullptr on any failure with the engine's own status name (or the marshal's
-// diagnostic) in `*engine_status_name`.
-EncoderModel* EncoderOpen(const std::string& model_path, const char** engine_status_name) {
-  auto m = new EncoderModel();
-  if (!ReadFile(model_path.c_str(), m->model_bytes)) {
-    if (engine_status_name) *engine_status_name = SetEngineStatus("ReadFileFailed");
-    delete m;
-    return nullptr;
-  }
+// Finishes an open after the artifact's exactly-once read has transferred its
+// backing into `m`. The model view borrows from that backing for its lifetime.
+EncoderModel* FinishEncoderOpen(std::unique_ptr<EncoderModel> m, uint32_t max_concurrency,
+                                const char** engine_status_name) {
   std::string model_err;
   const SslmModelStatus ms =
       SslmModel::Load(m->model_bytes.data(), m->model_bytes.size(), m->view, &model_err);
@@ -112,7 +115,6 @@ EncoderModel* EncoderOpen(const std::string& model_path, const char** engine_sta
       *engine_status_name =
           SetEngineStatus(std::string(SslmModelStatusName(ms)) + ": " + model_err);
     }
-    delete m;
     return nullptr;
   }
   const uint32_t num_heads = m->view.config.num_attention_heads;
@@ -130,7 +132,6 @@ EncoderModel* EncoderOpen(const std::string& model_path, const char** engine_sta
     std::string merr;
     if (!MarshalLayer(m->view, l, num_heads, num_kv_heads, m->backings[l], m->layers[l], &merr)) {
       if (engine_status_name) *engine_status_name = SetEngineStatus("MarshalLayer: " + merr);
-      delete m;
       return nullptr;
     }
   }
@@ -138,36 +139,80 @@ EncoderModel* EncoderOpen(const std::string& model_path, const char** engine_sta
   const SslmTensorView* final_gain_w = m->view.weights.Tensor("final_norm.gain");
   if (!embed_w || !final_gain_w) {
     if (engine_status_name) *engine_status_name = SetEngineStatus("MissingEmbedOrFinalNormTensor");
-    delete m;
     return nullptr;
   }
   m->embed_weights = reinterpret_cast<const int8_t*>(embed_w->data);
   m->final_norm_gain = WidenGainToInt32(*final_gain_w);
   if (m->final_norm_gain.size() != m->hidden_size) {
     if (engine_status_name) *engine_status_name = SetEngineStatus("FinalNormGainWidthMismatch");
-    delete m;
     return nullptr;
   }
   bool ok = true;
   m->embed_site_constant = ReadCarriedScale(m->view.composition_constants, "embed", &ok);
   if (!ok) {
     if (engine_status_name) *engine_status_name = SetEngineStatus("MissingEmbedSiteConstant");
-    delete m;
     return nullptr;
   }
   m->final_norm_site_constant = ReadCarriedScale(m->view.composition_constants, "final_norm", &ok);
   if (!ok) {
     if (engine_status_name) *engine_status_name = SetEngineStatus("MissingFinalNormSiteConstant");
-    delete m;
     return nullptr;
   }
   // The forward's own workspace requirement (forward_sites.h), identical for
   // both entry points: num_hidden_layers * context_cap * num_kv_heads *
-  // head_dim * 2.
-  m->workspace.assign(static_cast<size_t>(m->num_layers) * static_cast<size_t>(m->context_cap) *
-                           num_kv_heads * m->view.config.head_dim * 2,
-                       0);
-  return m;
+  // head_dim * 2. Compute it without a wrapping intermediate before any
+  // allocation, then allocate every concurrency slot at open as the frozen
+  // public handle contract requires.
+  size_t workspace_bytes = static_cast<size_t>(m->num_layers);
+  const size_t factors[] = {static_cast<size_t>(m->context_cap),
+                            static_cast<size_t>(num_kv_heads),
+                            static_cast<size_t>(m->view.config.head_dim), size_t{2}};
+  for (const size_t factor : factors) {
+    if (factor != 0 && workspace_bytes > std::numeric_limits<size_t>::max() / factor) {
+      if (engine_status_name) *engine_status_name = SetEngineStatus("WorkspaceSizeOverflow");
+      return nullptr;
+    }
+    workspace_bytes *= factor;
+  }
+  m->workspaces.resize(max_concurrency);
+  for (auto& slot : m->workspaces) slot.bytes.assign(workspace_bytes, 0);
+  return m.release();
+}
+
+// Opens the artifact and marshals every layer plus the final norm. Returns
+// nullptr on any failure with the engine's own status name (or the marshal's
+// diagnostic) in `*engine_status_name`.
+EncoderModel* EncoderOpenFromMemory(const uint8_t* model_bytes, size_t model_size,
+                                    uint32_t max_concurrency,
+                                    const char** engine_status_name) {
+  if (!model_bytes || model_size == 0 || max_concurrency == 0) {
+    if (engine_status_name) *engine_status_name = SetEngineStatus("InvalidOpenInput");
+    return nullptr;
+  }
+  auto m = std::make_unique<EncoderModel>();
+  m->model_bytes.assign(model_bytes, model_bytes + model_size);
+  return FinishEncoderOpen(std::move(m), max_concurrency, engine_status_name);
+}
+
+EncoderModel* EncoderOpenOwned(std::vector<uint8_t>&& model_bytes,
+                               uint32_t max_concurrency,
+                               const char** engine_status_name) {
+  if (model_bytes.empty() || max_concurrency == 0) {
+    if (engine_status_name) *engine_status_name = SetEngineStatus("InvalidOpenInput");
+    return nullptr;
+  }
+  auto m = std::make_unique<EncoderModel>();
+  m->model_bytes = std::move(model_bytes);
+  return FinishEncoderOpen(std::move(m), max_concurrency, engine_status_name);
+}
+
+EncoderModel* EncoderOpen(const std::string& model_path, const char** engine_status_name) {
+  auto m = std::make_unique<EncoderModel>();
+  if (!ReadFile(model_path.c_str(), m->model_bytes)) {
+    if (engine_status_name) *engine_status_name = SetEngineStatus("ReadFileFailed");
+    return nullptr;
+  }
+  return FinishEncoderOpen(std::move(m), 1, engine_status_name);
 }
 
 void EncoderClose(EncoderModel* m) { delete m; }
@@ -177,8 +222,9 @@ void EncoderClose(EncoderModel* m) { delete m; }
 // call) bounds each call's span; on the per-token leg every position runs
 // through the engine's single-token loop in order against the same K/V
 // store, exactly as the engine's own decode path drives it.
-SslmForwardStatus Encode(EncoderModel* m, const int32_t* tokens, size_t n, size_t chunk_budget,
-                          SembForwardLeg leg, int8_t* codes_out, CarriedScale* scales_out) {
+SslmForwardStatus Encode(EncoderModel* m, std::vector<uint8_t>& workspace,
+                         const int32_t* tokens, size_t n, size_t chunk_budget,
+                         SembForwardLeg leg, int8_t* codes_out, CarriedScale* scales_out) {
   if (n == 0) return SslmForwardStatus::InvalidLayerBudget;
   if (chunk_budget == 0 || chunk_budget > n) chunk_budget = n;
   const size_t hidden = m->hidden_size;
@@ -192,7 +238,7 @@ SslmForwardStatus Encode(EncoderModel* m, const int32_t* tokens, size_t n, size_
     scales_out[p] = es;
   }
 
-  std::memset(m->workspace.data(), 0, m->workspace.size());
+  std::memset(workspace.data(), 0, workspace.size());
   uint64_t kv_sat = 0;
   if (leg == kSembForwardLegChunkBatched) {
     for (size_t off = 0; off < n; off += chunk_budget) {
@@ -201,7 +247,7 @@ SslmForwardStatus Encode(EncoderModel* m, const int32_t* tokens, size_t n, size_
           codes_out + off * hidden, scales_out + off, span, m->layers.data(), m->num_layers, hidden,
           m->view.config.head_dim, m->view.config.num_key_value_heads,
           m->view.config.intermediate_size, m->context_cap, static_cast<int64_t>(off),
-          m->view.rope_tables, m->workspace.data(), m->workspace.size(), m->option_g_fused, &kv_sat,
+          m->view.rope_tables, workspace.data(), workspace.size(), m->option_g_fused, &kv_sat,
           /*site_prefix=*/{}, /*trace_hook_state=*/nullptr, /*q_width=*/m->q_width);
       if (st != SslmForwardStatus::Ok) return st;
     }
@@ -224,14 +270,14 @@ SslmForwardStatus Encode(EncoderModel* m, const int32_t* tokens, size_t n, size_
       st = RunLayerLoop(seq, m->layers.data(), m->num_layers, m->num_layers, hidden,
                         m->view.config.head_dim, m->view.config.num_key_value_heads,
                         m->view.config.intermediate_size, m->context_cap, m->view.rope_tables,
-                        m->workspace.data(), m->workspace.size(), OptionGKLandingMode::kFused,
+                        workspace.data(), workspace.size(), OptionGKLandingMode::kFused,
                         /*site_prefix=*/{}, /*token_index=*/0, /*trace_hook_state=*/nullptr,
                         /*q_width=*/m->q_width);
     } else {
       st = RunLayerLoop(seq, m->layers.data(), m->num_layers, m->num_layers, hidden,
                         m->view.config.head_dim, m->view.config.num_key_value_heads,
                         m->view.config.intermediate_size, m->context_cap, m->view.rope_tables,
-                        m->workspace.data(), m->workspace.size(), /*site_prefix=*/{},
+                        workspace.data(), workspace.size(), /*site_prefix=*/{},
                         /*token_index=*/0, /*trace_hook_state=*/nullptr, /*q_width=*/m->q_width);
     }
     if (st != SslmForwardStatus::Ok) return st;
@@ -239,6 +285,29 @@ SslmForwardStatus Encode(EncoderModel* m, const int32_t* tokens, size_t n, size_
   }
   return SslmForwardStatus::Ok;
 }
+
+bool TryAcquireWorkspace(EncoderModel* m, size_t* out_index) {
+  std::lock_guard<std::mutex> lock(m->workspace_mutex);
+  for (size_t i = 0; i < m->workspaces.size(); ++i) {
+    if (!m->workspaces[i].in_use) {
+      m->workspaces[i].in_use = true;
+      *out_index = i;
+      return true;
+    }
+  }
+  return false;
+}
+
+void ReleaseWorkspace(EncoderModel* m, size_t index) {
+  std::lock_guard<std::mutex> lock(m->workspace_mutex);
+  m->workspaces[index].in_use = false;
+}
+
+struct WorkspaceLease {
+  EncoderModel* model;
+  size_t index;
+  ~WorkspaceLease() { ReleaseWorkspace(model, index); }
+};
 
 }  // namespace
 }  // namespace semb
@@ -269,8 +338,17 @@ extern "C" SembEncodeStatus semb_encode_document_for_witness(const char* model_p
   if (hidden_out) *hidden_out = hidden;
 
   std::vector<superslm::CarriedScale> scales(n);
-  const superslm::SslmForwardStatus st = semb::Encode(
-      model, token_ids, n, chunk_budget, kSembForwardLegChunkBatched, codes_out, scales.data());
+  size_t workspace_index = 0;
+  if (!semb::TryAcquireWorkspace(model, &workspace_index)) {
+    semb::EncoderClose(model);
+    return kSembEncodeEngineRefused;
+  }
+  superslm::SslmForwardStatus st;
+  {
+    semb::WorkspaceLease lease{model, workspace_index};
+    st = semb::Encode(model, model->workspaces[workspace_index].bytes, token_ids, n,
+                      chunk_budget, kSembForwardLegChunkBatched, codes_out, scales.data());
+  }
   if (st != superslm::SslmForwardStatus::Ok) {
     semb::EncoderClose(model);
     return kSembEncodeEngineRefused;
@@ -284,7 +362,7 @@ extern "C" SembEncodeStatus semb_encode_document_for_witness(const char* model_p
 }
 
 // ---------------------------------------------------------------------------
-// The handle surface (encoder_abi.h).
+// The handle surface (encoder_interim_abi.h).
 // ---------------------------------------------------------------------------
 struct SembInterimEncoder {
   semb::EncoderModel* model = nullptr;
@@ -309,10 +387,62 @@ extern "C" SembInterimStatus semb_interim_encoder_open(const char* model_path,
     if (out_engine_status_name) *out_engine_status_name = name ? name : "Unknown";
     return kSembInterimEngineRefused;
   }
+  std::unique_ptr<semb::EncoderModel, void (*)(semb::EncoderModel*)> model_guard(
+      model, semb::EncoderClose);
   model->appended_token_id = appended_token_id;
-  auto enc = new SembInterimEncoder();
-  enc->model = model;
-  *out_encoder = enc;
+  auto enc = std::make_unique<SembInterimEncoder>();
+  enc->model = model_guard.release();
+  *out_encoder = enc.release();
+  return kSembInterimOk;
+}
+
+extern "C" SembInterimStatus semb_interim_encoder_open_from_memory(
+    const uint8_t* model_bytes, size_t model_size, int32_t appended_token_id,
+    uint32_t max_concurrency, SembInterimEncoder** out_encoder,
+    const char** out_engine_status_name) {
+  if (out_engine_status_name) *out_engine_status_name = OkName();
+  if (!model_bytes || model_size == 0 || max_concurrency == 0 || !out_encoder) {
+    return kSembInterimNullArgument;
+  }
+  *out_encoder = nullptr;
+  const char* name = nullptr;
+  semb::EncoderModel* model =
+      semb::EncoderOpenFromMemory(model_bytes, model_size, max_concurrency, &name);
+  if (!model) {
+    if (out_engine_status_name) *out_engine_status_name = name ? name : "Unknown";
+    return kSembInterimEngineRefused;
+  }
+  std::unique_ptr<semb::EncoderModel, void (*)(semb::EncoderModel*)> model_guard(
+      model, semb::EncoderClose);
+  model->appended_token_id = appended_token_id;
+  auto enc = std::make_unique<SembInterimEncoder>();
+  enc->model = model_guard.release();
+  *out_encoder = enc.release();
+  return kSembInterimOk;
+}
+
+SembInterimStatus semb_interim_encoder_open_owned(
+    std::vector<uint8_t>&& model_bytes, int32_t appended_token_id,
+    uint32_t max_concurrency, SembInterimEncoder** out_encoder,
+    const char** out_engine_status_name) {
+  if (out_engine_status_name) *out_engine_status_name = OkName();
+  if (model_bytes.empty() || max_concurrency == 0 || !out_encoder) {
+    return kSembInterimNullArgument;
+  }
+  *out_encoder = nullptr;
+  const char* name = nullptr;
+  semb::EncoderModel* model =
+      semb::EncoderOpenOwned(std::move(model_bytes), max_concurrency, &name);
+  if (!model) {
+    if (out_engine_status_name) *out_engine_status_name = name ? name : "Unknown";
+    return kSembInterimEngineRefused;
+  }
+  std::unique_ptr<semb::EncoderModel, void (*)(semb::EncoderModel*)> model_guard(
+      model, semb::EncoderClose);
+  model->appended_token_id = appended_token_id;
+  auto enc = std::make_unique<SembInterimEncoder>();
+  enc->model = model_guard.release();
+  *out_encoder = enc.release();
   return kSembInterimOk;
 }
 
@@ -367,8 +497,14 @@ extern "C" SembInterimStatus semb_interim_encode_seam(
   tokens[n_content] = m->appended_token_id;
 
   std::vector<superslm::CarriedScale> scales(n);
-  const superslm::SslmForwardStatus st =
-      semb::Encode(m, tokens.data(), n, chunk_budget, leg, codes_out, scales.data());
+  size_t workspace_index = 0;
+  if (!semb::TryAcquireWorkspace(m, &workspace_index)) {
+    return kSembInterimConcurrencyExceeded;
+  }
+  semb::WorkspaceLease lease{m, workspace_index};
+  const superslm::SslmForwardStatus st = semb::Encode(
+      m, m->workspaces[workspace_index].bytes, tokens.data(), n, chunk_budget, leg,
+      codes_out, scales.data());
   if (st != superslm::SslmForwardStatus::Ok) {
     if (out_engine_status_name) {
       *out_engine_status_name = semb::SetEngineStatus(superslm::SslmForwardStatusName(st));

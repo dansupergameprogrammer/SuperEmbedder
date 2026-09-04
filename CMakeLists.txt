@@ -103,6 +103,7 @@ configure_file(
 # ---------------------------------------------------------------------------
 set(SEMB_LIBRARY_SOURCES
 	src/version.cpp
+	src/superembedder/encoder.cpp
 	src/superembedder/ps1_pool.cpp
 	src/superembedder/ps_n_pool.cpp
 	src/superembedder/seam_serialize.cpp
@@ -149,7 +150,8 @@ target_include_directories(semb PRIVATE "${CMAKE_BINARY_DIR}/generated")
 # ---------------------------------------------------------------------------
 # C12b's instrument (sec 8, C12b; D-SLM4648): per-row byte digests over the
 # seam, PS-N's selected position and the emitted vector, through the
-# library's own handle surface (include/superembedder/encoder_abi.h). Like
+# library's own interim handle surface
+# (include/superembedder/encoder_interim_abi.h). Like
 # the witness, it is a loop, a serialiser and a digest -- no arithmetic of its
 # own on the reproducible path, and it links the engine directly only for
 # superslm::Sha256/ToHex. Graded by tests/c12b_row_digest_check.py.

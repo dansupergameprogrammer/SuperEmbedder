@@ -55,6 +55,7 @@ FROZEN_SYMBOLS = ["semb_encoder_open", "semb_encoder_close", "semb_encoder_dims"
 CANDIDATE_APPEND_ID = 151643
 CANDIDATE_WRONG_ID = 151645  # <|im_end|>
 CANDIDATE_DIMS = 1024
+LITERAL_SPECIAL_RECORD = ("u1-literal-endoftext", [CANDIDATE_APPEND_ID], "<|endoftext|>")
 
 
 def sha256_file(p: Path) -> str:
@@ -136,11 +137,17 @@ def real_populations(out_dir: Path) -> List[Tuple[str, Path]]:
             continue
         d = json.loads(line)
         recs.append((d["label"], d["content_ids"], d["text"]))
+    # P-05 is a U1 composition claim, not a property of C12b's semantic
+    # population or the converter's general tokenizer pack. Commission it
+    # explicitly in each generated parity population. Put it first so a
+    # developer's --limit smoke still exercises the literal-special case.
+    recs.insert(0, LITERAL_SPECIAL_RECORD)
     p = out_dir / "corpus239_expected_ids.tsv"
     write_hex_tsv(recs, p, "HF content_ids from tests/fixtures/c12b/corpus-239.jsonl (tools/c12b/mint_c12b_corpus.py)")
     pops.append(("corpus-239", p))
     g = json.loads(GOLDEN_JSON.read_text(encoding="utf-8"))
-    recs = [("g-%03d" % i, r["ids"], r["text"]) for i, r in enumerate(g["records"])]
+    recs = [LITERAL_SPECIAL_RECORD]
+    recs += [("g-%03d" % i, r["ids"], r["text"]) for i, r in enumerate(g["records"])]
     p = out_dir / "golden44_expected_ids.tsv"
     write_hex_tsv(recs, p, "HF ids (add_special_tokens=False) from the converter's golden pack "
                            "tests/fixtures/tokenizer/qwen3-embedding-0.6b-golden.json")
