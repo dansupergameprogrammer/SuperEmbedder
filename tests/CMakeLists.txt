@@ -379,21 +379,14 @@ add_test(
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
-# TE-110: an independently compiled test-only adapter with the production target's
-# configured interface. Relative source names are rooted before entering tests/.
-if(DEFINED SEMB_LIBRARY_SOURCES)
-  # The suite's Python executable definition belongs to existing test targets,
-  # not to a second compilation of production. Preserve every prior recipient.
-  get_directory_property(_semb_test_defs COMPILE_DEFINITIONS)
-  get_directory_property(_semb_prior_targets BUILDSYSTEM_TARGETS)
-  get_directory_property(_semb_root_defs DIRECTORY "${CMAKE_SOURCE_DIR}" COMPILE_DEFINITIONS)
-  set_property(DIRECTORY PROPERTY COMPILE_DEFINITIONS "${_semb_root_defs}")
-  foreach(_target IN LISTS _semb_prior_targets)
-    get_target_property(_type ${_target} TYPE)
-    if(NOT _type STREQUAL "UTILITY")
-      target_compile_definitions(${_target} PRIVATE ${_semb_test_defs})
-    endif()
-  endforeach()
+# TE-114: create the seam target in the SAME directory scope as production.
+# CMake source properties are directory-scoped, independently of target usage.
+# A deferred root-directory call shares every source property structurally,
+# including later assignments, custom properties and future CMake properties.
+# The test artifacts remain excluded from ALL and are never installed.
+function(semb_add_workspace_tests)
+  find_package(Threads REQUIRED)
+  set(_semb_test_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
   set(_semb_seam_sources)
   foreach(_source IN LISTS SEMB_LIBRARY_SOURCES)
     get_filename_component(_absolute "${_source}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
@@ -438,10 +431,37 @@ if(DEFINED SEMB_LIBRARY_SOURCES)
     add_dependencies(superembedder_testseam ${_dependencies})
   endif()
   target_compile_definitions(superembedder_testseam PRIVATE SEMB_ENABLE_WORKSPACE_TEST_SEAM=1)
-  target_include_directories(superembedder_testseam PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-  add_executable(u1_workspace_seam_test EXCLUDE_FROM_ALL u1_workspace_seam_test.cpp)
+  target_include_directories(superembedder_testseam PRIVATE "${_semb_test_dir}")
+  add_executable(u1_workspace_seam_test EXCLUDE_FROM_ALL "${_semb_test_dir}/u1_workspace_seam_test.cpp")
   target_link_libraries(u1_workspace_seam_test PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
-  target_include_directories(u1_workspace_seam_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_include_directories(u1_workspace_seam_test PRIVATE "${_semb_test_dir}")
+  set_target_properties(superembedder_testseam PROPERTIES
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+  set_target_properties(u1_workspace_seam_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+  # Explicit diagnostic configurations compile generated fault copies only into
+  # the noninstalled seam target. The production source/target is unchanged.
+  set(SEMB_WORKSPACE_DIAGNOSTIC_ADAPTER "" CACHE FILEPATH "K-15 diagnostic adapter copy (tests only)")
+  option(SEMB_WORKSPACE_DELAY_REFUSAL_HELPERS "K-15 test-only late-success helper control" OFF)
+  if(SEMB_WORKSPACE_DIAGNOSTIC_ADAPTER)
+    if(NOT EXISTS "${SEMB_WORKSPACE_DIAGNOSTIC_ADAPTER}")
+      message(FATAL_ERROR "K-15 diagnostic adapter copy is absent")
+    endif()
+    get_target_property(_diagnostic_sources superembedder_testseam SOURCES)
+    list(FIND _diagnostic_sources "${SEMB_ENGINE_ADAPTER_TU}" _adapter_index)
+    if(_adapter_index LESS 0)
+      message(FATAL_ERROR "K-15 diagnostic adapter source is not uniquely selected")
+    endif()
+    list(REMOVE_AT _diagnostic_sources ${_adapter_index})
+    list(APPEND _diagnostic_sources "${SEMB_WORKSPACE_DIAGNOSTIC_ADAPTER}")
+    set_property(TARGET superembedder_testseam PROPERTY SOURCES "${_diagnostic_sources}")
+    # The copied TU's local internal header remains the real source header.
+    get_filename_component(_adapter_include "${SEMB_ENGINE_ADAPTER_TU}" DIRECTORY)
+    set_property(SOURCE "${SEMB_WORKSPACE_DIAGNOSTIC_ADAPTER}" PROPERTY INCLUDE_DIRECTORIES "${_adapter_include}")
+  endif()
+  if(SEMB_WORKSPACE_DELAY_REFUSAL_HELPERS)
+    target_compile_definitions(u1_workspace_seam_test PRIVATE SEMB_WORKSPACE_DELAY_REFUSAL_HELPERS=1)
+  endif()
   # Evaluated target properties retain generator expressions and imported-engine
   # usage. Actual per-source compiler invocations are checked independently.
   set(_semb_link_manifest "")
@@ -456,7 +476,43 @@ if(DEFINED SEMB_LIBRARY_SOURCES)
   set_target_properties(superembedder superembedder_testseam PROPERTIES EXPORT_COMPILE_COMMANDS ON)
   set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "Export actual compiler commands for K-15 parity" FORCE)
   add_test(NAME u1_workspace_seam_absent_check
-    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_workspace_seam_absent_check.py"
+    COMMAND "${Python3_EXECUTABLE}" "${_semb_test_dir}/u1_workspace_seam_absent_check.py"
       --production "$<TARGET_FILE:superembedder>" --testseam "$<TARGET_FILE:superembedder_testseam>"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  if(CMAKE_GENERATOR MATCHES "Ninja")
+    set(_semb_workspace_ninja "${CMAKE_MAKE_PROGRAM}")
+  else()
+    find_program(_semb_workspace_ninja NAMES ninja REQUIRED)
+  endif()
+  set(_semb_workspace_control_args
+    --engine-lock "${SEMB_ENGINE_LOCK_FILE}"
+    --engine-prefix "${SEMB_ENGINE_PREFIX}"
+    --cmake-executable "${CMAKE_COMMAND}"
+    --ninja-executable "${_semb_workspace_ninja}"
+    --cxx-compiler "${CMAKE_CXX_COMPILER}")
+  if(NOT SEMB_C38_DEFINE_TARGET STREQUAL "")
+    list(APPEND _semb_workspace_control_args --c38-define-target "${SEMB_C38_DEFINE_TARGET}")
+  endif()
+  if(CMAKE_RC_COMPILER)
+    list(APPEND _semb_workspace_control_args --rc-compiler "${CMAKE_RC_COMPILER}")
+  endif()
+  if(CMAKE_MT)
+    list(APPEND _semb_workspace_control_args --mt-executable "${CMAKE_MT}")
+  endif()
+  add_test(NAME u1_workspace_source_properties_check
+    COMMAND "${Python3_EXECUTABLE}" "${_semb_test_dir}/u1_workspace_source_properties_check.py"
+      --build-dir "${CMAKE_BINARY_DIR}/_k15_source_properties" ${_semb_workspace_control_args}
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  add_test(NAME u1_workspace_control_vitality_check
+    COMMAND "${Python3_EXECUTABLE}" "${_semb_test_dir}/u1_workspace_control_vitality_check.py"
+      --build-dir "${CMAKE_BINARY_DIR}/_k15_controls" ${_semb_workspace_control_args}
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(u1_workspace_source_properties_check u1_workspace_control_vitality_check
+    PROPERTIES RUN_SERIAL TRUE)
+  # This target is created after the root's ordinary precision assertion.
+  # Re-run the same real gate with the final complete target population.
+  semb_assert_precise_fp()
+endfunction()
+if(DEFINED SEMB_LIBRARY_SOURCES)
+  cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_workspace_tests)
 endif()

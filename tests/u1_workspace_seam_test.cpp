@@ -7,12 +7,30 @@
 #include <cstdlib>
 #include <cstring>
 #include <future>
+#include <condition_variable>
+#include <mutex>
 #include <string>
 #include <vector>
 
 using namespace std::chrono_literals;
 namespace {
 int failures = 0;
+#ifdef SEMB_WORKSPACE_DELAY_REFUSAL_HELPERS
+std::mutex completion_mutex;
+std::condition_variable completion_changed;
+unsigned completed_workers = 0;
+void WorkerFinished() {
+  { std::lock_guard<std::mutex> lock(completion_mutex); ++completed_workers; }
+  completion_changed.notify_all();
+}
+void DelayRefusalHelper(unsigned expected) {
+  std::unique_lock<std::mutex> lock(completion_mutex);
+  completion_changed.wait(lock, [=]{return completed_workers == expected;});
+}
+#else
+void WorkerFinished() {}
+void DelayRefusalHelper(unsigned) {}
+#endif
 std::chrono::steady_clock::time_point cleanup_deadline;
 bool cleanup_started = false;
 void BeginCleanup() {
@@ -96,6 +114,80 @@ void Reset() {
   Check(f.get() == 1 && semb_test_seam_acquisitions() == 0 && semb_test_seam_parked() == 0, "reset establishes empty epoch");
   cleanup_started = false;
 }
+
+// F1: every reset follows joined workers/helpers; the same handle spans two
+// occupied epochs. References were captured earlier on a separate serial handle.
+void Lifecycle(const Args& a, semb_encoder enc, unsigned n,
+               const std::vector<std::string>& docs,
+               const std::vector<std::vector<unsigned char>>& reference) {
+  auto unarmed = [&](uint64_t expected, const char* phase) {
+    Phase(phase); Output out(a.dims); std::vector<std::future<void>> jobs;
+    jobs.push_back(std::async(std::launch::async, [&]{Encode(enc, docs[0], out, a.dims);}));
+    bool ready = jobs[0].wait_for(10s) == std::future_status::ready;
+    Check(ready, std::string(phase) + " completes without rearm/release");
+    if (!ready) ReleaseBounded();
+    Drain(jobs);
+    Check(Success(out, a.dims) && out.bytes(a.dims) == reference[0], std::string(phase) + " serial bytes");
+    Check(semb_test_seam_parked() == 0 && semb_test_seam_acquisitions() == expected,
+          std::string(phase) + " no park and exact cumulative count");
+    cleanup_started = false;
+  };
+  Phase("K-15h surplus budget");
+  const auto before = semb_test_seam_acquisitions();
+  Check(semb_test_seam_arm_park(n + 2) == 1 && semb_test_seam_acquisitions() == before,
+        "K-15h arm preserves acquisition count");
+  Output held(a.dims); std::vector<std::future<void>> one;
+  one.push_back(std::async(std::launch::async, [&]{Encode(enc, docs[0], held, a.dims);}));
+  Check(semb_test_seam_wait_parked(1, 10000) == 1 && semb_test_seam_parked() == 1,
+        "K-15h strict subset acquired and parked");
+  const auto acquired = semb_test_seam_acquisitions();
+  Check(acquired == before + 1, "K-15h subset counted exactly once");
+  ReleaseBounded();
+  Check(semb_test_seam_acquisitions() == acquired, "K-15h release preserves count");
+  Drain(one);
+  Check(Success(held, a.dims) && held.bytes(a.dims) == reference[0], "K-15h released worker serial bytes");
+  cleanup_started = false;
+  unarmed(before + 2, "K-15h released residual budget");
+  // No worker exists here. An unused arm is inside reset's permitted domain.
+  const auto before_reset = semb_test_seam_acquisitions();
+  Check(semb_test_seam_arm_park(n + 2) == 1 && semb_test_seam_acquisitions() == before_reset,
+        "K-15h unused arm preserves prior epoch");
+  Reset();
+  unarmed(1, "K-15h reset residual budget");
+  for (unsigned epoch = 0; epoch < 2; ++epoch) {
+    Reset();
+    Phase(epoch == 0 ? "K-15h occupied epoch 1" : "K-15h occupied epoch 2 same handle");
+    Check(semb_test_seam_arm_park(n) == 1, "K-15h arm occupied epoch");
+    std::vector<Output> outputs; for (unsigned i = 0; i < n; ++i) outputs.emplace_back(a.dims);
+    std::vector<std::future<void>> jobs;
+    for (unsigned i = 0; i < n; ++i) jobs.push_back(std::async(std::launch::async, [&, i]{Encode(enc, docs[i], outputs[i], a.dims); WorkerFinished();}));
+    bool occupied = semb_test_seam_wait_parked(n, 10000) == 1 && semb_test_seam_parked() == n;
+    Check(occupied, "K-15h occupied reused epoch");
+    if (occupied) {
+      const auto count = semb_test_seam_acquisitions();
+      Check(count == n, "K-15h fresh epoch exact N acquisitions");
+      Output rejected(a.dims);
+      auto helper = std::async(std::launch::async, [&]{Encode(enc, docs[0], rejected, a.dims);});
+      bool ready = helper.wait_for(10s) == std::future_status::ready;
+      Check(ready, "K-15h reused epoch refusal deadline");
+      if (ready) {
+        helper.get();
+        Check(Status(rejected.status, "SEMB_CONCURRENCY_EXCEEDED") && rejected.untouched() &&
+              semb_test_seam_acquisitions() == count, "K-15h reused epoch refusal/canaries/count");
+      }
+      ReleaseBounded();
+      if (!ready) {
+        if (helper.wait_until(cleanup_deadline) != std::future_status::ready) FatalTimeout("K-15h helper cleanup deadline");
+        helper.get();
+      }
+    } else ReleaseBounded();
+    Drain(jobs);
+    for (unsigned i = 0; i < n; ++i)
+      Check(Success(outputs[i], a.dims) && outputs[i].bytes(a.dims) == reference[i], "K-15h reused epoch worker serial bytes");
+    Check(semb_test_seam_parked() == 0 && semb_test_seam_acquisitions() == n, "K-15h drained epoch state");
+    cleanup_started = false;
+  }
+}
 }
 int main(int argc, char** argv) {
   Args a;
@@ -109,7 +201,10 @@ int main(int argc, char** argv) {
     else if (k == "--print-vector-hex") {a.print = true; a.text = v;} else return 2;
   }
   if (a.model.empty() || a.tokenizer.empty() || !a.dims) return 2;
-  if (!a.print && a.cell != "K-15d" && a.cell != "K-15e" && a.cell != "K-15f" && a.cell != "K-15g") return 2;
+  if (!a.print && a.cell != "K-15d" && a.cell != "K-15e" && a.cell != "K-15f" && a.cell != "K-15g" && a.cell != "K-15h") return 2;
+  Phase("startup before any encode/reset");
+  Check(semb_test_seam_acquisitions() == 0 && semb_test_seam_parked() == 0, "K-15h startup epoch is empty");
+  if (failures) return 1;
   const unsigned n = a.dims == 1024 ? 2 : 3;
   std::vector<std::string> docs = {"A small red boat.", "The green forest grows.", "Numbers: 17, 29, 43."};
   if (a.print) docs = {a.text};
@@ -126,6 +221,7 @@ int main(int argc, char** argv) {
   if (failures) return 1;
   auto enc = Open(a, (a.cell == "K-15f" || a.print) ? 1 : n); if (!enc) return 1;
   Reset();
+  if (a.cell == "K-15h") {Lifecycle(a, enc, n, docs, reference); Close(enc); Reset(); return failures ? 1 : 0;}
   if (a.cell == "K-15f" || a.print) {
     for (size_t i = 0; i < docs.size(); ++i) {
       const bool armed = !a.print || a.armed;
@@ -143,7 +239,7 @@ int main(int argc, char** argv) {
     Check(semb_test_seam_arm_park(inert ? 0 : n) == 1, "arm requested budget");
     std::vector<Output> outputs; for (unsigned i = 0; i < n; ++i) outputs.emplace_back(a.dims);
     std::vector<std::future<void>> jobs;
-    for (unsigned i = 0; i < n; ++i) jobs.push_back(std::async(std::launch::async, [&, i]{Encode(enc, docs[i], outputs[i], a.dims);}));
+    for (unsigned i = 0; i < n; ++i) jobs.push_back(std::async(std::launch::async, [&, i]{Encode(enc, docs[i], outputs[i], a.dims); WorkerFinished();}));
     if (!inert) {
       Phase("occupancy rendezvous");
       bool occupied = semb_test_seam_wait_parked(n, 10000) == 1 && semb_test_seam_parked() == n;
@@ -152,14 +248,25 @@ int main(int argc, char** argv) {
         auto before = semb_test_seam_acquisitions(); Check(before == n, "exact N acquisitions while parked");
         Check(semb_test_seam_arm_park(1) == 0 && semb_test_seam_parked() == n && semb_test_seam_acquisitions() == before, "arm refuses unchanged while parked");
         if (a.cell == "K-15d") {
-          Output rejected(a.dims); auto f = std::async(std::launch::async, [&]{Encode(enc, retry_doc, rejected, a.dims);});
+          Output rejected(a.dims); auto f = std::async(std::launch::async, [&]{
+            DelayRefusalHelper(n); Encode(enc, retry_doc, rejected, a.dims);
+#ifdef SEMB_WORKSPACE_DELAY_REFUSAL_HELPERS
+            std::printf("[CONTROL] late encode actual result: %s\n", Name(rejected.status)); std::fflush(stdout);
+#endif
+          });
           Phase("exhausted encode refusal"); bool ready = f.wait_for(10s) == std::future_status::ready;
           Check(ready, "K-15d refusal deadline");
           if (ready) {f.get(); Check(Status(rejected.status, "SEMB_CONCURRENCY_EXCEEDED"), std::string("K-15d refusal: ") + Name(rejected.status)); Check(rejected.untouched(), "K-15d all output canaries untouched"); Check(semb_test_seam_acquisitions() == before, "K-15d no additional acquisition");}
           ReleaseBounded();
           if (!ready) {if(f.wait_until(cleanup_deadline) != std::future_status::ready) FatalTimeout("exhausted helper drain exceeded 30 seconds"); f.get();}
         } else {
-          auto f = std::async(std::launch::async, [=]{return semb_encoder_close(enc);});
+          auto f = std::async(std::launch::async, [=]{
+            DelayRefusalHelper(n); auto result = semb_encoder_close(enc);
+#ifdef SEMB_WORKSPACE_DELAY_REFUSAL_HELPERS
+            std::printf("[CONTROL] late close actual result: %s\n", Name(result)); std::fflush(stdout);
+#endif
+            return result;
+          });
           Phase("close refusal"); bool ready = f.wait_for(10s) == std::future_status::ready;
           Check(ready, "K-15e close refusal deadline");
           if (ready) {auto s=f.get(); Check(Status(s, "SEMB_HANDLE_IN_USE"), std::string("K-15e refusal: ") + Name(s));}

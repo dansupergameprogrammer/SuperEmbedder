@@ -277,18 +277,26 @@ def workspace_interface(build_dir: Path, table: Table) -> bool:
         return False
 
 
-def workspace_child(exe: Path, args: List[str], label: str, table: Table) -> Optional[str]:
-    # subprocess.run kills and waits for the child after TimeoutExpired; no
-    # worker is detached into a later cell. Last PHASE identifies the hang.
-    try:
-        proc = subprocess.run([str(exe), *args], cwd=REPO_ROOT, capture_output=True,
-                              text=True, encoding='utf-8', errors='replace', timeout=600)
-    except subprocess.TimeoutExpired as exc:
-        tail = exc.stdout or b''
-        if isinstance(tail, bytes):
-            tail = tail.decode('utf-8', errors='replace')
-        table.add(label, 'FAIL', '600-second child deadline; child killed and waited; last output:\n' + tail[-4000:])
-        return None
+def workspace_child(exe: Path, args: List[str], label: str, table: Table,
+                    receipt: Optional[dict] = None) -> Optional[str]:
+    # The real parent owns termination and wait. An optional diagnostic receipt
+    # exposes that first-party result; it never changes a deadline or verdict.
+    with subprocess.Popen([str(exe), *args], cwd=REPO_ROOT, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace') as child:
+        try:
+            stdout, stderr = child.communicate(timeout=600)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            stdout, stderr = child.communicate()  # waits/reaps the terminated child
+            if receipt is not None:
+                receipt.update(pid=child.pid, returncode=child.returncode, timed_out=True,
+                               reaped=child.poll() is not None, stdout=stdout, stderr=stderr)
+            table.add(label, 'FAIL', '600-second child deadline; child killed and waited; last output:\n' + stdout[-4000:])
+            return None
+        if receipt is not None:
+            receipt.update(pid=child.pid, returncode=child.returncode, timed_out=False,
+                           reaped=child.poll() is not None, stdout=stdout, stderr=stderr)
+        proc = subprocess.CompletedProcess(child.args, child.returncode, stdout, stderr)
     print(proc.stdout)
     if proc.stderr:
         print(proc.stderr)
@@ -339,13 +347,16 @@ def run_workspace_suite(args, build_dir: Path, pair_dir: Path, real_tokenizer: s
         return
     for label, model, tokenizer, dims in populations:
         common = ['--model', model, '--tokenizer', tokenizer, '--dims', str(dims)]
-        for cell in ('K-15d', 'K-15e', 'K-15g'):
+        for cell in ('K-15d', 'K-15e', 'K-15g', 'K-15h'):
             out = workspace_child(seam, [*common, '--cell', cell], label + ' ' + cell, table)
             if out is not None:
                 table.add(label + ' ' + cell, 'PASS', 'bounded isolated child; named statuses, canaries, acquisitions and serial bytes')
         if not interface_ok:
             table.add(label + ' K-15f', 'FAIL', 'effective interface prerequisite failed; byte parity not credited')
             continue
+        reused = workspace_child(seam, [*common, '--cell', 'K-15f'], label + ' K-15f multi-document reuse', table)
+        if reused is not None:
+            table.add(label + ' K-15f multi-document reuse', 'PASS', 'three armed documents on the same handle')
         for doc in SEAM_DOCS:
             observed = []
             for name, exe, extra in [('production', production, []), ('unarmed', seam, []), ('armed/released', seam, ['--armed'])]:
