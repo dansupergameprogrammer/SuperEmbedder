@@ -7,7 +7,8 @@ so it must compile as strict C on every toolchain that builds the library --
 MSVC and clang-cl under `/TC /W4 /WX`, GCC/Clang/AppleClang under
 `-std=c99 -Wall -Wextra -Werror -pedantic`. At `496d036` that compile was run
 by hand once and recorded; it was not a cell (planner record sec 10.4). The
-object library `u1_public_header_strict_c` in tests/CMakeLists.txt makes it a
+`u1_public_header_strict_c` target in tests/CMakeLists.txt (the probe compiled
+in C mode by the tree's own C++ driver, on the default build) makes it a
 BUILD-time cell on every platform; this script is the ctest-time cell that
 proves the compile can FAIL BY NAME when C++ syntax enters the header.
 
@@ -26,6 +27,11 @@ USAGE (as tests/CMakeLists.txt registers it):
   python tests/u1_public_header_strict_c_check.py --c-compiler <path> --cxx-compiler <path>
       --compiler-id <MSVC|Clang|GNU|AppleClang> [--frontend <MSVC|GNU>]
       --include-dir <repo>/include --scratch <dir>
+
+Both compiler arguments are the tree's configured C++ DRIVER: C mode is
+selected per invocation (`/TC` vs `/TP` for cl and clang-cl; `-x c` vs
+`-x c++` for GCC/Clang/AppleClang), so no second CMake language is enabled and
+every scratch configure in this tree keeps passing CMAKE_CXX_COMPILER alone.
 
 Exit codes: 0 every construction behaved; 1 otherwise.
 """

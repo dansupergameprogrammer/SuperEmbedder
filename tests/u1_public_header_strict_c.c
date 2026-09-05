@@ -4,7 +4,9 @@
  * default build (tests/CMakeLists.txt: /TC /W4 /WX under MSVC and clang-cl;
  * -std=c99 -Wall -Wextra -Werror -pedantic under GCC/Clang/AppleClang), so a
  * C++-only construct entering include/superembedder/semb.h breaks
- * `cmake --build` on every CI job -- and tests/u1_public_header_strict_c_check.py
+ * `cmake --build` on every CI job; the compiler is the tree's configured C++
+ * driver in C mode, so no second CMake language is enabled -- and
+ * tests/u1_public_header_strict_c_check.py
  * is the ctest cell that compiles this file by name against the real header
  * (must-accept) and against mutated copies carrying C++ syntax (must-reject,
  * each of which must FAIL to compile as C and compile as C++).

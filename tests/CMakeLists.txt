@@ -308,33 +308,53 @@ add_test(
 # TE-94 (D-SLM6314 resolution sec 7.1; K-16): the public header compiles as
 # STRICT C on every platform that builds the library. Two halves:
 #   (1) a BUILD-time cell -- tests/u1_public_header_strict_c.c compiled as an
-#       object on the default build under /TC /W4 /WX (MSVC, clang-cl) or
-#       -std=c99 -Wall -Wextra -Werror -pedantic (GCC/Clang/AppleClang), so a
-#       C++-only construct entering include/superembedder/semb.h breaks
-#       `cmake --build` on every CI job that builds the library;
+#       object on the default build, in C MODE, by the SAME C++ driver this
+#       tree is configured with: `/TC /W4 /WX` under cl and clang-cl,
+#       `-x c -std=c99 -Wall -Wextra -Werror -pedantic` under GCC/Clang/
+#       AppleClang. So a C++-only construct entering
+#       include/superembedder/semb.h breaks `cmake --build` on every CI job
+#       that builds the library;
 #   (2) a ctest-time cell -- tests/u1_public_header_strict_c_check.py compiles
 #       the same probe against the real header (must-accept) and against
 #       mutated copies carrying C++ syntax (must-reject, each of which must
 #       also compile as C++), so the cell is proven able to FAIL BY NAME.
-# `enable_language(C)` here enables C for the project; the directory-wide
-# precise-FP flag (cmake/BuildFlags.cmake) applies to this C object too, and
-# semb_assert_precise_fp() sees it as one more compilable target.
+# WHY THE C++ DRIVER IN C MODE RATHER THAN enable_language(C): this tree's
+# every scratch configure -- tools/ci/run_configure_matrix.py,
+# tests/c12b_independent_commission_check.py, tests/witness_structural_matrix.py,
+# tools/engine_side_wa_perturbation.py, and a developer's clang-cl tree --
+# passes CMAKE_CXX_COMPILER alone. Enabling C made CMake infer a C compiler
+# on its own, and with clang-cl as CXX it inferred the GNU-style clang.exe
+# and then handed it MSVC flags (executed: c12b_independent_commission_check
+# FAILED under clang-cl at TE-94's first re-entry). Every driver this tree
+# already uses compiles C when told to, so no second language is enabled.
 # ---------------------------------------------------------------------------
-enable_language(C)
-add_library(u1_public_header_strict_c OBJECT u1_public_header_strict_c.c)
-target_include_directories(u1_public_header_strict_c PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../include")
-if(CMAKE_C_COMPILER_ID STREQUAL "MSVC" OR CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
-	target_compile_options(u1_public_header_strict_c PRIVATE /TC /W4 /WX)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+	set(_semb_strict_c_obj "${CMAKE_CURRENT_BINARY_DIR}/u1_public_header_strict_c.obj")
+	set(_semb_strict_c_cmd "${CMAKE_CXX_COMPILER}" /nologo /TC /W4 /WX /c
+		"/I${CMAKE_CURRENT_SOURCE_DIR}/../include" "/Fo${_semb_strict_c_obj}"
+		"${CMAKE_CURRENT_SOURCE_DIR}/u1_public_header_strict_c.c")
 else()
-	target_compile_options(u1_public_header_strict_c PRIVATE -std=c99 -Wall -Wextra -Werror -pedantic)
+	set(_semb_strict_c_obj "${CMAKE_CURRENT_BINARY_DIR}/u1_public_header_strict_c.o")
+	set(_semb_strict_c_cmd "${CMAKE_CXX_COMPILER}" -x c -std=c99 -Wall -Wextra -Werror -pedantic -c
+		"-I${CMAKE_CURRENT_SOURCE_DIR}/../include" -o "${_semb_strict_c_obj}"
+		"${CMAKE_CURRENT_SOURCE_DIR}/u1_public_header_strict_c.c")
 endif()
+add_custom_command(
+	OUTPUT "${_semb_strict_c_obj}"
+	COMMAND ${_semb_strict_c_cmd}
+	DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/u1_public_header_strict_c.c"
+		"${CMAKE_CURRENT_SOURCE_DIR}/../include/superembedder/semb.h"
+	COMMENT "K-16: compiling include/superembedder/semb.h as strict C"
+	VERBATIM
+)
+add_custom_target(u1_public_header_strict_c ALL DEPENDS "${_semb_strict_c_obj}")
 add_test(
 	NAME u1_public_header_strict_c_check
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_public_header_strict_c_check.py"
-		--c-compiler "${CMAKE_C_COMPILER}"
+		--c-compiler "${CMAKE_CXX_COMPILER}"
 		--cxx-compiler "${CMAKE_CXX_COMPILER}"
-		--compiler-id "${CMAKE_C_COMPILER_ID}"
-		--frontend "${CMAKE_C_COMPILER_FRONTEND_VARIANT}"
+		--compiler-id "${CMAKE_CXX_COMPILER_ID}"
+		--frontend "${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}"
 		--include-dir "${CMAKE_CURRENT_SOURCE_DIR}/../include"
 		--scratch "${CMAKE_BINARY_DIR}/_u1_strict_c"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
