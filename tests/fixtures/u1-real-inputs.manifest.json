@@ -1,0 +1,55 @@
+{
+  "schema": "semb_real_input_prerequisites_v1",
+  "reference": {
+    "implementation": "Hugging Face tokenizers",
+    "version": "0.22.2",
+    "repo": "Qwen/Qwen3-Embedding-0.6B",
+    "revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+    "tokenizer_json_sha256": "def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a",
+    "tokenizer_config_json_sha256": "253153d0738ceb4c668d2eff957714dd2bea0b56de772a9fdccd96cbf517e6a0"
+  },
+  "cap": 32768,
+  "model_vocab": 151669,
+  "terminator": 151643,
+  "foreign_special": "<|im_end|>",
+  "foreign_special_id": 151669,
+  "foreign_provenance": "controlled pinned real-tokenizer derivative; not an upstream checkpoint",
+  "content_ids": {
+    "at-cap": {
+      "count": 32767,
+      "first": 64,
+      "remaining": 264
+    },
+    "over-cap": {
+      "count": 32768,
+      "first": 64,
+      "remaining": 264
+    }
+  },
+  "files": {
+    "at-cap.utf8": {
+      "bytes": 65533,
+      "sha256": "cca83d28c70c5ac18613866d33c37b69d3d7643eb4d5a24f68e9aa6cbb4fd0c6"
+    },
+    "over-cap.utf8": {
+      "bytes": 65535,
+      "sha256": "0bd017bc7051a48cd9e259a1d9ab91bc023592249a38d818392458c58c6186ec"
+    },
+    "over-cap-invalid.utf8": {
+      "bytes": 65536,
+      "sha256": "493dbfe165ca0e0336d13c87fc25211c41f47a2f46f08de577e525e9afc2e103"
+    },
+    "at-cap.ids": {
+      "bytes": 131068,
+      "sha256": "623e148a1aaf5cb8e8b2a20350f565f790df38c6411a47527b38b9a64fcafae4"
+    },
+    "over-cap.ids": {
+      "bytes": 131072,
+      "sha256": "0b2d6e77b1fd9387285f31774481f6ecf1a9bde9382780cd002bcb4d39018e39"
+    },
+    "foreign-tokenizer.sslm": {
+      "bytes": 3465492,
+      "sha256": "9fd91a36a940b932018e1f37e4705e03956af917393baa15a259f6d8ce781585"
+    }
+  }
+}

@@ -319,6 +319,8 @@ semb_encoder OutSentinel() { return reinterpret_cast<semb_encoder>(static_cast<u
 
 struct Args {
   std::string model, tokenizer, other_model, other_tokenizer, absent_end_token_tokenizer, scratch_dir;
+  std::string real_inputs, real_input_cell = "all";
+  bool real_inputs_only = false;
   uint32_t dims = 0;
   size_t context_cap = 0;
   bool workspace_precedence = false;
@@ -341,6 +343,9 @@ Args ParseArgs(int argc, char** argv) {
     else if (k == "--other-tokenizer") next(&a.other_tokenizer);
     else if (k == "--absent-end-token-tokenizer") next(&a.absent_end_token_tokenizer);
     else if (k == "--scratch-dir") next(&a.scratch_dir);
+    else if (k == "--real-inputs") next(&a.real_inputs);
+    else if (k == "--real-input-cell") next(&a.real_input_cell);
+    else if (k == "--real-inputs-only") a.real_inputs_only = true;
     else if (k == "--print-vector-hex") { next(&a.print_text); a.print_vector = true; }
     else if (k == "--workspace-precedence") a.workspace_precedence = true;
     else if (k == "--legacy-append-id") { next(&v); g_legacy_append_id = std::atoi(v.c_str()); }
@@ -350,6 +355,11 @@ Args ParseArgs(int argc, char** argv) {
   }
   if (a.model.empty() || a.tokenizer.empty() || a.dims == 0) {
     std::fprintf(stderr, "usage: --model <.sslm> --tokenizer <.sslm> --dims <n> ...\n");
+    std::exit(2);
+  }
+  if ((a.real_inputs_only && a.real_inputs.empty()) ||
+      (a.real_input_cell != "all" && a.real_input_cell != "at-cap" && a.real_input_cell != "refusals")) {
+    std::fprintf(stderr, "REAL_INPUT_SETUP: expected --real-inputs and cell all/at-cap/refusals\n");
     std::exit(2);
   }
 #ifndef SEMB_CONTRACT_LEGACY_APPENDED_ID_MEMBER
@@ -407,12 +417,75 @@ bool SameBytes(const std::vector<float>& a, const std::vector<float>& b) {
   return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0;
 }
 
+// TE-120: the driver first verifies the committed HF fixture identities and
+// runs the engine-only prerequisite probe. These additional checks prevent a
+// missing/mis-sized file from becoming a credited public boundary observation.
+void RealBoundaries(const Args& a, const Statuses& st) {
+  const auto at = ReadAll(a.real_inputs + "/at-cap.utf8");
+  const auto over = ReadAll(a.real_inputs + "/over-cap.utf8");
+  const auto bad = ReadAll(a.real_inputs + "/over-cap-invalid.utf8");
+  auto recipe = [](const std::vector<char>& bytes, size_t count) {
+    if (bytes.size() != count * 2 - 1) return false;
+    for (size_t i = 0; i < bytes.size(); ++i)
+      if (bytes[i] != (i % 2 == 0 ? 'a' : ' ')) return false;
+    return true;
+  };
+  const bool setup = a.dims == 1024 && recipe(at, 32767) && recipe(over, 32768) &&
+      bad.size() == over.size() + 1 && std::equal(over.begin(), over.end(), bad.begin()) &&
+      static_cast<unsigned char>(bad.back()) == 0xFF;
+  Verdict(setup, "REAL_INPUT_SETUP exact pinned real boundary bytes", "at=" + std::to_string(at.size()) +
+          " over=" + std::to_string(over.size()) + " invalid=" + std::to_string(bad.size()));
+  if (!setup) return;
+  auto enc = OpenPair(a, st, "REAL_INPUT_SETUP real public open");
+  if (!enc) return;
+  const size_t need = a.dims * sizeof(float);
+  auto call = [&](const std::vector<char>& text, int32_t expected, const char* cell) {
+    SentinelBuffer buffer(need + 64);
+    size_t required = kRequiredSentinel;
+    auto fp = MakeFingerprint();
+    const auto before = std::chrono::steady_clock::now();
+    Observed(std::string("BEGIN ") + cell + " input_bytes=" + std::to_string(text.size()));
+    const auto status = semb_encode(enc, text.data(), text.size(), buffer.Data(), need, &required, &fp);
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - before).count();
+    const auto* first = reinterpret_cast<const uint8_t*>(buffer.storage.data());
+    const auto* output = reinterpret_cast<const uint8_t*>(buffer.Data());
+    const size_t total = buffer.storage.size() * sizeof(float);
+    bool outside = true, untouched = true;
+    for (size_t i = 0; i < total; ++i) {
+      if (first[i] != SentinelBuffer::kSentinel) {
+        untouched = false;
+        if (first + i < output || first + i >= output + need) outside = false;
+      }
+    }
+    const bool accepted = status == st.ok && required == need && !buffer.Untouched(need) &&
+        fp.struct_size == sizeof(fp) && !FingerprintUntouched(fp) && outside;
+    const bool refused = required == kRequiredSentinel && untouched && FingerprintUntouched(fp);
+    Verdict(status == expected && (expected == st.ok ? accepted : refused), cell,
+            std::string(Name(status)) + " required=" + std::to_string(required) + " full_storage_untouched=" +
+            std::to_string(untouched) + " outside_untouched=" + std::to_string(outside) + " elapsed_ms=" + std::to_string(elapsed));
+    if (status == st.ok) Observed(std::string(cell) + " VECTOR_HEX " + Hex(output, need));
+  };
+  // Cheap refusals run first; their observations survive a later long forward.
+  if (a.real_input_cell != "at-cap") {
+    call(over, st.context_cap_exceeded, "K-12b REAL 32769 positions -> CONTEXT_CAP_EXCEEDED, all outputs untouched");
+    call(bad, st.invalid_utf8, "K-12c REAL over-cap plus invalid UTF-8 -> INVALID_UTF8, all outputs untouched");
+  }
+  if (a.real_input_cell != "refusals")
+    call(at, st.ok, "K-12a REAL 32768 positions including unconditional append accepted");
+  Verdict(semb_encoder_close(enc) == st.ok, "K-12 REAL close", "after real boundary calls");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   const Args a = ParseArgs(argc, argv);
   const Statuses st = ResolveStatuses();
   const size_t need = a.dims * sizeof(float);
+
+  if (a.real_inputs_only) {
+    RealBoundaries(a, st);
+    return g_failures ? 1 : 0;
+  }
 
   // TE-110: standalone production-byte output; all existing cells below are unchanged.
   if (a.print_vector) {
@@ -921,9 +994,10 @@ int main(int argc, char** argv) {
               std::string("observed ") + Name(s));
       (void)semb_encoder_close(enc);
     }
-  } else {
+  } else if (a.real_inputs.empty()) {
     Missing("K-12 context cap edges", "no --context-cap given (the real artifact's 32,768 is not driven here)");
   }
+  if (!a.real_inputs.empty()) RealBoundaries(a, st);
 
   // ---- K-13 opaque-handle ownership (item 5; P-7) -----------------------------------------------
   {

@@ -54,6 +54,7 @@ import sys
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
+from fixtures import u1_real_inputs
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = REPO_ROOT / "tests" / "fixtures"
@@ -192,12 +193,25 @@ class Table:
         sys.stdout.flush()
 
 
-def run_cells(exe: Path, args: List[str], leg: str, table: Table, diag: bool = False) -> None:
+def run_cells(exe: Path, args: List[str], leg: str, table: Table, diag: bool = False, stream: bool = False) -> None:
     t0 = time.perf_counter()
-    proc = subprocess.run([str(exe), *args], cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
-                          errors="replace")
+    if stream:
+        # Real cap forwards can be long. Preserve phase output as it arrives;
+        # no latency policy is added to the public raw-text contract.
+        lines = []
+        with subprocess.Popen([str(exe), *args], cwd=REPO_ROOT, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace") as child:
+            for line in child.stdout:
+                lines.append(line)
+                print(line, end="", flush=True)
+            child.wait()
+            proc = subprocess.CompletedProcess(child.args, child.returncode, "".join(lines), "")
+    else:
+        proc = subprocess.run([str(exe), *args], cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace")
     elapsed = time.perf_counter() - t0
-    print(proc.stdout)
+    if not stream:
+        print(proc.stdout)
     if proc.stderr.strip():
         print(proc.stderr)
     n_pass = len(re.findall(r"^\[PASS\]", proc.stdout, re.M))
@@ -374,6 +388,7 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--model", default=os.environ.get("SEMB_C12B_MODEL", ""))
     ap.add_argument("--tokenizer", default=os.environ.get("SEMB_U1_TOKENIZER", ""))
     ap.add_argument("--pair-dir", default=str(PAIR_DIR_DEFAULT))
+    ap.add_argument("--real-inputs", default=str(REPO_ROOT / "build/_scratch/u1_real_inputs"))
     ap.add_argument("--limit", type=int, default=0, help="cap the real populations' rows (0 = all)")
     ap.add_argument("--mutant-rows", type=int, default=8)
     ap.add_argument("--skip-build", action="store_true", help="assume the targets are already built")
@@ -395,7 +410,7 @@ def main(argv: List[str]) -> int:
               f"{len(pair['files'])} files incl. the no-<|endoftext|> variant); other model {other_model.name}")
 
     # ---- build the cells ---------------------------------------------------------------------------
-    targets = ["u1_raw_text_contract_test", "u1_raw_text_parity_test"]
+    targets = ["u1_raw_text_contract_test", "u1_raw_text_parity_test", "u1_real_input_probe"]
     if args.diag_legacy_layout:
         targets += ["u1_raw_text_contract_test_legacy", "u1_raw_text_parity_test_legacy"]
     if not args.skip_build:
@@ -466,10 +481,30 @@ def main(argv: List[str]) -> int:
         scratch = build_dir / "_u1_real"
         scratch.mkdir(parents=True, exist_ok=True)
         pops = real_populations(scratch)
-        run_cells(contract, ["--model", args.model, "--tokenizer", real_tokenizer, "--dims", str(CANDIDATE_DIMS),
+        fixture_dir = Path(args.real_inputs)
+        prerequisite_ok = False
+        try:
+            u1_real_inputs.verify(fixture_dir, Path(args.model), Path(real_tokenizer))
+            probe = find_exe(build_dir, "u1_real_input_probe")
+            if not probe:
+                raise ValueError("missing engine-only prerequisite executable")
+            result = subprocess.run([str(probe), args.model, real_tokenizer,
+                                     str(fixture_dir / "foreign-tokenizer.sslm"), str(fixture_dir)],
+                                    capture_output=True, text=True, errors="replace", cwd=REPO_ROOT)
+            print(result.stdout + result.stderr)
+            if result.returncode != 0:
+                raise ValueError("engine-only prerequisite probe exit " + str(result.returncode))
+            prerequisite_ok = True
+            table.add("R0 real K-06d/K-12 prerequisite", "PASS", "pinned independent HF inputs and engine-only loader/ID proof")
+        except (OSError, ValueError, KeyError) as exc:
+            table.add("R0 real K-06d/K-12 prerequisite", "FAIL", "SETUP FAILURE: " + str(exc))
+        if prerequisite_ok:
+            run_cells(contract, ["--model", args.model, "--tokenizer", real_tokenizer, "--dims", str(CANDIDATE_DIMS),
                              "--other-model", pair_model, "--absent-end-token-tokenizer", pair_tok_no_eot,
+                             "--other-tokenizer", str(fixture_dir / "foreign-tokenizer.sslm"),
+                             "--real-inputs", str(fixture_dir),
                              "--scratch-dir", str(scratch)],
-                  "R1 contract cells K-01..K-17 on the real pair", table)
+                  "R1 contract cells K-01..K-17 on the real pair", table, stream=True)
         for name, tsv in pops:
             extra = ["--limit", str(args.limit)] if args.limit else []
             run_cells(parity, ["--model", args.model, "--tokenizer", real_tokenizer, "--append-id", str(CANDIDATE_APPEND_ID),
