@@ -18,7 +18,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <unordered_set>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -49,56 +49,38 @@ namespace {
 
 constexpr char kQueryPrefix[] =
     "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:";
+constexpr char kCanonicalEndToken[] = "<|endoftext|>";
 constexpr char kWbPendingSentinel[] = "SEMB-W-B-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
 constexpr char kWqPendingSentinel[] = "SEMB-W-Q-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
 constexpr char kCertificationPendingSentinel[] =
     "SEMB-CERTIFIED-BUILDS-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
+constexpr char kProvisionalFingerprintTag[] = SEMB_FINGERPRINT_PROVISIONAL_TAG;
+static_assert(sizeof(kProvisionalFingerprintTag) - 1 ==
+              SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE);
 
 std::mutex& RegistryMutex() {
   static auto* mutex = new std::mutex();
   return *mutex;
 }
 
-std::unordered_set<semb_encoder_s*>& Registry() {
-  static auto* registry = new std::unordered_set<semb_encoder_s*>();
+using HandleRegistry =
+    std::unordered_map<semb_encoder, std::unique_ptr<semb_encoder_s>>;
+
+HandleRegistry& Registry() {
+  static auto* registry = new HandleRegistry();
   return *registry;
 }
 
-// A registry check alone is not enough after delete: the allocator may reuse
-// the same address for a later handle, turning a stale value into an alias of
-// the replacement (the classic ABA problem). Close destroys every owned
-// resource immediately, then retains only the small allocation as a tombstone
-// until process teardown so no published handle address can be reused.
-struct RetiredHandleNode {
-  RetiredHandleNode* next;
-};
-static_assert(sizeof(semb_encoder_s) >= sizeof(RetiredHandleNode));
-static_assert(alignof(semb_encoder_s) >= alignof(RetiredHandleNode));
-
-class RetiredHandleStorage {
- public:
-  ~RetiredHandleStorage() {
-    while (head_) {
-      RetiredHandleNode* node = head_;
-      head_ = node->next;
-      node->~RetiredHandleNode();
-      ::operator delete(node);
-    }
-  }
-
-  void Retire(void* storage) noexcept {
-    std::lock_guard<std::mutex> lock(mutex_);
-    head_ = ::new (storage) RetiredHandleNode{head_};
-  }
-
- private:
-  std::mutex mutex_;
-  RetiredHandleNode* head_ = nullptr;
-};
-
-RetiredHandleStorage& RetiredHandles() {
-  static RetiredHandleStorage storage;
-  return storage;
+// The ABI type is an opaque pointer, but the published value is a monotonic
+// cookie, never an allocation address. Registry entries own the actual handle
+// objects and close erases them normally. A stale cookie therefore cannot
+// become an alias through allocator address reuse, and closed handles retain
+// no per-handle tombstone storage.
+bool AllocateHandleCookie(semb_encoder* out) {
+  static uintptr_t next = 1;
+  if (next == 0) return false;  // The pointer-width cookie space was exhausted.
+  *out = reinterpret_cast<semb_encoder>(next++);
+  return true;
 }
 
 class HandleLease {
@@ -106,9 +88,10 @@ class HandleLease {
   explicit HandleLease(semb_encoder enc) {
     if (!enc) return;
     std::lock_guard<std::mutex> lock(RegistryMutex());
-    if (Registry().find(enc) == Registry().end()) return;
-    enc->active_calls.fetch_add(1, std::memory_order_acq_rel);
-    handle_ = enc;
+    const auto found = Registry().find(enc);
+    if (found == Registry().end()) return;
+    found->second->active_calls.fetch_add(1, std::memory_order_acq_rel);
+    handle_ = found->second.get();
   }
 
   ~HandleLease() {
@@ -160,8 +143,9 @@ std::array<uint8_t, 32> ComputeTemplateDigest() {
   return out;
 }
 
-std::array<uint8_t, 32> ComputeFingerprint(const std::vector<uint8_t>& model_bytes,
-                                           const std::vector<uint8_t>& tokenizer_bytes) {
+std::array<uint8_t, 32> ComputeProvisionalFingerprint(
+    const std::vector<uint8_t>& model_bytes,
+    const std::vector<uint8_t>& tokenizer_bytes) {
   uint8_t model_sha[32], tokenizer_sha[32], wa_sha[32], wb_sha[32], wq_sha[32];
   Hash(model_bytes.data(), model_bytes.size(), model_sha);
   Hash(tokenizer_bytes.data(), tokenizer_bytes.size(), tokenizer_sha);
@@ -182,14 +166,25 @@ std::array<uint8_t, 32> ComputeFingerprint(const std::vector<uint8_t>& model_byt
        certification_epoch);
   const auto template_sha = ComputeTemplateDigest();
 
-  std::array<uint8_t, 32> out{};
+  uint8_t digest[32];
   superslm::Sha256 hash;
+  // This is deliberately not the final five-field wire value. Domain-separate
+  // the provisional derivation and reserve an unmistakable public prefix so a
+  // consumer can reject it without relying on README prose.
+  hash.Update(reinterpret_cast<const uint8_t*>(kProvisionalFingerprintTag),
+              SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE);
   UpdateField(&hash, model_sha);
   UpdateField(&hash, tokenizer_sha);
   UpdateField(&hash, template_sha.data());
   UpdateField(&hash, witness_sha);
   UpdateField(&hash, certification_epoch);
-  hash.Final(out.data());
+  hash.Final(digest);
+
+  std::array<uint8_t, 32> out{};
+  std::memcpy(out.data(), kProvisionalFingerprintTag,
+              SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE);
+  std::memcpy(out.data() + SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE, digest,
+              out.size() - SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE);
   return out;
 }
 
@@ -295,20 +290,7 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
     }
 
     auto handle = std::make_unique<semb_encoder_s>();
-    handle->fingerprint = ComputeFingerprint(model_bytes, tokenizer_bytes);
     handle->tokenizer_bytes = std::move(tokenizer_bytes);
-
-    const uint32_t max_concurrency = cfg->max_concurrency == 0 ? 1 : cfg->max_concurrency;
-    SembInterimEncoder* interim = nullptr;
-    const char* engine_status = nullptr;
-    const SembInterimStatus open_status = semb_interim_encoder_open_owned(
-        std::move(model_bytes), cfg->appended_token_id, max_concurrency, &interim,
-        &engine_status);
-    (void)engine_status;
-    if (open_status != kSembInterimOk) return MapInterimStatus(open_status, kSembOk);
-
-    std::unique_ptr<SembInterimEncoder, void (*)(SembInterimEncoder*)> interim_guard(
-        interim, semb_interim_encoder_close);
     superslm::SslmArtifact tokenizer_artifact;
     superslm::SslmError artifact_error;
     if (superslm::SslmArtifact::OpenFromMemory(handle->tokenizer_bytes.data(),
@@ -322,14 +304,43 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
     if (!superslm::TokenizerView::Open(tokenizer_artifact, tokenizer, &tokenizer_error)) {
       return SEMB_ENGINE_REFUSED;
     }
+    if (tokenizer.VocabSize() <= 0) return SEMB_ENGINE_REFUSED;
+
+    // The end token is an artifact property, not a caller-selectable vector
+    // configuration. Keep the frozen config member as an assertion and derive
+    // the value actually passed to the model from the tokenizer bytes already
+    // loaded and fingerprinted by this process.
+    const std::vector<int32_t> canonical_end_ids =
+        tokenizer.Encode(kCanonicalEndToken);
+    if (canonical_end_ids.size() != 1 || canonical_end_ids[0] < 0) {
+      return SEMB_ENGINE_REFUSED;
+    }
+    if (cfg->appended_token_id != canonical_end_ids[0]) {
+      return SEMB_INVALID_ARGUMENT;
+    }
+    const int32_t appended_token_id = canonical_end_ids[0];
+
+    handle->fingerprint =
+        ComputeProvisionalFingerprint(model_bytes, handle->tokenizer_bytes);
+
+    const uint32_t max_concurrency = cfg->max_concurrency == 0 ? 1 : cfg->max_concurrency;
+    SembInterimEncoder* interim = nullptr;
+    const char* engine_status = nullptr;
+    const SembInterimStatus open_status = semb_interim_encoder_open_owned(
+        std::move(model_bytes), appended_token_id, max_concurrency, &interim,
+        &engine_status);
+    (void)engine_status;
+    if (open_status != kSembInterimOk) return MapInterimStatus(open_status, kSembOk);
+
+    std::unique_ptr<SembInterimEncoder, void (*)(SembInterimEncoder*)> interim_guard(
+        interim, semb_interim_encoder_close);
 
     SembInterimGeometry geometry{};
     geometry.struct_size = sizeof(geometry);
     if (semb_interim_encoder_geometry(interim, &geometry) != kSembInterimOk) {
       return SEMB_ENGINE_REFUSED;
     }
-    if (static_cast<uint32_t>(cfg->appended_token_id) >= geometry.vocab_size ||
-        tokenizer.VocabSize() <= 0 ||
+    if (static_cast<uint32_t>(appended_token_id) >= geometry.vocab_size ||
         tokenizer.VocabSize() > static_cast<int32_t>(geometry.vocab_size)) {
       return SEMB_ENGINE_REFUSED;
     }
@@ -341,11 +352,14 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
     handle->vocab_size = geometry.vocab_size;
     handle->context_cap = geometry.context_cap;
     handle->chunk_budget = 0;
+    semb_encoder cookie = nullptr;
     {
       std::lock_guard<std::mutex> lock(RegistryMutex());
-      Registry().insert(handle.get());
+      if (!AllocateHandleCookie(&cookie)) return SEMB_ALLOCATION_FAILED;
+      const auto inserted = Registry().emplace(cookie, std::move(handle));
+      if (!inserted.second) return SEMB_ENGINE_REFUSED;
     }
-    *out = handle.release();
+    *out = cookie;
     return SEMB_OK;
   } catch (const std::bad_alloc&) {
     return SEMB_ALLOCATION_FAILED;
@@ -358,17 +372,18 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
 
 extern "C" semb_status semb_encoder_close(semb_encoder enc) {
   if (!enc) return SEMB_NULL_ARGUMENT;
-  RetiredHandleStorage* retired = nullptr;
+  std::unique_ptr<semb_encoder_s> closing;
   {
     std::lock_guard<std::mutex> lock(RegistryMutex());
     const auto found = Registry().find(enc);
     if (found == Registry().end()) return SEMB_INVALID_HANDLE;
-    if (enc->active_calls.load(std::memory_order_acquire) != 0) return SEMB_HANDLE_IN_USE;
-    retired = &RetiredHandles();
+    if (found->second->active_calls.load(std::memory_order_acquire) != 0) {
+      return SEMB_HANDLE_IN_USE;
+    }
+    closing = std::move(found->second);
     Registry().erase(found);
   }
-  enc->~semb_encoder_s();
-  retired->Retire(enc);
+  closing.reset();
   return SEMB_OK;
 }
 

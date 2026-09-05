@@ -391,6 +391,12 @@ int main(int argc, char** argv) {
     } else {
       Missing("K-06d foreign tokenizer artifact against this model", "no --other-tokenizer given");
     }
+    enc = reinterpret_cast<semb_encoder>(static_cast<uintptr_t>(0x1));
+    semb_config c5 = MakeConfig(a.model, a.tokenizer, a.append_id + 1);
+    s = semb_encoder_open(&c5, &enc);
+    Verdict(s != st.ok && enc == nullptr,
+            "K-06e appended_token_id must equal the tokenizer artifact's <|endoftext|> id; an alternate in-range id is refused",
+            std::string("observed ") + Name(s) + (enc ? " *out NOT cleared" : " *out NULL"));
   }
 
   // ---- K-08 output capacity, required size, no partial writes, alignment (sec 3.1 items 3-4) --
@@ -459,8 +465,11 @@ int main(int argc, char** argv) {
       s = semb_encode(enc, kDoc, sizeof(kDoc) - 1, buf.Data(), need, &req, nullptr);
       Verdict(s == st.null_argument && buf.Untouched(need), "K-09d encode(out_fingerprint NULL) -> SEMB_NULL_ARGUMENT, nothing written", Name(s));
       semb_fingerprint bad = MakeFingerprint(); bad.struct_size = sizeof(semb_fingerprint) + 8;
+      const semb_fingerprint bad_before = bad;
       s = semb_encode(enc, kDoc, sizeof(kDoc) - 1, buf.Data(), need, &req, &bad);
-      Verdict(s == st.struct_size_mismatch && buf.Untouched(need) && FingerprintUntouched(MakeFingerprint()),
+      const bool bad_untouched = bad.struct_size == bad_before.struct_size &&
+          std::memcmp(bad.digest, bad_before.digest, sizeof(bad.digest)) == 0;
+      Verdict(s == st.struct_size_mismatch && buf.Untouched(need) && bad_untouched,
               "K-09e a fingerprint struct_size that is not this build's -> SEMB_STRUCT_SIZE_MISMATCH, nothing written", Name(s));
       s = semb_encode(enc, nullptr, 0, buf.Data(), need, &req, &fp);
       Verdict((s == st.input_empty || s == st.null_argument) && buf.Untouched(need),
@@ -592,12 +601,16 @@ int main(int argc, char** argv) {
                   f1.struct_size == sizeof(semb_fingerprint),
               "K-14a the fingerprint is written on SEMB_OK, is the HANDLE's (identical across documents), struct_size preserved",
               std::string(Name(s1)) + " digest=" + Hex(f1.digest, 8) + "... " + (same ? "identical" : "DIFFERS across documents"));
-      semb_encoder e2 = OpenPair(a, st, "K-14b (setup 2)");
+      constexpr char kProvisionalTag[] = "SEMBP001";
+      Verdict(std::memcmp(f1.digest, kProvisionalTag, sizeof(kProvisionalTag) - 1) == 0,
+              "K-14b this incomplete U1 identity is machine-detectably provisional, never production-shaped",
+              "prefix=" + Hex(f1.digest, sizeof(kProvisionalTag) - 1));
+      semb_encoder e2 = OpenPair(a, st, "K-14c (setup 2)");
       if (e2) {
         semb_fingerprint f4 = MakeFingerprint();
         semb_status s4 = semb_encode(e2, kDoc, sizeof(kDoc) - 1, buf.Data(), need, &req, &f4);
         Verdict(s4 == st.ok && std::memcmp(f1.digest, f4.digest, 32) == 0,
-                "K-14b a second handle on the same pair reports the identical fingerprint",
+                "K-14c a second handle on the same pair reports the identical fingerprint",
                 Hex(f4.digest, 8) + "...");
         (void)semb_encoder_close(e2);
       }

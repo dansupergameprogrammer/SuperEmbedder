@@ -11,14 +11,19 @@ v1.4.0.** `include/superembedder/semb.h` exposes the frozen C ABI for
 encoder open/close, dimension discovery, raw UTF-8 encoding, and status names.
 Open reads the model and tokenizer artifacts exactly once, retains their bytes,
 validates the vocabulary join, and preallocates the declared workspace pool.
-Encode tokenizes the caller's sized span unchanged, appends token id 151643,
-runs the C12b-proven PS-N path, and returns caller-owned aligned float32 bytes.
+Open also derives `<|endoftext|>` from the tokenizer and refuses a configured
+`appended_token_id` that does not match it. Encode tokenizes the caller's sized
+span unchanged, appends that artifact-pinned token exactly once, runs the
+C12b-proven PS-N path, and returns caller-owned aligned float32 bytes.
 
 The token-id seam remains available internally for the witness and C12b cells;
 it is no longer the public header. The `semb` CLI is still the version/pin stub,
 and bake/bank/query plus the final certified fingerprint epoch remain later U1/U2
-slices. Fingerprints returned by this raw slice are therefore pre-certification
-identities and must not be persisted as final `.wvbank` compatibility keys.
+slices. Fingerprints returned by this raw slice are machine-detectably provisional:
+their first eight digest bytes are `SEMBP001`, exposed as
+`SEMB_FINGERPRINT_PROVISIONAL_TAG` in the public header. They must be rejected as
+final `.wvbank` compatibility keys; the tag is removed only when all five certified
+fields are real.
 
 ## Relationship to the sibling projects
 

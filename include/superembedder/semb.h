@@ -33,8 +33,9 @@ typedef enum semb_status {
 } semb_status;
 
 // Paths are sized byte spans and need not be NUL-terminated. The appended
-// token is the model candidate's fixed PS-N end token. A zero concurrency
-// value selects the default of one workspace.
+// token id is an assertion of the tokenizer artifact's <|endoftext|> id, not
+// a selectable encoding parameter; open refuses a mismatch. A zero
+// concurrency value selects the default of one workspace.
 typedef struct semb_config semb_config;
 struct semb_config {
   uint32_t struct_size;
@@ -51,6 +52,14 @@ struct semb_fingerprint {
   uint32_t struct_size;
   uint8_t digest[32];
 };
+
+// U1's raw-text slice does not yet carry the certified W-B, W-Q, and epoch
+// fields required by the final five-field fingerprint. Successful encodes are
+// therefore marked in-band: digest[0..7] equals this eight-byte tag. Consumers
+// MUST reject tagged values as persistent bank/query compatibility identities.
+// The tag disappears only when the complete certified derivation replaces it.
+#define SEMB_FINGERPRINT_PROVISIONAL_TAG "SEMBP001"
+#define SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE 8u
 
 semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* out);
 semb_status semb_encoder_close(semb_encoder enc);
