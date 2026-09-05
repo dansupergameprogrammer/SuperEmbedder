@@ -322,6 +322,8 @@ struct Args {
   uint32_t dims = 0;
   size_t context_cap = 0;
   bool workspace_precedence = false;
+  bool print_vector = false;
+  std::string print_text;
 };
 
 Args ParseArgs(int argc, char** argv) {
@@ -339,6 +341,7 @@ Args ParseArgs(int argc, char** argv) {
     else if (k == "--other-tokenizer") next(&a.other_tokenizer);
     else if (k == "--absent-end-token-tokenizer") next(&a.absent_end_token_tokenizer);
     else if (k == "--scratch-dir") next(&a.scratch_dir);
+    else if (k == "--print-vector-hex") { next(&a.print_text); a.print_vector = true; }
     else if (k == "--workspace-precedence") a.workspace_precedence = true;
     else if (k == "--legacy-append-id") { next(&v); g_legacy_append_id = std::atoi(v.c_str()); }
     else if (k == "--dims") { next(&v); a.dims = static_cast<uint32_t>(std::atoi(v.c_str())); }
@@ -410,6 +413,24 @@ int main(int argc, char** argv) {
   const Args a = ParseArgs(argc, argv);
   const Statuses st = ResolveStatuses();
   const size_t need = a.dims * sizeof(float);
+
+  // TE-110: standalone production-byte output; all existing cells below are unchanged.
+  if (a.print_vector) {
+    auto enc = OpenPair(a, st, "K-15f production open");
+    if (!enc) return 1;
+    SentinelBuffer output(need);
+    auto fp = MakeFingerprint();
+    size_t required = 0;
+    auto status = semb_encode(enc, a.print_text.data(), a.print_text.size(),
+                              output.Data(), need, &required, &fp);
+    auto closed = semb_encoder_close(enc);
+    if (status != st.ok || required != need || closed != st.ok) {
+      std::fprintf(stderr, "K-15f production encode=%s close=%s\n", Name(status), Name(closed));
+      return 1;
+    }
+    std::printf("VECTOR_HEX %s\n", Hex(reinterpret_cast<const uint8_t*>(output.Data()), need).c_str());
+    return 0;
+  }
 
   // ---- K-07 status names: names, ordinals, static storage, the retired name (P-4, P-5) ----
   {

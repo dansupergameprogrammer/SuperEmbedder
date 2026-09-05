@@ -211,6 +211,151 @@ def run_cells(exe: Path, args: List[str], leg: str, table: Table, diag: bool = F
         table.add(leg, "PASS" if ok else "FAIL", summary)
 
 
+
+SEAM_SYMBOLS = ["semb_test_seam_" + name for name in
+                ("arm_park", "parked", "wait_parked", "release", "acquisitions", "reset")]
+SEAM_DOCS = ["A small red boat.", "The green forest grows.", "Numbers: 17, 29, 43."]
+
+
+def workspace_interface(build_dir: Path, table: Table) -> bool:
+    """Compare actual commands per source, then evaluated compile/link contracts."""
+    import shlex
+    try:
+        commands = json.loads((build_dir / "compile_commands.json").read_text(encoding="utf-8"))
+        groups = {"superembedder": {}, "superembedder_testseam": {}}
+        for row in commands:
+            command = row.get("command", "")
+            for target in groups:
+                if f"CMakeFiles/{target}.dir/" not in command.replace("\\", "/"):
+                    continue
+                normalized = []
+                tokens = row.get("arguments") or shlex.split(command, posix=False)
+                skip_next = False
+                for token in tokens:
+                    if skip_next:
+                        skip_next = False
+                        continue
+                    token = token.replace("\\", "/").strip('"')
+                    if token in ("-o", "-MF", "-MT"):
+                        skip_next = True
+                        continue
+                    if token.startswith(("/Fo", "/Fd")):
+                        continue
+                    if token in ("-DSEMB_ENABLE_WORKSPACE_TEST_SEAM=1", "/DSEMB_ENABLE_WORKSPACE_TEST_SEAM=1"):
+                        if target == 'superembedder':
+                            raise ValueError('test seam definition leaked onto production')
+                        continue
+                    if token.lstrip('-/').startswith('I') and token[2:].strip('"').rstrip('/') == str(REPO_ROOT / 'tests').replace('\\', '/'):
+                        if target == 'superembedder':
+                            raise ValueError('test include path leaked onto production')
+                        continue
+                    normalized.append(token)
+                groups[target][str(Path(row['file']).resolve())] = normalized
+        prod, seam = groups.values()
+        if not prod or prod.keys() != seam.keys():
+            raise ValueError(f"actual source command membership differs: {prod.keys()} / {seam.keys()}")
+        mismatch = {src: (prod[src], seam[src]) for src in prod if prod[src] != seam[src]}
+        if mismatch:
+            raise ValueError("effective compile commands differ: " + json.dumps(mismatch, indent=2))
+        manifests = list((build_dir / 'tests').glob('k15-interface-*.txt'))
+        if not manifests:
+            raise ValueError('missing evaluated target-interface manifest')
+        for manifest in manifests:
+            props = dict(line.split('=', 1) for line in manifest.read_text().splitlines())
+            for key, value in props.items():
+                if key.endswith('.production') and value != props[key.replace('.production', '.testseam')]:
+                    raise ValueError(f"effective {key} differs in {manifest}")
+            want_define = props['selection'] == 'library'
+            for target in groups:
+                for src, tokens in groups[target].items():
+                    if any('SUPERSLM_C38_INLINE_PERTURBATION=1' in t for t in tokens) != want_define:
+                        raise ValueError(f"C38 selection {props['selection']!r} differs for {target}: {src}")
+        table.add('K-15 interface prerequisite', 'PASS', f'{len(prod)} actual source commands and evaluated link/standard/runtime interfaces identical; C38 selection verified')
+        return True
+    except (OSError, ValueError, KeyError) as exc:
+        table.add('K-15 interface prerequisite', 'FAIL', str(exc))
+        return False
+
+
+def workspace_child(exe: Path, args: List[str], label: str, table: Table) -> Optional[str]:
+    # subprocess.run kills and waits for the child after TimeoutExpired; no
+    # worker is detached into a later cell. Last PHASE identifies the hang.
+    try:
+        proc = subprocess.run([str(exe), *args], cwd=REPO_ROOT, capture_output=True,
+                              text=True, encoding='utf-8', errors='replace', timeout=600)
+    except subprocess.TimeoutExpired as exc:
+        tail = exc.stdout or b''
+        if isinstance(tail, bytes):
+            tail = tail.decode('utf-8', errors='replace')
+        table.add(label, 'FAIL', '600-second child deadline; child killed and waited; last output:\n' + tail[-4000:])
+        return None
+    print(proc.stdout)
+    if proc.stderr:
+        print(proc.stderr)
+    if proc.returncode != 0 or '[FAIL]' in proc.stdout:
+        table.add(label, 'FAIL', f'child exit {proc.returncode}')
+        return None
+    return proc.stdout
+
+
+def run_workspace_suite(args, build_dir: Path, pair_dir: Path, real_tokenizer: str, table: Table) -> None:
+    populations = [('M3', str(pair_dir / 'u1_pair_model.sslm'), str(pair_dir / 'u1_pair_tokenizer.sslm'), 32)]
+    if args.model and real_tokenizer and Path(args.model).is_file():
+        populations.append(('R3', args.model, real_tokenizer, CANDIDATE_DIMS))
+    else:
+        table.add('R3 K-15d/e/f/g', 'MISSING PREREQUISITE', 'requires configured real model and manifest-matching tokenizer')
+    interface_ok = workspace_interface(build_dir, table)
+    try:
+        proc = subprocess.run([args.cmake_executable, '--build', str(build_dir), '--target',
+                               'superembedder', 'superembedder_testseam', 'u1_workspace_seam_test'],
+                              cwd=REPO_ROOT, capture_output=True, text=True, errors='replace', timeout=600)
+    except subprocess.TimeoutExpired:
+        table.add('B3 seam build', 'FAIL', 'SETUP FAILURE: build exceeded 600-second deadline')
+        return
+    output = proc.stdout + proc.stderr
+    (build_dir / 'tests' / 'k15-seam-build.log').write_text(output, encoding='utf-8')
+    absent = REPO_ROOT / 'tests' / 'u1_workspace_seam_absent_check.py'
+    prod_lib = next(iter(build_dir.glob('superembedder.lib')), build_dir / 'libsuperembedder.a')
+    seam_lib = next(iter((build_dir / 'tests').glob('superembedder_testseam.lib')), build_dir / 'tests' / 'libsuperembedder_testseam.a')
+    scan = subprocess.run([sys.executable, str(absent), '--production', str(prod_lib), '--testseam', str(seam_lib)],
+                          capture_output=True, text=True, timeout=30)
+    print(scan.stdout)
+    if scan.returncode:
+        table.add('K-18 presence control', 'RED-UNIMPLEMENTED' if '[RED-UNIMPLEMENTED]' in scan.stdout else 'FAIL', scan.stdout.strip())
+    else:
+        table.add('K-18a/b', 'PASS', 'actual production absence and seam presence')
+    if proc.returncode:
+        unresolved = [sym for sym in SEAM_SYMBOLS if re.search(
+            r"(unresolved external symbol|undefined symbol:|undefined reference to [`'])\s*_?" + sym + r"\b", output)]
+        for label, _, _, _ in populations:
+            table.add(label + ' K-15d/e/f/g', 'RED-UNIMPLEMENTED' if unresolved else 'FAIL',
+                      ('missing builder seam definitions: ' + ', '.join(unresolved)) if unresolved else
+                      'SETUP FAILURE (not product red):\n' + '\n'.join(output.splitlines()[-30:]))
+        return
+    seam = find_exe(build_dir, 'u1_workspace_seam_test')
+    production = find_exe(build_dir, 'u1_raw_text_contract_test')
+    if not seam or not production:
+        table.add('B3 executables', 'FAIL', f'SETUP FAILURE: seam={seam}, production={production}')
+        return
+    for label, model, tokenizer, dims in populations:
+        common = ['--model', model, '--tokenizer', tokenizer, '--dims', str(dims)]
+        for cell in ('K-15d', 'K-15e', 'K-15g'):
+            out = workspace_child(seam, [*common, '--cell', cell], label + ' ' + cell, table)
+            if out is not None:
+                table.add(label + ' ' + cell, 'PASS', 'bounded isolated child; named statuses, canaries, acquisitions and serial bytes')
+        if not interface_ok:
+            table.add(label + ' K-15f', 'FAIL', 'effective interface prerequisite failed; byte parity not credited')
+            continue
+        for doc in SEAM_DOCS:
+            observed = []
+            for name, exe, extra in [('production', production, []), ('unarmed', seam, []), ('armed/released', seam, ['--armed'])]:
+                out = workspace_child(exe, [*common, '--print-vector-hex', doc, *extra], label + ' K-15f ' + name, table)
+                matches = re.findall(r'^VECTOR_HEX ([0-9a-f]+)$', out or '', re.M)
+                observed.append(matches[0] if len(matches) == 1 and len(matches[0]) == dims * 8 else None)
+            table.add(label + ' K-15f ' + repr(doc), 'PASS' if observed[0] is not None and len(set(observed)) == 1 else 'FAIL',
+                      'actual production/unarmed/armed-released binary32 byte comparison')
+
+
 def main(argv: List[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build-dir", required=True)
@@ -346,6 +491,8 @@ def main(argv: List[str]) -> int:
                                               "--wrong-append-id", str(CANDIDATE_WRONG_ID), "--expected-ids", str(tsv),
                                               "--mutant-rows", str(args.mutant_rows), "--legacy-append-id", str(CANDIDATE_APPEND_ID), *extra],
                               f"D4 [DIAG] parity cells under the retired seven-member semb_config, real pair, population {name}", table, diag=True)
+
+    run_workspace_suite(args, build_dir, pair_dir, real_tokenizer, table)
 
     print("\nu1_raw_text_cells_check summary:")
     for leg, state, _ in table.rows:

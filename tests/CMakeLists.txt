@@ -378,3 +378,85 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_trailing_special_mutants_check.py" ${_semb_u1_mut_args}
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+
+# TE-110: an independently compiled test-only adapter with the production target's
+# configured interface. Relative source names are rooted before entering tests/.
+if(DEFINED SEMB_LIBRARY_SOURCES)
+  # The suite's Python executable definition belongs to existing test targets,
+  # not to a second compilation of production. Preserve every prior recipient.
+  get_directory_property(_semb_test_defs COMPILE_DEFINITIONS)
+  get_directory_property(_semb_prior_targets BUILDSYSTEM_TARGETS)
+  get_directory_property(_semb_root_defs DIRECTORY "${CMAKE_SOURCE_DIR}" COMPILE_DEFINITIONS)
+  set_property(DIRECTORY PROPERTY COMPILE_DEFINITIONS "${_semb_root_defs}")
+  foreach(_target IN LISTS _semb_prior_targets)
+    get_target_property(_type ${_target} TYPE)
+    if(NOT _type STREQUAL "UTILITY")
+      target_compile_definitions(${_target} PRIVATE ${_semb_test_defs})
+    endif()
+  endforeach()
+  set(_semb_seam_sources)
+  foreach(_source IN LISTS SEMB_LIBRARY_SOURCES)
+    get_filename_component(_absolute "${_source}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+    list(APPEND _semb_seam_sources "${_absolute}")
+  endforeach()
+  get_target_property(_production_sources superembedder SOURCES)
+  set(_production_normalized)
+  foreach(_source IN LISTS _production_sources)
+    get_filename_component(_absolute "${_source}" ABSOLUTE BASE_DIR "${CMAKE_SOURCE_DIR}")
+    list(APPEND _production_normalized "${_absolute}")
+  endforeach()
+  if(NOT _production_normalized STREQUAL _semb_seam_sources)
+    message(FATAL_ERROR "K-15 interface: normalized source membership mismatch")
+  endif()
+  add_library(superembedder_testseam STATIC EXCLUDE_FROM_ALL ${_semb_seam_sources})
+  set(_semb_interface_properties
+    CXX_STANDARD CXX_STANDARD_REQUIRED CXX_EXTENSIONS COMPILE_FEATURES
+    COMPILE_OPTIONS COMPILE_DEFINITIONS INCLUDE_DIRECTORIES SYSTEM
+    INTERFACE_COMPILE_FEATURES INTERFACE_COMPILE_OPTIONS INTERFACE_COMPILE_DEFINITIONS
+    INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES
+    LINK_LIBRARIES INTERFACE_LINK_LIBRARIES LINK_OPTIONS INTERFACE_LINK_OPTIONS
+    LINK_DIRECTORIES INTERFACE_LINK_DIRECTORIES LINK_DEPENDS INTERFACE_LINK_DEPENDS
+    STATIC_LIBRARY_OPTIONS LINK_FLAGS MSVC_RUNTIME_LIBRARY MSVC_DEBUG_INFORMATION_FORMAT
+    POSITION_INDEPENDENT_CODE INTERPROCEDURAL_OPTIMIZATION OSX_ARCHITECTURES
+    CXX_VISIBILITY_PRESET VISIBILITY_INLINES_HIDDEN)
+  foreach(_config DEBUG RELEASE RELWITHDEBINFO MINSIZEREL ${CMAKE_CONFIGURATION_TYPES})
+    string(TOUPPER "${_config}" _upper)
+    list(APPEND _semb_interface_properties
+      COMPILE_DEFINITIONS_${_upper} LINK_FLAGS_${_upper}
+      STATIC_LIBRARY_FLAGS_${_upper} INTERPROCEDURAL_OPTIMIZATION_${_upper}
+      OSX_ARCHITECTURES_${_upper})
+  endforeach()
+  list(REMOVE_DUPLICATES _semb_interface_properties)
+  foreach(_property IN LISTS _semb_interface_properties)
+    get_target_property(_value superembedder ${_property})
+    if(NOT _value STREQUAL "_value-NOTFOUND")
+      set_property(TARGET superembedder_testseam PROPERTY ${_property} "${_value}")
+    endif()
+  endforeach()
+  get_target_property(_dependencies superembedder MANUALLY_ADDED_DEPENDENCIES)
+  if(_dependencies)
+    add_dependencies(superembedder_testseam ${_dependencies})
+  endif()
+  target_compile_definitions(superembedder_testseam PRIVATE SEMB_ENABLE_WORKSPACE_TEST_SEAM=1)
+  target_include_directories(superembedder_testseam PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  add_executable(u1_workspace_seam_test EXCLUDE_FROM_ALL u1_workspace_seam_test.cpp)
+  target_link_libraries(u1_workspace_seam_test PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
+  target_include_directories(u1_workspace_seam_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  # Evaluated target properties retain generator expressions and imported-engine
+  # usage. Actual per-source compiler invocations are checked independently.
+  set(_semb_link_manifest "")
+  foreach(_property LINK_LIBRARIES INTERFACE_LINK_LIBRARIES LINK_OPTIONS INTERFACE_LINK_OPTIONS
+      LINK_DIRECTORIES INTERFACE_LINK_DIRECTORIES STATIC_LIBRARY_OPTIONS MSVC_RUNTIME_LIBRARY
+      CXX_STANDARD CXX_STANDARD_REQUIRED CXX_EXTENSIONS)
+    string(APPEND _semb_link_manifest "${_property}.production=$<TARGET_GENEX_EVAL:superembedder,$<TARGET_PROPERTY:superembedder,${_property}>>\n")
+    string(APPEND _semb_link_manifest "${_property}.testseam=$<TARGET_GENEX_EVAL:superembedder_testseam,$<TARGET_PROPERTY:superembedder_testseam,${_property}>>\n")
+  endforeach()
+  string(APPEND _semb_link_manifest "engine=$<TARGET_FILE:superslm::superslm>\nselection=${SEMB_C38_DEFINE_TARGET}\n")
+  file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/tests/k15-interface-$<CONFIG>.txt" CONTENT "${_semb_link_manifest}")
+  set_target_properties(superembedder superembedder_testseam PROPERTIES EXPORT_COMPILE_COMMANDS ON)
+  set(CMAKE_EXPORT_COMPILE_COMMANDS ON CACHE BOOL "Export actual compiler commands for K-15 parity" FORCE)
+  add_test(NAME u1_workspace_seam_absent_check
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_workspace_seam_absent_check.py"
+      --production "$<TARGET_FILE:superembedder>" --testseam "$<TARGET_FILE:superembedder_testseam>"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+endif()
