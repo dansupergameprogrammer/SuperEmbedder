@@ -44,6 +44,7 @@
 //     the same process, per row, never inherited from the header's claim.
 #include "superembedder/encoder_interim_abi.h"
 #include "superembedder/seam_abi.h"
+#include "encoder_open_internal.h"
 
 #include <cstring>
 #include <limits>
@@ -106,7 +107,9 @@ struct EncoderModel {
 // Finishes an open after the artifact's exactly-once read has transferred its
 // backing into `m`. The model view borrows from that backing for its lifetime.
 EncoderModel* FinishEncoderOpen(std::unique_ptr<EncoderModel> m, uint32_t max_concurrency,
-                                const char** engine_status_name) {
+                                const char** engine_status_name,
+                                uint32_t tokenizer_vocab_size = 0,
+                                bool* vocab_mismatch = nullptr) {
   std::string model_err;
   const SslmModelStatus ms =
       SslmModel::Load(m->model_bytes.data(), m->model_bytes.size(), m->view, &model_err);
@@ -158,6 +161,12 @@ EncoderModel* FinishEncoderOpen(std::unique_ptr<EncoderModel> m, uint32_t max_co
     if (engine_status_name) *engine_status_name = SetEngineStatus("MissingFinalNormSiteConstant");
     return nullptr;
   }
+  // The raw-text join follows all engine validation, but precedes the pool.
+  // Interim token-id callers have no tokenizer vocabulary to join.
+  if (tokenizer_vocab_size > m->view.config.vocab_size) {
+    if (vocab_mismatch) *vocab_mismatch = true;
+    return nullptr;
+  }
   // The forward's own workspace requirement (forward_sites.h), identical for
   // both entry points: num_hidden_layers * context_cap * num_kv_heads *
   // head_dim * 2. Compute it without a wrapping intermediate before any
@@ -196,14 +205,17 @@ EncoderModel* EncoderOpenFromMemory(const uint8_t* model_bytes, size_t model_siz
 
 EncoderModel* EncoderOpenOwned(std::vector<uint8_t>&& model_bytes,
                                uint32_t max_concurrency,
-                               const char** engine_status_name) {
+                               const char** engine_status_name,
+                               uint32_t tokenizer_vocab_size,
+                               bool* vocab_mismatch) {
   if (model_bytes.empty() || max_concurrency == 0) {
     if (engine_status_name) *engine_status_name = SetEngineStatus("InvalidOpenInput");
     return nullptr;
   }
   auto m = std::make_unique<EncoderModel>();
   m->model_bytes = std::move(model_bytes);
-  return FinishEncoderOpen(std::move(m), max_concurrency, engine_status_name);
+  return FinishEncoderOpen(std::move(m), max_concurrency, engine_status_name,
+                           tokenizer_vocab_size, vocab_mismatch);
 }
 
 EncoderModel* EncoderOpen(const std::string& model_path, const char** engine_status_name) {
@@ -425,6 +437,18 @@ SembInterimStatus semb_interim_encoder_open_owned(
     std::vector<uint8_t>&& model_bytes, int32_t appended_token_id,
     uint32_t max_concurrency, SembInterimEncoder** out_encoder,
     const char** out_engine_status_name) {
+  bool vocab_mismatch = false;
+  return semb::OpenEncoderOwnedWithVocabJoin(
+      std::move(model_bytes), appended_token_id, max_concurrency, 0,
+      out_encoder, out_engine_status_name, vocab_mismatch);
+}
+
+SembInterimStatus semb::OpenEncoderOwnedWithVocabJoin(
+    std::vector<uint8_t>&& model_bytes, int32_t appended_token_id,
+    uint32_t max_concurrency, uint32_t tokenizer_vocab_size,
+    SembInterimEncoder** out_encoder, const char** out_engine_status_name,
+    bool& vocab_mismatch) {
+  vocab_mismatch = false;
   if (out_engine_status_name) *out_engine_status_name = OkName();
   if (model_bytes.empty() || max_concurrency == 0 || !out_encoder) {
     return kSembInterimNullArgument;
@@ -432,7 +456,8 @@ SembInterimStatus semb_interim_encoder_open_owned(
   *out_encoder = nullptr;
   const char* name = nullptr;
   semb::EncoderModel* model =
-      semb::EncoderOpenOwned(std::move(model_bytes), max_concurrency, &name);
+      semb::EncoderOpenOwned(std::move(model_bytes), max_concurrency, &name,
+                             tokenizer_vocab_size, &vocab_mismatch);
   if (!model) {
     if (out_engine_status_name) *out_engine_status_name = name ? name : "Unknown";
     return kSembInterimEngineRefused;

@@ -6,6 +6,7 @@
 
 #include "superembedder/encoder_interim_abi.h"
 #include "superembedder/witness_abi.h"
+#include "encoder_open_internal.h"
 
 #include <array>
 #include <atomic>
@@ -330,10 +331,13 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
     const uint32_t max_concurrency = cfg->max_concurrency == 0 ? 1 : cfg->max_concurrency;
     SembInterimEncoder* interim = nullptr;
     const char* engine_status = nullptr;
-    const SembInterimStatus open_status = semb_interim_encoder_open_owned(
-        std::move(model_bytes), appended_token_id, max_concurrency, &interim,
-        &engine_status);
+    bool vocab_mismatch = false;
+    const SembInterimStatus open_status = semb::OpenEncoderOwnedWithVocabJoin(
+        std::move(model_bytes), appended_token_id, max_concurrency,
+        static_cast<uint32_t>(tokenizer.VocabSize()), &interim,
+        &engine_status, vocab_mismatch);
     (void)engine_status;
+    if (vocab_mismatch) return SEMB_TOKENIZER_MODEL_MISMATCH;
     if (open_status != kSembInterimOk) return MapInterimStatus(open_status, kSembOk);
 
     std::unique_ptr<SembInterimEncoder, void (*)(SembInterimEncoder*)> interim_guard(
@@ -343,9 +347,6 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
     geometry.struct_size = sizeof(geometry);
     if (semb_interim_encoder_geometry(interim, &geometry) != kSembInterimOk) {
       return SEMB_ENGINE_REFUSED;
-    }
-    if (static_cast<uint32_t>(tokenizer.VocabSize()) > geometry.vocab_size) {
-      return SEMB_TOKENIZER_MODEL_MISMATCH;
     }
 
     handle->interim = interim_guard.release();
