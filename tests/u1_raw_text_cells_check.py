@@ -293,7 +293,7 @@ def main(argv: List[str]) -> int:
                  "--scratch-dir", str(mech_scratch), "--workspace-precedence"]
     if real_tokenizer:
         mech_args += ["--other-tokenizer", real_tokenizer]
-    run_cells(contract, mech_args, "M1 contract cells K-01..K-17 plus K-06g on the synthetic pair", table)
+    run_cells(contract, mech_args, "M1 contract cells K-01..K-17 plus K-06i on the synthetic pair", table)
     parity_mech_args = ["--model", pair_model, "--tokenizer", pair_tok, "--append-id", str(pair["appended_token_id"]),
                         "--wrong-append-id", "263", "--expected-ids", str(pair_dir / "u1_mechanism_expected_ids.tsv"),
                         "--mutant-rows", "64"]

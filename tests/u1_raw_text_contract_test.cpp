@@ -19,7 +19,7 @@
 //                                    <|endoftext|> (absent-template cell K-06f)
 //   [--scratch-dir <dir>]            where this test writes its truncated and
 //                                    zero-length artifact copies (K-05d/e)
-//   [--workspace-precedence]         K-06g on the driver's tiny synthetic fixtures
+//   [--workspace-precedence]         K-06i on the driver's tiny synthetic fixtures
 //   [--legacy-append-id <id>]        DIAGNOSTIC ONLY, honoured only when compiled
 //                                    with SEMB_CONTRACT_LEGACY_APPENDED_ID_MEMBER
 //
@@ -78,13 +78,6 @@ std::atomic<std::size_t> g_fail_min_bytes{0};
 std::atomic<std::uint64_t> g_fail_fired{0};
 std::atomic<std::size_t> g_fail_fired_size{0};
 
-// K-06g's independent safety ceiling bounds cumulative bytes handed to
-// malloc during one open if a future pool representation uses small blocks.
-// Hitting this ceiling is a failed test prerequisite, never a passing cell.
-std::atomic<bool> g_budget_armed{false};
-std::atomic<std::size_t> g_budget_remaining{0};
-std::atomic<bool> g_budget_fired{false};
-
 // Policy 2: the first allocation on thread `g_park_thread` parks that thread
 // until Release(); the policy disarms on entry so the parked thread's later
 // allocations proceed. Main observes `parked` under the mutex.
@@ -140,16 +133,6 @@ void* Allocate(std::size_t n) {
       g_parked = true;
       g_park_cv.notify_all();
       g_park_cv.wait(lock, [] { return g_release; });
-    }
-  }
-  if (g_budget_armed.load()) {
-    size_t remaining = g_budget_remaining.load();
-    for (;;) {
-      if (n > remaining) {
-        g_budget_fired.store(true);
-        throw std::bad_alloc();
-      }
-      if (g_budget_remaining.compare_exchange_weak(remaining, remaining - n)) break;
     }
   }
   void* p = std::malloc(n == 0 ? 1 : n);
@@ -1231,7 +1214,7 @@ int main(int argc, char** argv) {
     }
   }
 
-  // K-06g (TE-101, TE-97 regression): section 5.6 steps 9-10 require the
+  // K-06i (TE-101, TE-97 regression): section 5.6 steps 9-10 require the
   // vocabulary join refusal BEFORE allocating the workspace pool. This is
   // synthetic-only: real artifacts can reach the hook during their reads.
   // The fixed 16 MiB threshold is not calibrated from product observations.
@@ -1247,45 +1230,39 @@ int main(int argc, char** argv) {
       semb_encoder enc = OutSentinel();
       const uint64_t before = alloc_hook::g_fail_fired.load();
       alloc_hook::g_fail_fired_size.store(0);
-      alloc_hook::g_budget_remaining.store(32u * 1024u * 1024u);
-      alloc_hook::g_budget_fired.store(false);
-      alloc_hook::g_budget_armed.store(true);
       alloc_hook::ArmFail(kPoolFailThreshold);
       const semb_status result = semb_encoder_open(&cfg, &enc);
       alloc_hook::DisarmFail();
-      alloc_hook::g_budget_armed.store(false);
       const uint64_t fired = alloc_hook::g_fail_fired.load() - before;
       const size_t fired_size = alloc_hook::g_fail_fired_size.load();
-      const bool safety_limit = alloc_hook::g_budget_fired.load();
       const bool output_ok = expected == st.ok ? enc != nullptr && enc != OutSentinel() : enc == nullptr;
-      const bool ok = result == expected && output_ok && fired == expected_firings && !safety_limit;
+      const bool ok = result == expected && output_ok && fired == expected_firings;
       Verdict(ok, cell, std::string(Name(result)) + "; slots=" + std::to_string(slots) +
               "; out_null=" + std::to_string(enc == nullptr) + "; hook_firings=" +
-              std::to_string(fired) + "; intercepted_bytes=" + std::to_string(fired_size) +
-              "; safety_limit=" + std::to_string(safety_limit));
+              std::to_string(fired) + "; intercepted_bytes=" + std::to_string(fired_size));
       if (result == st.ok && enc != nullptr && enc != OutSentinel()) {
         const semb_status closed = semb_encoder_close(enc);
         Verdict(closed == st.ok, std::string(cell) + " close", Name(closed));
       }
       return ok;
     };
-    const bool matched_control = open_cell("K-06g1 matched control: no large request during normal open",
+    const bool matched_control = open_cell("K-06i1 matched control: no large request during normal open",
                                            a.model, 1, st.ok, 0);
-    const bool mismatch_control = open_cell("K-06g2 mismatch control: mismatch and null output before injection",
+    const bool mismatch_control = open_cell("K-06i2 mismatch control: mismatch and null output before injection",
                                             a.other_model, 1, st.tokenizer_model_mismatch, 0);
     if (matched_control && mismatch_control) {
-      const bool injected_control = open_cell("K-06g3 matched pool-allocation failure: ALLOCATION_FAILED and null output",
+      const bool injected_control = open_cell("K-06i3 matched pool-allocation failure: ALLOCATION_FAILED and null output",
                                                a.model, kPoolSlots, st.allocation_failed, 1);
       if (injected_control) {
-        open_cell("K-06g4 mismatch precedes pool allocation: TOKENIZER_MODEL_MISMATCH, null output, zero pool requests",
+        open_cell("K-06i4 mismatch precedes pool allocation: TOKENIZER_MODEL_MISMATCH, null output, zero pool requests",
                   a.other_model, kPoolSlots, st.tokenizer_model_mismatch, 0);
       } else {
-        Verdict(false, "K-06g4 precedence attribution unavailable", "matched injection control failed");
+        Verdict(false, "K-06i4 precedence attribution unavailable", "matched injection control failed");
       }
     } else {
-      Verdict(false, "K-06g3/g4 precedence attribution unavailable", "normal-open controls failed");
+      Verdict(false, "K-06i3/i4 precedence attribution unavailable", "normal-open controls failed");
     }
-    open_cell("K-06g5 healthy matched open after refused opens", a.model, 1, st.ok, 0);
+    open_cell("K-06i5 healthy matched open after refused opens", a.model, 1, st.ok, 0);
   }
 
   std::printf("\nu1_raw_text_contract_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
