@@ -9,10 +9,13 @@ oracle to reject it.  The unmodified instrument must first pass S1-S5.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 
@@ -25,10 +28,49 @@ def run(cmd: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> subp
     return subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True)
 
 
+@contextmanager
+def owned_workspace(build_dir: Path) -> Iterator[Path]:
+    """Own a fresh child only; the caller's directory and files survive a run."""
+    parent = build_dir.resolve()
+    parent.mkdir(parents=True, exist_ok=True)
+    workspace = Path(tempfile.mkdtemp(prefix="c12b-commission-", dir=parent)).resolve()
+    try:
+        yield workspace
+    finally:
+        # Check the actual recursive target immediately before cleanup. A
+        # replaced directory or redirected parent must never broaden ownership.
+        if workspace.resolve() != workspace or workspace.parent != parent or parent.resolve() != parent:
+            raise RuntimeError(f"refusing cleanup outside the owned workspace: {workspace}")
+        shutil.rmtree(workspace)
+
+
+def snapshot_ignore(owned_root: Path):
+    usual = shutil.ignore_patterns(".git", "build", "__pycache__", "*.pyc")
+
+    def ignore(directory: str, names: list[str]) -> set[str]:
+        ignored = set(usual(directory, names))
+        for name in names:
+            candidate = (Path(directory) / name).resolve()
+            if candidate == owned_root or owned_root in candidate.parents:
+                ignored.add(name)
+        return ignored
+
+    return ignore
+
+
+def snapshot_source(source: Path, destination: Path, owned_root: Path) -> None:
+    """Copy candidate bytes while excluding all output owned by this run."""
+    source, destination, owned_root = source.resolve(), destination.resolve(), owned_root.resolve()
+    if not destination.is_relative_to(owned_root) or destination == owned_root or source.is_relative_to(owned_root):
+        raise ValueError("source snapshot must target a strict child of its owned workspace")
+    shutil.copytree(source, destination, ignore=snapshot_ignore(owned_root))
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--instrument", required=True)
-    ap.add_argument("--build-dir", required=True, type=Path)
+    ap.add_argument("--build-dir", required=True, type=Path,
+                    help="parent of a temporary run-owned subtree; existing files are preserved")
     ap.add_argument("--engine-prefix", required=True, type=Path)
     ap.add_argument("--cmake-executable", required=True)
     ap.add_argument("--ninja-executable", required=True)
@@ -41,8 +83,14 @@ def main(argv: list[str]) -> int:
     args.build_dir = args.build_dir.resolve()
     args.engine_prefix = args.engine_prefix.resolve()
 
+    with owned_workspace(args.build_dir) as workspace:
+        return commission(args, workspace)
+
+
+def commission(args: argparse.Namespace, workspace: Path) -> int:
+
     checker = REPO_ROOT / "tests" / "c12b_row_digest_check.py"
-    baseline_dir = args.build_dir / "baseline"
+    baseline_dir = workspace / "baseline"
     baseline = run(
         [args.python_executable, str(checker), "--instrument", args.instrument,
          "--build-dir", str(baseline_dir)],
@@ -54,15 +102,9 @@ def main(argv: list[str]) -> int:
         print(baseline_output[-4000:])
         return 1
 
-    mutant_src = args.build_dir / "mutant_src"
-    mutant_build = args.build_dir / "mutant_build"
-    shutil.rmtree(args.build_dir, ignore_errors=True)
-    args.build_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(
-        REPO_ROOT,
-        mutant_src,
-        ignore=shutil.ignore_patterns(".git", "build", "__pycache__", "*.pyc"),
-    )
+    mutant_src = workspace / "mutant_src"
+    mutant_build = workspace / "mutant_build"
+    snapshot_source(REPO_ROOT, mutant_src, workspace)
     source_fixture = REPO_ROOT / "build" / "_scratch" / "synthetic_te62_c39.sslm"
     if not source_fixture.exists():
         print(f"FAIL: baseline synthetic artifact is missing: {source_fixture}")
@@ -110,7 +152,7 @@ def main(argv: list[str]) -> int:
     mutant_instrument = mutant_build / f"semb_c12b_row_digest{suffix}"
     rejected = run(
         [args.python_executable, str(mutant_src / "tests" / "c12b_row_digest_check.py"),
-         "--instrument", str(mutant_instrument), "--build-dir", str(args.build_dir / "mutant_run")],
+         "--instrument", str(mutant_instrument), "--build-dir", str(workspace / "mutant_run")],
         cwd=mutant_src,
         env=os.environ.copy(),
     )
