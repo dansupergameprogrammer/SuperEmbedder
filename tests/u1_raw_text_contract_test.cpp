@@ -78,6 +78,13 @@ std::atomic<std::size_t> g_fail_min_bytes{0};
 std::atomic<std::uint64_t> g_fail_fired{0};
 std::atomic<std::size_t> g_fail_fired_size{0};
 
+// Fail-safe for K-06i's million-slot synthetic calls only. This bounds total
+// requested bytes before malloc if a changed pool layout evades Policy 1.
+// A safety firing is always a test failure, independent of the open status.
+std::atomic<size_t> g_safety_remaining{0};
+std::atomic<bool> g_safety_armed{false};
+std::atomic<bool> g_safety_fired{false};
+
 // Policy 2: the first allocation on thread `g_park_thread` parks that thread
 // until Release(); the policy disarms on entry so the parked thread's later
 // allocations proceed. Main observes `parked` under the mutex.
@@ -133,6 +140,16 @@ void* Allocate(std::size_t n) {
       g_parked = true;
       g_park_cv.notify_all();
       g_park_cv.wait(lock, [] { return g_release; });
+    }
+  }
+  if (g_safety_armed.load()) {
+    size_t remaining = g_safety_remaining.load();
+    for (;;) {
+      if (n > remaining) {
+        g_safety_fired.store(true);
+        throw std::bad_alloc();
+      }
+      if (g_safety_remaining.compare_exchange_weak(remaining, remaining - n)) break;
     }
   }
   void* p = std::malloc(n == 0 ? 1 : n);
@@ -1230,16 +1247,22 @@ int main(int argc, char** argv) {
       semb_encoder enc = OutSentinel();
       const uint64_t before = alloc_hook::g_fail_fired.load();
       alloc_hook::g_fail_fired_size.store(0);
+      alloc_hook::g_safety_remaining.store(128u * 1024u * 1024u);
+      alloc_hook::g_safety_fired.store(false);
+      alloc_hook::g_safety_armed.store(slots == kPoolSlots);
       alloc_hook::ArmFail(kPoolFailThreshold);
       const semb_status result = semb_encoder_open(&cfg, &enc);
       alloc_hook::DisarmFail();
+      alloc_hook::g_safety_armed.store(false);
       const uint64_t fired = alloc_hook::g_fail_fired.load() - before;
       const size_t fired_size = alloc_hook::g_fail_fired_size.load();
       const bool output_ok = expected == st.ok ? enc != nullptr && enc != OutSentinel() : enc == nullptr;
-      const bool ok = result == expected && output_ok && fired == expected_firings;
+      const bool safety_fired = alloc_hook::g_safety_fired.load();
+      const bool ok = result == expected && output_ok && fired == expected_firings && !safety_fired;
       Verdict(ok, cell, std::string(Name(result)) + "; slots=" + std::to_string(slots) +
               "; out_null=" + std::to_string(enc == nullptr) + "; hook_firings=" +
-              std::to_string(fired) + "; intercepted_bytes=" + std::to_string(fired_size));
+              std::to_string(fired) + "; intercepted_bytes=" + std::to_string(fired_size) +
+              "; safety_fired=" + std::to_string(safety_fired));
       if (result == st.ok && enc != nullptr && enc != OutSentinel()) {
         const semb_status closed = semb_encoder_close(enc);
         Verdict(closed == st.ok, std::string(cell) + " close", Name(closed));
