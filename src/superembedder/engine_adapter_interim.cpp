@@ -53,6 +53,74 @@
 #include <string>
 #include <vector>
 
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+#include "support/semb_workspace_seam.h"
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+
+namespace semb::test_seam {
+static std::mutex state_mutex;
+static std::condition_variable state_changed;
+static uint32_t park_budget = 0;
+static uint32_t parked = 0;
+static uint64_t release_generation = 0;
+static std::atomic<uint64_t> acquisitions{0};
+
+static void OnAcquired() {
+  acquisitions.fetch_add(1);
+  std::unique_lock<std::mutex> lock(state_mutex);
+  if (park_budget == 0) return;
+  --park_budget;
+  ++parked;
+  const uint64_t generation = release_generation;
+  state_changed.notify_all();
+  state_changed.wait(lock, [generation] { return release_generation != generation; });
+  --parked;
+}
+}  // namespace semb::test_seam
+
+extern "C" int32_t semb_test_seam_arm_park(uint32_t count) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  if (semb::test_seam::parked != 0) return 0;
+  semb::test_seam::park_budget = count;
+  return 1;
+}
+
+extern "C" uint32_t semb_test_seam_parked(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  return semb::test_seam::parked;
+}
+
+extern "C" int32_t semb_test_seam_wait_parked(uint32_t n, uint32_t timeout_ms) {
+  std::unique_lock<std::mutex> lock(semb::test_seam::state_mutex);
+  return semb::test_seam::state_changed.wait_for(
+      lock, std::chrono::milliseconds(timeout_ms),
+      [n] { return semb::test_seam::parked >= n; }) ? 1 : 0;
+}
+
+extern "C" void semb_test_seam_release(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  ++semb::test_seam::release_generation;
+  semb::test_seam::park_budget = 0;
+  semb::test_seam::state_changed.notify_all();
+}
+
+extern "C" uint64_t semb_test_seam_acquisitions(void) {
+  return semb::test_seam::acquisitions.load();
+}
+
+extern "C" int32_t semb_test_seam_reset(void) {
+  // The caller joins every worker/helper before resetting the counter epoch.
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  if (semb::test_seam::parked != 0) return 0;
+  semb::test_seam::park_budget = 0;
+  semb::test_seam::acquisitions.store(0);
+  ++semb::test_seam::release_generation;
+  return 1;
+}
+#endif
+
 #include "superslm/forward_sites.h"
 #include "superslm/layer_marshal.h"
 #include "superslm/model.h"
@@ -527,6 +595,9 @@ extern "C" SembInterimStatus semb_interim_encode_seam(
     return kSembInterimConcurrencyExceeded;
   }
   semb::WorkspaceLease lease{m, workspace_index};
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+  semb::test_seam::OnAcquired();
+#endif
   const superslm::SslmForwardStatus st = semb::Encode(
       m, m->workspaces[workspace_index].bytes, tokens.data(), n, chunk_budget, leg,
       codes_out, scales.data());
