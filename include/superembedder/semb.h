@@ -12,29 +12,35 @@ extern "C" {
 typedef struct semb_encoder_s* semb_encoder;
 
 // Closed and append-only: existing names and ordinals never move.
+#define SEMB_STATUS_ENUM_LIST(X) \
+  X(SEMB_OK,                        0) \
+  X(SEMB_NULL_ARGUMENT,             1) \
+  X(SEMB_STRUCT_SIZE_MISMATCH,       2) \
+  X(SEMB_INVALID_HANDLE,            3) \
+  X(SEMB_HANDLE_IN_USE,             4) \
+  X(SEMB_CONCURRENCY_EXCEEDED,       5) \
+  X(SEMB_BUFFER_TOO_SMALL,          6) \
+  X(SEMB_MISALIGNED_BUFFER,         7) \
+  X(SEMB_INPUT_EMPTY,               8) \
+  X(SEMB_INVALID_UTF8,              9) \
+  X(SEMB_CONTEXT_CAP_EXCEEDED,     10) \
+  X(SEMB_ARTIFACT_UNREADABLE,      11) \
+  X(SEMB_ENGINE_REFUSED,           12) \
+  X(SEMB_TOKENIZER_MODEL_MISMATCH, 13) \
+  X(SEMB_TEMPLATE_TOKEN_ABSENT,    14) \
+  X(SEMB_POOLED_SUBNORMAL,         15) \
+  X(SEMB_POOLED_OVERFLOW,          16) \
+  X(SEMB_ALLOCATION_FAILED,        17)
+
 typedef enum semb_status {
-  SEMB_OK = 0,
-  SEMB_NULL_ARGUMENT,
-  SEMB_STRUCT_SIZE_MISMATCH,
-  SEMB_INVALID_ARGUMENT,
-  SEMB_INVALID_HANDLE,
-  SEMB_HANDLE_IN_USE,
-  SEMB_CONCURRENCY_EXCEEDED,
-  SEMB_BUFFER_TOO_SMALL,
-  SEMB_MISALIGNED_BUFFER,
-  SEMB_INVALID_UTF8,
-  SEMB_INPUT_EMPTY,
-  SEMB_CONTEXT_CAP_EXCEEDED,
-  SEMB_ENGINE_REFUSED,
-  SEMB_POOLED_SUBNORMAL,
-  SEMB_POOLED_OVERFLOW,
-  SEMB_ALLOCATION_FAILED,
+#define SEMB_STATUS_ENUM_VALUE_(name, value) name = value,
+  SEMB_STATUS_ENUM_LIST(SEMB_STATUS_ENUM_VALUE_)
+#undef SEMB_STATUS_ENUM_VALUE_
   SEMB_STATUS_NEXT_FREE
 } semb_status;
 
-// Paths are sized byte spans and need not be NUL-terminated. The appended
-// token id is an assertion of the tokenizer artifact's <|endoftext|> id, not
-// a selectable encoding parameter; open refuses a mismatch. A zero
+// Paths are sized byte spans and need not be NUL-terminated. Open derives
+// the appended end token from the tokenizer artifact's <|endoftext|> id. A zero
 // concurrency value selects the default of one workspace.
 typedef struct semb_config semb_config;
 struct semb_config {
@@ -43,7 +49,6 @@ struct semb_config {
   size_t model_path_len;
   const char* tokenizer_path;
   size_t tokenizer_path_len;
-  int32_t appended_token_id;
   uint32_t max_concurrency;
 };
 

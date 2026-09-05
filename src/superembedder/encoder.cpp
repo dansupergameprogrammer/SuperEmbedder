@@ -109,13 +109,27 @@ class HandleLease {
 bool ReadFileOnce(std::string_view path_span, std::vector<uint8_t>* out) {
   if (path_span.empty() || path_span.find('\0') != std::string_view::npos) return false;
   const std::string path(path_span);
-  std::ifstream stream(path, std::ios::binary | std::ios::ate);
-  if (!stream) return false;
-  const std::streamoff end = stream.tellg();
-  if (end <= 0 || static_cast<uintmax_t>(end) > std::numeric_limits<size_t>::max()) return false;
-  out->resize(static_cast<size_t>(end));
-  stream.seekg(0, std::ios::beg);
-  return static_cast<bool>(stream.read(reinterpret_cast<char*>(out->data()), end));
+  try {
+    std::ifstream stream;
+    // Propagate allocation exceptions from stream operations to the ABI's
+    // allocation-failure boundary. Ordinary I/O exceptions mean unreadable.
+    stream.exceptions(std::ios::badbit);
+    stream.open(path, std::ios::binary | std::ios::ate);
+    if (!stream) return false;
+    const std::streamoff end = stream.tellg();
+    if (end < 0 || static_cast<uintmax_t>(end) > std::numeric_limits<size_t>::max() ||
+        static_cast<uintmax_t>(end) >
+            static_cast<uintmax_t>(std::numeric_limits<std::streamsize>::max())) return false;
+    out->resize(static_cast<size_t>(end));
+    stream.seekg(0, std::ios::beg);
+    if (!stream) return false;
+    // A successfully read empty file is delivered to the artifact boundary.
+    if (end == 0) return true;
+    return static_cast<bool>(stream.read(reinterpret_cast<char*>(out->data()),
+                                         static_cast<std::streamsize>(end)));
+  } catch (const std::ios_base::failure&) {
+    return false;
+  }
 }
 
 void Hash(const void* data, size_t size, uint8_t out[32]) {
@@ -252,41 +266,28 @@ semb_status MapInterimStatus(SembInterimStatus status, SembWaPoolStatus dequanti
 
 extern "C" const char* semb_status_name(semb_status status) {
   switch (status) {
-    case SEMB_OK: return "SEMB_OK";
-    case SEMB_NULL_ARGUMENT: return "SEMB_NULL_ARGUMENT";
-    case SEMB_STRUCT_SIZE_MISMATCH: return "SEMB_STRUCT_SIZE_MISMATCH";
-    case SEMB_INVALID_ARGUMENT: return "SEMB_INVALID_ARGUMENT";
-    case SEMB_INVALID_HANDLE: return "SEMB_INVALID_HANDLE";
-    case SEMB_HANDLE_IN_USE: return "SEMB_HANDLE_IN_USE";
-    case SEMB_CONCURRENCY_EXCEEDED: return "SEMB_CONCURRENCY_EXCEEDED";
-    case SEMB_BUFFER_TOO_SMALL: return "SEMB_BUFFER_TOO_SMALL";
-    case SEMB_MISALIGNED_BUFFER: return "SEMB_MISALIGNED_BUFFER";
-    case SEMB_INVALID_UTF8: return "SEMB_INVALID_UTF8";
-    case SEMB_INPUT_EMPTY: return "SEMB_INPUT_EMPTY";
-    case SEMB_CONTEXT_CAP_EXCEEDED: return "SEMB_CONTEXT_CAP_EXCEEDED";
-    case SEMB_ENGINE_REFUSED: return "SEMB_ENGINE_REFUSED";
-    case SEMB_POOLED_SUBNORMAL: return "SEMB_POOLED_SUBNORMAL";
-    case SEMB_POOLED_OVERFLOW: return "SEMB_POOLED_OVERFLOW";
-    case SEMB_ALLOCATION_FAILED: return "SEMB_ALLOCATION_FAILED";
+#define SEMB_STATUS_NAME_(name, value) case name: return #name;
+    SEMB_STATUS_ENUM_LIST(SEMB_STATUS_NAME_)
+#undef SEMB_STATUS_NAME_
     case SEMB_STATUS_NEXT_FREE: break;
   }
   return "SEMB_UNKNOWN";
 }
 
 extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* out) {
+  if (out) *out = nullptr;
   if (!cfg || !out) return SEMB_NULL_ARGUMENT;
-  *out = nullptr;
   if (cfg->struct_size != sizeof(semb_config)) return SEMB_STRUCT_SIZE_MISMATCH;
-  if (!cfg->model_path || !cfg->tokenizer_path) return SEMB_NULL_ARGUMENT;
-  if (cfg->appended_token_id < 0) return SEMB_INVALID_ARGUMENT;
+  if ((!cfg->model_path && cfg->model_path_len > 0) ||
+      (!cfg->tokenizer_path && cfg->tokenizer_path_len > 0)) return SEMB_NULL_ARGUMENT;
 
   try {
     std::vector<uint8_t> model_bytes;
     std::vector<uint8_t> tokenizer_bytes;
-    if (!ReadFileOnce(std::string_view(cfg->model_path, cfg->model_path_len), &model_bytes) ||
-        !ReadFileOnce(std::string_view(cfg->tokenizer_path, cfg->tokenizer_path_len),
+    if (!ReadFileOnce(std::string_view(cfg->tokenizer_path ? cfg->tokenizer_path : "",
+                                      cfg->tokenizer_path_len),
                       &tokenizer_bytes)) {
-      return SEMB_ENGINE_REFUSED;
+      return SEMB_ARTIFACT_UNREADABLE;
     }
 
     auto handle = std::make_unique<semb_encoder_s>();
@@ -306,19 +307,22 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
     }
     if (tokenizer.VocabSize() <= 0) return SEMB_ENGINE_REFUSED;
 
-    // The end token is an artifact property, not a caller-selectable vector
-    // configuration. Keep the frozen config member as an assertion and derive
-    // the value actually passed to the model from the tokenizer bytes already
-    // loaded and fingerprinted by this process.
+    // Resolve the compiled-in literal from the same tokenizer bytes the
+    // handle owns and fingerprints, before reading the model artifact.
     const std::vector<int32_t> canonical_end_ids =
         tokenizer.Encode(kCanonicalEndToken);
     if (canonical_end_ids.size() != 1 || canonical_end_ids[0] < 0) {
-      return SEMB_ENGINE_REFUSED;
-    }
-    if (cfg->appended_token_id != canonical_end_ids[0]) {
-      return SEMB_INVALID_ARGUMENT;
+      return SEMB_TEMPLATE_TOKEN_ABSENT;
     }
     const int32_t appended_token_id = canonical_end_ids[0];
+
+    if (!ReadFileOnce(std::string_view(cfg->model_path ? cfg->model_path : "",
+                                      cfg->model_path_len), &model_bytes)) {
+      return SEMB_ARTIFACT_UNREADABLE;
+    }
+    // The interim owned-open entry requires nonempty backing. Zero bytes
+    // were successfully read but cannot form an engine artifact.
+    if (model_bytes.empty()) return SEMB_ENGINE_REFUSED;
 
     handle->fingerprint =
         ComputeProvisionalFingerprint(model_bytes, handle->tokenizer_bytes);
@@ -340,9 +344,8 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
     if (semb_interim_encoder_geometry(interim, &geometry) != kSembInterimOk) {
       return SEMB_ENGINE_REFUSED;
     }
-    if (static_cast<uint32_t>(appended_token_id) >= geometry.vocab_size ||
-        tokenizer.VocabSize() > static_cast<int32_t>(geometry.vocab_size)) {
-      return SEMB_ENGINE_REFUSED;
+    if (static_cast<uint32_t>(tokenizer.VocabSize()) > geometry.vocab_size) {
+      return SEMB_TOKENIZER_MODEL_MISMATCH;
     }
 
     handle->interim = interim_guard.release();
@@ -399,40 +402,45 @@ extern "C" semb_status semb_encode(semb_encoder enc, const char* utf8, size_t ut
                                     float* out_vector, size_t out_capacity_bytes,
                                     size_t* out_required_bytes,
                                     semb_fingerprint* out_fingerprint) {
-  if (!enc || !utf8 || !out_required_bytes || !out_fingerprint) return SEMB_NULL_ARGUMENT;
-  HandleLease lease(enc);
-  if (!lease.get()) return SEMB_INVALID_HANDLE;
-  if (out_fingerprint->struct_size != sizeof(semb_fingerprint)) {
-    return SEMB_STRUCT_SIZE_MISMATCH;
-  }
-
-  const size_t required = static_cast<size_t>(lease.get()->dims) * sizeof(float);
-  if (out_vector && (reinterpret_cast<uintptr_t>(out_vector) & 15u) != 0) {
-    return SEMB_MISALIGNED_BUFFER;
-  }
-  if (out_capacity_bytes < required) {
-    *out_required_bytes = required;
-    return SEMB_BUFFER_TOO_SMALL;
-  }
-  if (!out_vector) return SEMB_NULL_ARGUMENT;
-  if (utf8_len == 0) return SEMB_INPUT_EMPTY;
-  if (!ValidUtf8(utf8, utf8_len)) return SEMB_INVALID_UTF8;
-
+  if (!enc || !out_required_bytes || !out_fingerprint) return SEMB_NULL_ARGUMENT;
   try {
+    HandleLease lease(enc);
+    if (!lease.get()) return SEMB_INVALID_HANDLE;
+    if (out_fingerprint->struct_size != sizeof(semb_fingerprint)) {
+      return SEMB_STRUCT_SIZE_MISMATCH;
+    }
+
+    const size_t required = static_cast<size_t>(lease.get()->dims) * sizeof(float);
+    if (out_vector && (reinterpret_cast<uintptr_t>(out_vector) & 15u) != 0) {
+      return SEMB_MISALIGNED_BUFFER;
+    }
+    if (out_capacity_bytes < required) {
+      *out_required_bytes = required;
+      return SEMB_BUFFER_TOO_SMALL;
+    }
+    if (!out_vector) return SEMB_NULL_ARGUMENT;
+    if (utf8_len == 0) return SEMB_INPUT_EMPTY;
+    if (!utf8) return SEMB_NULL_ARGUMENT;
+    if (!ValidUtf8(utf8, utf8_len)) return SEMB_INVALID_UTF8;
+
     const std::vector<int32_t> ids =
         lease.get()->tokenizer.Encode(std::string_view(utf8, utf8_len));
     if (ids.empty()) return SEMB_INPUT_EMPTY;
     if (ids.size() >= lease.get()->context_cap) return SEMB_CONTEXT_CAP_EXCEEDED;
 
+    // Keep caller bytes private until tokenization, forward, selection, and
+    // dequantization have all succeeded, including every allocation they make.
+    std::vector<float> staged_vector(lease.get()->dims);
     SembWaPoolStatus dequantize = kSembOk;
     const char* engine_status = nullptr;
     size_t interim_required = 0;
     const SembInterimStatus status = semb_interim_encode_ps_n(
         lease.get()->interim, ids.data(), ids.size(), lease.get()->chunk_budget,
-        out_vector, out_capacity_bytes, &interim_required, &dequantize, &engine_status);
+        staged_vector.data(), required, &interim_required, &dequantize, &engine_status);
     (void)engine_status;
     const semb_status mapped = MapInterimStatus(status, dequantize);
     if (mapped != SEMB_OK) return mapped;
+    std::memcpy(out_vector, staged_vector.data(), required);
     *out_required_bytes = interim_required;
     std::memcpy(out_fingerprint->digest, lease.get()->fingerprint.data(),
                 lease.get()->fingerprint.size());

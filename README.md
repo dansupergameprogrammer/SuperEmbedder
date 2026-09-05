@@ -11,8 +11,8 @@ v1.4.0.** `include/superembedder/semb.h` exposes the frozen C ABI for
 encoder open/close, dimension discovery, raw UTF-8 encoding, and status names.
 Open reads the model and tokenizer artifacts exactly once, retains their bytes,
 validates the vocabulary join, and preallocates the declared workspace pool.
-Open also derives `<|endoftext|>` from the tokenizer and refuses a configured
-`appended_token_id` that does not match it. Encode tokenizes the caller's sized
+Open derives the appended end token from the tokenizer artifact by resolving
+`<|endoftext|>`; `semb_config` carries no token id. Encode tokenizes the caller's sized
 span unchanged, appends that artifact-pinned token exactly once, runs the
 C12b-proven PS-N path, and returns caller-owned aligned float32 bytes.
 
