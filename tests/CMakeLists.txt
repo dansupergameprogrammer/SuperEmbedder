@@ -305,3 +305,21 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_trailing_special_mutants_check.py" ${_semb_u1_mut_args}
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+
+# TE-93: U1's public bake-side batch encoder. Kept in a separate contract
+# target so the closed TE-92 raw-text evidence remains byte-for-byte intact.
+add_executable(u1_batch_contract_test EXCLUDE_FROM_ALL u1_batch_contract_test.cpp)
+target_link_libraries(u1_batch_contract_test PRIVATE superembedder superslm::superslm)
+target_include_directories(u1_batch_contract_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_test(
+	NAME u1_batch_header_parity_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_batch_header_parity_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+add_test(
+	NAME u1_batch_cells_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_batch_cells_check.py" ${_semb_u1_args}
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)

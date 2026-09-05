@@ -6,9 +6,10 @@ vector-search guarantee — [SuperFAISS](https://github.com/dansupergameprogramm
 is bit-identical from the bank onward; SuperEmbedder makes the path bit-identical
 from the raw text in.
 
-**Status: the U1 public raw-text encoder slice is real and pinned to SuperSLM
-v1.4.0.** `include/superembedder/semb.h` exposes the frozen C ABI for
-encoder open/close, dimension discovery, raw UTF-8 encoding, and status names.
+**Status: the U1 public raw-text and batch encoder slices are real and pinned to
+SuperSLM v1.4.0.** `include/superembedder/semb.h` exposes the frozen C ABI for
+encoder open/close, dimension discovery, raw UTF-8 encoding, bake-side batch
+encoding, and status names.
 Open reads the model and tokenizer artifacts exactly once, retains their bytes,
 validates the vocabulary join, and preallocates the declared workspace pool.
 Open also derives `<|endoftext|>` from the tokenizer and refuses a configured
@@ -16,10 +17,18 @@ Open also derives `<|endoftext|>` from the tokenizer and refuses a configured
 span unchanged, appends that artifact-pinned token exactly once, runs the
 C12b-proven PS-N path, and returns caller-owned aligned float32 bytes.
 
+`semb_encode_batch` accepts sized UTF-8 ID/text documents, rejects an empty
+corpus, malformed rows, invalid UTF-8, and duplicate IDs before forward work,
+then emits contiguous row-major float32 rows in input order. The complete
+matrix is staged before publication: short or misaligned buffers and any
+later-row refusal leave caller row bytes untouched. Each emitted row is
+bit-identical to `semb_encode` over the same raw text.
+
 The token-id seam remains available internally for the witness and C12b cells;
 it is no longer the public header. The `semb` CLI is still the version/pin stub,
-and bake/bank/query plus the final certified fingerprint epoch remain later U1/U2
-slices. Fingerprints returned by this raw slice are machine-detectably provisional:
+and CLI bake, bank/query handles, W-B/W-Q, plus the final certified fingerprint
+epoch remain later U1/U2 slices. Fingerprints returned by this encoder are
+machine-detectably provisional:
 their first eight digest bytes are `SEMBP001`, exposed as
 `SEMB_FINGERPRINT_PROVISIONAL_TAG` in the public header. They must be rejected as
 final `.wvbank` compatibility keys; the tag is removed only when all five certified

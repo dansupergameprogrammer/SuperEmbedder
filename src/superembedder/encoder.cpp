@@ -1,5 +1,5 @@
-// The frozen public raw-text encoder vertical slice. Tokenization is the only
-// operation added above the existing C12b-proven token-id path: the caller's
+// The frozen public raw-text and bake-side batch encoder paths. Tokenization is
+// the only operation above the existing C12b-proven token-id path: each raw
 // span is validated, passed unchanged to SuperSLM's tokenizer, and the emitted
 // ids enter the same PS-N composition already exercised by the row instrument.
 #include "superembedder/semb.h"
@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -268,6 +269,7 @@ extern "C" const char* semb_status_name(semb_status status) {
     case SEMB_POOLED_SUBNORMAL: return "SEMB_POOLED_SUBNORMAL";
     case SEMB_POOLED_OVERFLOW: return "SEMB_POOLED_OVERFLOW";
     case SEMB_ALLOCATION_FAILED: return "SEMB_ALLOCATION_FAILED";
+    case SEMB_CORPUS_EMPTY: return "SEMB_CORPUS_EMPTY";
     case SEMB_STATUS_NEXT_FREE: break;
   }
   return "SEMB_UNKNOWN";
@@ -436,6 +438,89 @@ extern "C" semb_status semb_encode(semb_encoder enc, const char* utf8, size_t ut
     *out_required_bytes = interim_required;
     std::memcpy(out_fingerprint->digest, lease.get()->fingerprint.data(),
                 lease.get()->fingerprint.size());
+    return SEMB_OK;
+  } catch (const std::bad_alloc&) {
+    return SEMB_ALLOCATION_FAILED;
+  } catch (const std::length_error&) {
+    return SEMB_ALLOCATION_FAILED;
+  } catch (...) {
+    return SEMB_ENGINE_REFUSED;
+  }
+}
+
+extern "C" semb_status semb_encode_batch(semb_encoder enc,
+                                           const semb_document* docs,
+                                           size_t n, float* out_rows,
+                                           size_t out_capacity_bytes,
+                                           size_t* out_required_bytes) {
+  if (!enc || !docs || !out_required_bytes) return SEMB_NULL_ARGUMENT;
+  HandleLease lease(enc);
+  if (!lease.get()) return SEMB_INVALID_HANDLE;
+  if (n == 0) return SEMB_CORPUS_EMPTY;
+
+  const size_t row_bytes = static_cast<size_t>(lease.get()->dims) * sizeof(float);
+  if (row_bytes == 0 || n > std::numeric_limits<size_t>::max() / row_bytes) {
+    return SEMB_INVALID_ARGUMENT;
+  }
+  const size_t required = n * row_bytes;
+  if (out_rows && (reinterpret_cast<uintptr_t>(out_rows) & 15u) != 0) {
+    return SEMB_MISALIGNED_BUFFER;
+  }
+  if (out_capacity_bytes < required) {
+    *out_required_bytes = required;
+    return SEMB_BUFFER_TOO_SMALL;
+  }
+  if (!out_rows) return SEMB_NULL_ARGUMENT;
+
+  try {
+    // Finish every caller-controlled validation before the first forward.
+    // This makes a bad later row and a duplicate ID observationally atomic.
+    std::unordered_set<std::string_view> ids;
+    ids.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+      const semb_document& doc = docs[i];
+      if (doc.struct_size != sizeof(semb_document)) {
+        return SEMB_STRUCT_SIZE_MISMATCH;
+      }
+      if (!doc.id || !doc.utf8) return SEMB_NULL_ARGUMENT;
+      if (!ValidUtf8(doc.id, doc.id_len) || !ValidUtf8(doc.utf8, doc.utf8_len)) {
+        return SEMB_INVALID_UTF8;
+      }
+      if (doc.utf8_len == 0) return SEMB_INPUT_EMPTY;
+      if (!ids.emplace(doc.id, doc.id_len).second) return SEMB_INVALID_ARGUMENT;
+    }
+
+    std::vector<std::vector<int32_t>> token_rows;
+    token_rows.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+      token_rows.push_back(
+          lease.get()->tokenizer.Encode(std::string_view(docs[i].utf8,
+                                                          docs[i].utf8_len)));
+      if (token_rows.back().empty()) return SEMB_INPUT_EMPTY;
+      if (token_rows.back().size() >= lease.get()->context_cap) {
+        return SEMB_CONTEXT_CAP_EXCEEDED;
+      }
+    }
+
+    // Stage the complete matrix. A workspace refusal or engine failure on a
+    // later row cannot expose a partially written corpus to the caller.
+    std::vector<float> staged(required / sizeof(float));
+    for (size_t i = 0; i < n; ++i) {
+      SembWaPoolStatus dequantize = kSembOk;
+      const char* engine_status = nullptr;
+      size_t interim_required = 0;
+      const SembInterimStatus status = semb_interim_encode_ps_n(
+          lease.get()->interim, token_rows[i].data(), token_rows[i].size(),
+          lease.get()->chunk_budget, staged.data() + i * lease.get()->dims,
+          row_bytes, &interim_required, &dequantize, &engine_status);
+      (void)engine_status;
+      const semb_status mapped = MapInterimStatus(status, dequantize);
+      if (mapped != SEMB_OK) return mapped;
+      if (interim_required != row_bytes) return SEMB_ENGINE_REFUSED;
+    }
+
+    std::memcpy(out_rows, staged.data(), required);
+    *out_required_bytes = required;
     return SEMB_OK;
   } catch (const std::bad_alloc&) {
     return SEMB_ALLOCATION_FAILED;

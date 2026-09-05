@@ -29,6 +29,7 @@ typedef enum semb_status {
   SEMB_POOLED_SUBNORMAL,
   SEMB_POOLED_OVERFLOW,
   SEMB_ALLOCATION_FAILED,
+  SEMB_CORPUS_EMPTY,
   SEMB_STATUS_NEXT_FREE
 } semb_status;
 
@@ -53,6 +54,19 @@ struct semb_fingerprint {
   uint8_t digest[32];
 };
 
+// A batch document owns both spans for the duration of semb_encode_batch.
+// IDs are UTF-8 bank row identifiers: byte-identical duplicates are refused
+// before any forward work. Neither span need be NUL-terminated and both may
+// contain embedded NUL bytes; text must be non-empty.
+typedef struct semb_document semb_document;
+struct semb_document {
+  uint32_t struct_size;
+  const char* id;
+  size_t id_len;
+  const char* utf8;
+  size_t utf8_len;
+};
+
 // U1's raw-text slice does not yet carry the certified W-B, W-Q, and epoch
 // fields required by the final five-field fingerprint. Successful encodes are
 // therefore marked in-band: digest[0..7] equals this eight-byte tag. Consumers
@@ -68,6 +82,10 @@ semb_status semb_encode(semb_encoder enc, const char* utf8, size_t utf8_len,
                         float* out_vector, size_t out_capacity_bytes,
                         size_t* out_required_bytes,
                         semb_fingerprint* out_fingerprint);
+semb_status semb_encode_batch(semb_encoder enc, const semb_document* docs,
+                              size_t n, float* out_rows,
+                              size_t out_capacity_bytes,
+                              size_t* out_required_bytes);
 const char* semb_status_name(semb_status s);
 
 #ifdef __cplusplus
