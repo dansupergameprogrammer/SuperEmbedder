@@ -29,6 +29,24 @@ deleted afterward, artifact never committed):
                                     specials <|endoftext|>=262, <|im_end|>=263,
                                     <|im_start|>=264, and the candidate's own
                                     post_processor shape appending 262)
+  <out-dir>/u1_pair_tokenizer_no_endoftext.sslm
+                                    TE-94 (D-SLM6314 re-entry, P-1/P-4): the SAME
+                                    converter run over the committed VARIANT
+                                    checkpoint
+                                    tests/fixtures/tokenizer/u1-synthetic-checkpoint-no-endoftext/
+                                    -- the identical byte-level BPE vocabulary
+                                    and merges, a special table carrying
+                                    <|im_end|>=262 and <|im_start|>=263 ONLY
+                                    (no <|endoftext|>), and a bare ByteLevel
+                                    post-processor (no trailing special). It
+                                    loads through the engine's own TokenizerView
+                                    and fits the 384-vocab model's join, so the
+                                    ONLY thing wrong with it is that the
+                                    compiled-in end-token literal resolves to
+                                    no single id: the absent-template cell
+                                    (K-06f) reaches SEMB_TEMPLATE_TOKEN_ABSENT
+                                    through this artifact rather than a
+                                    loader or join refusal
   <out-dir>/u1_mechanism_expected_ids.tsv
                                     `<label>\t<comma-separated content ids>\t<utf8 hex>`
                                     for every record of
@@ -41,8 +59,8 @@ deleted afterward, artifact never committed):
                                     SuperEmbedder or from the engine's C++
                                     TokenizerView. The empty record is
                                     written with an empty id column.
-  <out-dir>/u1_pair.manifest.json   SHA-256 of all three, the pinned tag,
-                                    and the checkpoint files' SHA-256, so a
+  <out-dir>/u1_pair.manifest.json   SHA-256 of all four, the pinned tag,
+                                    and both checkpoints' files' SHA-256, so a
                                     cell can refuse a stale scratch pair by
                                     name.
 
@@ -67,9 +85,11 @@ from pathlib import Path
 DEFAULT_REMOTE = "https://github.com/dansupergameprogrammer/SuperSLM.git"
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # tests/fixtures/<this file>
 CHECKPOINT = REPO_ROOT / "tests" / "fixtures" / "tokenizer" / "u1-synthetic-checkpoint"
+CHECKPOINT_NO_ENDOFTEXT = REPO_ROOT / "tests" / "fixtures" / "tokenizer" / "u1-synthetic-checkpoint-no-endoftext"
 MECHANISM_CORPUS = REPO_ROOT / "tests" / "fixtures" / "tokenizer" / "u1-mechanism-corpus.jsonl"
 PAIR_VOCAB_SIZE = 384
 PAIR_APPENDED_TOKEN_ID = 262  # <|endoftext|> in the synthetic checkpoint
+CANONICAL_END_TOKEN = "<|endoftext|>"  # the literal the product resolves at open (plan sec 3.2)
 
 
 def _rmtree_onerror(func, path, exc_info):
@@ -152,6 +172,38 @@ def generate_tokenizer_and_ids(tools_dir: Path, tok_out: Path, ids_out: Path) ->
     print(f"wrote {ids_out}: {len(lines)} records")
 
 
+def generate_no_endoftext_tokenizer(tools_dir: Path, tok_out: Path) -> None:
+    """TE-94: the variant artifact for the absent-template cell. Emitted by the
+    identical pinned converter over the committed variant checkpoint. Refuses
+    by name if the variant does not have the shape the cell depends on: no
+    <|endoftext|> in its special table, no trailing special from its
+    post-processor, and every id inside the 384-vocab model's join."""
+    sys.path.insert(0, str(tools_dir))
+    import importlib
+    ct = importlib.import_module("convert_tokenizer")
+    tables = ct.TokenizerTables(str(CHECKPOINT_NO_ENDOFTEXT))
+    if tables.trailing_special_id is not None:
+        raise RuntimeError(f"variant checkpoint's post-processor appends special id "
+                           f"{tables.trailing_special_id}; the variant must append nothing")
+    if CANONICAL_END_TOKEN in tables.special_ids:
+        raise RuntimeError(f"variant checkpoint's special table carries {CANONICAL_END_TOKEN!r}; "
+                           f"the variant must not")
+    vocab_count = len(tables.id_to_bytes)
+    if vocab_count > PAIR_VOCAB_SIZE:
+        raise RuntimeError(f"variant vocab_count {vocab_count} exceeds the pair model's vocab_size "
+                           f"{PAIR_VOCAB_SIZE}; the absent-template cell must not reach the join refusal")
+    # The literal must NOT resolve to exactly one id through the reference
+    # encoder either -- the same algorithm the engine's TokenizerView runs.
+    literal_ids = tables.ref_encode(CANONICAL_END_TOKEN)
+    if len(literal_ids) == 1:
+        raise RuntimeError(f"variant encodes {CANONICAL_END_TOKEN!r} to a single id {literal_ids}; "
+                           f"the absent-template cell could not fire on it")
+    fp = tables.emit_artifact(str(tok_out))
+    print(f"wrote {tok_out}: {tok_out.stat().st_size} bytes, fingerprint={fp}, "
+          f"specials={tables.specials}, vocab_count={vocab_count}, "
+          f"{CANONICAL_END_TOKEN!r} -> {len(literal_ids)} ids")
+
+
 def main(argv: list) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--lock", default="superslm.lock")
@@ -164,7 +216,9 @@ def main(argv: list) -> int:
     if not lock_path.exists():
         print(f"SEMB_FIXTURE_LOCK_MISSING: {lock_path} does not exist.", file=sys.stderr)
         return 1
-    for req in (CHECKPOINT / "tokenizer.json", CHECKPOINT / "tokenizer_config.json", MECHANISM_CORPUS):
+    for req in (CHECKPOINT / "tokenizer.json", CHECKPOINT / "tokenizer_config.json",
+                CHECKPOINT_NO_ENDOFTEXT / "tokenizer.json", CHECKPOINT_NO_ENDOFTEXT / "tokenizer_config.json",
+                MECHANISM_CORPUS):
         if not req.exists():
             print(f"SEMB_FIXTURE_INPUT_MISSING: {req}", file=sys.stderr)
             return 1
@@ -182,10 +236,12 @@ def main(argv: list) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     model_out = out_dir / "u1_pair_model.sslm"
     tok_out = out_dir / "u1_pair_tokenizer.sslm"
+    tok_no_eot_out = out_dir / "u1_pair_tokenizer_no_endoftext.sslm"
     ids_out = out_dir / "u1_mechanism_expected_ids.tsv"
     try:
         generate_model(clone / "tools", model_out)
         generate_tokenizer_and_ids(clone / "tools", tok_out, ids_out)
+        generate_no_endoftext_tokenizer(clone / "tools", tok_no_eot_out)
     except Exception as ex:  # noqa: BLE001 -- reported, not swallowed
         print(f"SEMB_FIXTURE_GENERATION_FAILED: {type(ex).__name__}: {ex}", file=sys.stderr)
         rmtree(workdir)
@@ -193,7 +249,7 @@ def main(argv: list) -> int:
     rmtree(workdir)
 
     manifest = {
-        "schema": "semb_u1_pair_fixture_manifest_v1",
+        "schema": "semb_u1_pair_fixture_manifest_v2",
         "engine_tag": tag,
         "vocab_size": PAIR_VOCAB_SIZE,
         "appended_token_id": PAIR_APPENDED_TOKEN_ID,
@@ -201,10 +257,15 @@ def main(argv: list) -> int:
             "tokenizer_json_sha256": sha256_file(CHECKPOINT / "tokenizer.json"),
             "tokenizer_config_json_sha256": sha256_file(CHECKPOINT / "tokenizer_config.json"),
         },
+        "checkpoint_no_endoftext": {
+            "tokenizer_json_sha256": sha256_file(CHECKPOINT_NO_ENDOFTEXT / "tokenizer.json"),
+            "tokenizer_config_json_sha256": sha256_file(CHECKPOINT_NO_ENDOFTEXT / "tokenizer_config.json"),
+        },
         "mechanism_corpus_sha256": sha256_file(MECHANISM_CORPUS),
         "files": {
             model_out.name: {"sha256": sha256_file(model_out), "bytes": model_out.stat().st_size},
             tok_out.name: {"sha256": sha256_file(tok_out), "bytes": tok_out.stat().st_size},
+            tok_no_eot_out.name: {"sha256": sha256_file(tok_no_eot_out), "bytes": tok_no_eot_out.stat().st_size},
             ids_out.name: {"sha256": sha256_file(ids_out), "bytes": ids_out.stat().st_size},
         },
     }

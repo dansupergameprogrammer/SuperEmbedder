@@ -1,5 +1,9 @@
 // tests/u1_raw_text_parity_test.cpp -- TE-92 (U1, the first frozen public
-// raw-text vertical slice): the TOKENIZATION-PARITY cells. The frozen raw
+// raw-text vertical slice), re-entered at TE-94 (D-SLM6314 resolution, P-1:
+// the frozen config carries no appended-token member -- open derives the
+// end token from the tokenizer artifact; `--append-id` below feeds ONLY the
+// independent interim oracle, never the frozen path): the
+// TOKENIZATION-PARITY cells. The frozen raw
 // entry `semb_encode(utf8, len)` must produce, bit for bit, the vector the
 // EXISTING interim token-id path produces from the same document's content
 // token ids (`semb_interim_encode_ps_n`, include/superembedder/encoder_abi.h,
@@ -29,6 +33,9 @@
 //   --model <.sslm> --tokenizer <.sslm> --append-id <id> --wrong-append-id <id>
 //   --expected-ids <tsv: label \t comma-ids \t utf8-hex> [--limit N]
 //   [--mutant-rows N]   how many rows the three in-process mutants run over (default 8)
+//   [--legacy-append-id <id>]  DIAGNOSTIC ONLY, honoured only when compiled with
+//                              SEMB_CONTRACT_LEGACY_APPENDED_ID_MEMBER (the driver's
+//                              --diag-legacy-layout pass against a 496d036-layout product)
 //
 // RED-UNIMPLEMENTED at main@1a040a4: none of the frozen verbs exists, so
 // this translation unit does not link; the driver reports the unresolved
@@ -110,6 +117,7 @@ bool ReadRecords(const std::string& path, std::vector<Record>* out) {
 struct Args {
   std::string model, tokenizer, expected_ids;
   int32_t append_id = -1, wrong_append_id = -1;
+  int32_t legacy_append_id = -1;  // diagnostic-only, see USAGE
   size_t limit = 0, mutant_rows = 8;
 };
 
@@ -129,6 +137,7 @@ Args ParseArgs(int argc, char** argv) {
     else if (k == "--wrong-append-id") { next(&v); a.wrong_append_id = std::atoi(v.c_str()); }
     else if (k == "--limit") { next(&v); a.limit = static_cast<size_t>(std::atoll(v.c_str())); }
     else if (k == "--mutant-rows") { next(&v); a.mutant_rows = static_cast<size_t>(std::atoll(v.c_str())); }
+    else if (k == "--legacy-append-id") { next(&v); a.legacy_append_id = std::atoi(v.c_str()); }
     else { std::fprintf(stderr, "unknown argument %s\n", k.c_str()); std::exit(2); }
   }
   if (a.model.empty() || a.tokenizer.empty() || a.expected_ids.empty() || a.append_id < 0 || a.wrong_append_id < 0) {
@@ -219,13 +228,17 @@ int main(int argc, char** argv) {
     Verdict(false, "P-00 the interim token-id path opens the model (the oracle side)", interim.open_status);
     return 1;
   }
+  // P-1: the frozen config names the two artifacts and the pool size, and
+  // nothing else -- the end token is the artifact pair's own property.
   semb_config cfg{};
   cfg.struct_size = sizeof(cfg);
   cfg.model_path = a.model.c_str();
   cfg.model_path_len = a.model.size();
   cfg.tokenizer_path = a.tokenizer.c_str();
   cfg.tokenizer_path_len = a.tokenizer.size();
-  cfg.appended_token_id = a.append_id;
+#ifdef SEMB_CONTRACT_LEGACY_APPENDED_ID_MEMBER
+  cfg.appended_token_id = a.legacy_append_id >= 0 ? a.legacy_append_id : a.append_id;
+#endif
   cfg.max_concurrency = 1;
   semb_encoder enc = nullptr;
   const semb_status so = semb_encoder_open(&cfg, &enc);

@@ -1,6 +1,7 @@
-"""tests/u1_public_header_parity_check.py -- TE-92: the structural pin that
-holds the builder's PUBLIC header for the frozen `semb_*` surface to the
-test author's contract header, declaration by declaration.
+"""tests/u1_public_header_parity_check.py -- TE-92, re-entered at TE-94
+(D-SLM6314 resolution, P-1..P-5): the structural pin that holds the
+builder's PUBLIC header for the frozen `semb_*` surface to the test author's
+contract header, declaration by declaration and ordinal by ordinal.
 
 `Claude/Plans/SuperEmbedder_Plan.md` sec 3.1 freezes the C ABI "enumerated
 HERE and nowhere else" (D-SLM4646); tests/semb_public_abi_contract.h is this
@@ -17,11 +18,22 @@ text and requires:
        copyable as an object): `typedef struct <tag>* semb_encoder;` with no
        `struct <tag> {` definition in the public header;
   H-4  `struct semb_config` and `struct semb_fingerprint` carry exactly the
-       contract's members, in order, `struct_size` first (sec 3.1 item 6);
-  H-5  every status NAME this slice reaches is an enumerator in the header,
-       and SEMB_OK is 0 (the one value the contract pins).
+       contract's members, in order, `struct_size` first (sec 3.1 item 6;
+       P-1: six config members, no appended-token member; P-2: two
+       fingerprint members);
+  H-5  the status enum: (a) every one of the contract's 18 names is an
+       enumerator; (b) each carries its EXPLICIT contract ordinal, in the
+       contract's order, 0-17, and SEMB_STATUS_NEXT_FREE is the last
+       enumerator with no explicit value (P-5); (c) the enum carries no other
+       enumerator -- the retired SEMB_INVALID_ARGUMENT in particular is absent
+       everywhere in the header (P-4);
+  H-6  the header is C99-shaped by inspection: no C++-only token outside the
+       `#ifdef __cplusplus` guard (the compiled strict-C cell K-16,
+       tests/u1_public_header_strict_c_check.py, is the executed proof; this
+       is the cheap text pin beside it).
 
-RED-UNIMPLEMENTED at main@1a040a4: the product header does not exist.
+THE CONTRACT'S STATUS LIST IS READ FROM THE CONTRACT HEADER'S OWN X-MACRO
+(`SEMB_CONTRACT_STATUS_LIST`), never restated here: one generated source.
 
 Exit codes: 0 all items PASS; 1 any FAIL or the header absent.
 """
@@ -36,8 +48,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CONTRACT = REPO_ROOT / "tests" / "semb_public_abi_contract.h"
 DEFAULT_HEADER = REPO_ROOT / "include" / "superembedder" / "semb.h"
 VERBS = ["semb_encoder_open", "semb_encoder_close", "semb_encoder_dims", "semb_encode", "semb_status_name"]
-SLICE_STATUS_NAMES = ["SEMB_OK", "SEMB_NULL_ARGUMENT", "SEMB_STRUCT_SIZE_MISMATCH", "SEMB_INVALID_HANDLE",
-                      "SEMB_BUFFER_TOO_SMALL", "SEMB_MISALIGNED_BUFFER", "SEMB_INPUT_EMPTY", "SEMB_ENGINE_REFUSED"]
+SENTINEL = "SEMB_STATUS_NEXT_FREE"
+RETIRED = ["SEMB_INVALID_ARGUMENT"]
+CPP_ONLY_TOKENS = ["class", "namespace", "template", "nullptr", "bool", "constexpr", "static_assert", "::", "&&"]
 
 
 def strip_comments(text: str) -> str:
@@ -63,12 +76,44 @@ def struct_members(text: str, name: str):
     m = re.search(r"struct\s+" + name + r"\s*\{(.*?)\};", text, flags=re.S)
     if not m:
         return None
+    body = m.group(1)
+    # The contract's diagnostic-only member is conditional; strip the
+    # conditional block so the DEFAULT layout is what is compared.
+    body = re.sub(r"#ifdef\s+SEMB_CONTRACT_LEGACY_APPENDED_ID_MEMBER.*?#endif", " ", body, flags=re.S)
     members = []
-    for decl in m.group(1).split(";"):
+    for decl in body.split(";"):
         decl = decl.strip()
-        if decl:
+        if decl and not decl.startswith("#"):
             members.append(norm(decl))
     return members
+
+
+def contract_status_list(ctext: str):
+    """The ordered (name, ordinal) list from the contract's X-macro."""
+    m = re.search(r"#define\s+SEMB_CONTRACT_STATUS_LIST\(X\)(.*?)\n\s*\n", ctext, flags=re.S)
+    if not m:
+        return None
+    pairs = re.findall(r"X\(\s*(SEMB_[A-Z0-9_]+)\s*,\s*(\d+)\s*\)", m.group(1))
+    return [(name, int(value)) for name, value in pairs]
+
+
+def header_enum_body(htext: str):
+    m = re.search(r"typedef\s+enum\s+semb_status\s*\{(.*?)\}\s*semb_status\s*;", htext, flags=re.S)
+    return m.group(1) if m else None
+
+
+def header_status_pairs(htext: str, enum_body: str):
+    """(name, ordinal) pairs the header's enum carries, in order, under
+    either of the two shapes the resolution admits: explicit `NAME = N,`
+    enumerators, or an X-macro list `X(NAME, N)` the enum expands."""
+    direct = re.findall(r"\b(SEMB_[A-Z0-9_]+)\s*=\s*(\d+)\b", enum_body)
+    if direct:
+        return [(n, int(v)) for n, v in direct], "explicit enumerators"
+    xm = re.search(r"#define\s+(SEMB_[A-Z0-9_]+)\(X\)((?:[^\n]*\\\n)*[^\n]*)", htext)
+    if xm and xm.group(1) in enum_body:
+        pairs = re.findall(r"X\(\s*(SEMB_[A-Z0-9_]+)\s*,\s*(\d+)\s*\)", xm.group(2))
+        return [(n, int(v)) for n, v in pairs], f"X-macro {xm.group(1)}"
+    return [], "no explicit ordinals found"
 
 
 def main(argv) -> int:
@@ -90,12 +135,17 @@ def main(argv) -> int:
         print(f"[FAIL] H-0 the contract header exists: {contract} missing")
         return 1
     ctext = strip_comments(contract.read_text(encoding="utf-8"))
+    contract_list = contract_status_list(ctext)
+    if not contract_list or len(contract_list) != 18:
+        print(f"[FAIL] H-0 the contract header's SEMB_CONTRACT_STATUS_LIST parses to 18 entries: got {contract_list}")
+        return 1
     if not header.exists():
         print(f"[RED-UNIMPLEMENTED] H-1 the public header exists: {header} does not exist -- the frozen "
-              f"sec 3.1 surface has not been built; H-2..H-5 are red-unimplemented, not verified")
+              f"sec 3.1 surface has not been built; H-2..H-6 are red-unimplemented, not verified")
         return 1
     verdict(True, "H-1 the public header exists", str(header))
-    htext = strip_comments(header.read_text(encoding="utf-8"))
+    raw = header.read_text(encoding="utf-8")
+    htext = strip_comments(raw)
 
     for verb in VERBS:
         cd = declaration(ctext, verb)
@@ -114,11 +164,44 @@ def main(argv) -> int:
         verdict(cm is not None and hm == cm and hm[0].startswith("uint32_t struct_size"),
                 f"H-4 struct {s} carries exactly the contract's members in order, struct_size first",
                 f"contract={cm} header={hm}")
+    verdict(not re.search(r"\bappended_token_id\b", htext),
+            "H-4c the public header carries no appended_token_id member anywhere (P-1)",
+            "absent" if not re.search(r"\bappended_token_id\b", htext) else "PRESENT")
 
-    missing = [n for n in SLICE_STATUS_NAMES if not re.search(r"\b" + n + r"\b", htext)]
-    verdict(not missing, "H-5a every status name this slice reaches is an enumerator in the public header",
+    contract_names = [n for n, _ in contract_list]
+    missing = [n for n in contract_names if not re.search(r"\b" + n + r"\b", htext)]
+    verdict(not missing, "H-5a every one of the contract's 18 status names is an enumerator in the public header",
             "missing: " + (", ".join(missing) if missing else "none"))
-    verdict(bool(re.search(r"\bSEMB_OK\s*=\s*0\b", htext)), "H-5b SEMB_OK = 0", "pattern SEMB_OK = 0")
+    body = header_enum_body(htext)
+    if body is None:
+        verdict(False, "H-5b the header declares `typedef enum semb_status { ... } semb_status;`", "not found")
+    else:
+        pairs, shape = header_status_pairs(htext, body)
+        verdict(pairs == contract_list,
+                "H-5b the enum carries the contract's 18 names with EXPLICIT ordinals 0-17 in the contract's order (P-5)",
+                f"shape={shape}; header={pairs}" if pairs != contract_list else f"shape={shape}; 18 of 18 agree")
+        # The sentinel is the last enumerator and carries no explicit value.
+        idents = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", body)
+        macro_names = set(re.findall(r"#define\s+([A-Za-z_][A-Za-z0-9_]*)", htext))
+        semb_idents = [i for i in idents if i.startswith("SEMB_") and i not in macro_names and i != "X"]
+        last_semb = semb_idents[-1] if semb_idents else None
+        sentinel_explicit = bool(re.search(r"\b" + SENTINEL + r"\s*=", body))
+        verdict(last_semb == SENTINEL and not sentinel_explicit,
+                "H-5b' SEMB_STATUS_NEXT_FREE is the last enumerator and carries no explicit value (auto-valued 18)",
+                f"last={last_semb} explicit_value={sentinel_explicit}")
+        extras = sorted(set(semb_idents) - set(contract_names) - {SENTINEL})
+        verdict(not extras, "H-5c the enum carries no enumerator outside the contract's list (P-5: append when a verb lands, never ahead of it)",
+                "extra: " + (", ".join(extras) if extras else "none"))
+    retired_present = [n for n in RETIRED if re.search(r"\b" + n + r"\b", htext)]
+    verdict(not retired_present, "H-5d the retired name SEMB_INVALID_ARGUMENT appears nowhere in the public header (P-4)",
+            "present: " + (", ".join(retired_present) if retired_present else "none"))
+
+    # H-6: outside the __cplusplus guard, no C++-only token. The guard blocks are
+    # `#ifdef __cplusplus ... #endif`; strip them and scan what remains.
+    outside = re.sub(r"#ifdef\s+__cplusplus.*?#endif", " ", htext, flags=re.S)
+    hits = [t for t in CPP_ONLY_TOKENS if re.search(r"(?<![A-Za-z0-9_])" + re.escape(t) + r"(?![A-Za-z0-9_])", outside)]
+    verdict(not hits, "H-6 no C++-only token outside the __cplusplus guard (the compiled proof is K-16)",
+            "hits: " + (", ".join(hits) if hits else "none"))
 
     print(f"\nu1_public_header_parity_check: {failures} failure(s)")
     return 1 if failures else 0

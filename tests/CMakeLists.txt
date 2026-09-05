@@ -257,10 +257,21 @@ add_test(
 # reports an unresolved frozen symbol as RED-UNIMPLEMENTED by name (the same
 # red-by-name shape c12b_row_digest_check uses for an unbuilt instrument).
 # ---------------------------------------------------------------------------
+# TE-94 (D-SLM6314 resolution): the contract cell's K-15 concurrency cells
+# run threads, so it links the platform thread library explicitly.
+find_package(Threads REQUIRED)
 foreach(_semb_u1_cell u1_raw_text_contract_test u1_raw_text_parity_test)
 	add_executable(${_semb_u1_cell} EXCLUDE_FROM_ALL ${_semb_u1_cell}.cpp)
-	target_link_libraries(${_semb_u1_cell} PRIVATE superembedder superslm::superslm)
+	target_link_libraries(${_semb_u1_cell} PRIVATE superembedder superslm::superslm Threads::Threads)
 	target_include_directories(${_semb_u1_cell} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+	# TE-94: the DIAGNOSTIC-ONLY twin under the retired 496d036 seven-member
+	# semb_config (tests/semb_public_abi_contract.h's header comment). Built
+	# only by the driver's --diag-legacy-layout pass; its results are [DIAG]
+	# rows, never the suite's verdict.
+	add_executable(${_semb_u1_cell}_legacy EXCLUDE_FROM_ALL ${_semb_u1_cell}.cpp)
+	target_link_libraries(${_semb_u1_cell}_legacy PRIVATE superembedder superslm::superslm Threads::Threads)
+	target_include_directories(${_semb_u1_cell}_legacy PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+	target_compile_definitions(${_semb_u1_cell}_legacy PRIVATE SEMB_CONTRACT_LEGACY_APPENDED_ID_MEMBER=1)
 endforeach()
 
 # The converter-emitted Qwen3-Embedding-0.6B tokenizer artifact (3.4 MB, never
@@ -284,11 +295,48 @@ add_test(
 )
 
 # The public header pin: include/superembedder/semb.h must declare the five
-# verbs, the opaque handle, both IN structs and the reachable status names
-# exactly as the contract header does (extern "C" checks names, not types).
+# verbs, the opaque handle, both IN structs and the status enum -- names AND
+# explicit ordinals (TE-94, P-5) -- exactly as the contract header does
+# (extern "C" checks names, not types).
 add_test(
 	NAME u1_public_header_parity_check
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_public_header_parity_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# ---------------------------------------------------------------------------
+# TE-94 (D-SLM6314 resolution sec 7.1; K-16): the public header compiles as
+# STRICT C on every platform that builds the library. Two halves:
+#   (1) a BUILD-time cell -- tests/u1_public_header_strict_c.c compiled as an
+#       object on the default build under /TC /W4 /WX (MSVC, clang-cl) or
+#       -std=c99 -Wall -Wextra -Werror -pedantic (GCC/Clang/AppleClang), so a
+#       C++-only construct entering include/superembedder/semb.h breaks
+#       `cmake --build` on every CI job that builds the library;
+#   (2) a ctest-time cell -- tests/u1_public_header_strict_c_check.py compiles
+#       the same probe against the real header (must-accept) and against
+#       mutated copies carrying C++ syntax (must-reject, each of which must
+#       also compile as C++), so the cell is proven able to FAIL BY NAME.
+# `enable_language(C)` here enables C for the project; the directory-wide
+# precise-FP flag (cmake/BuildFlags.cmake) applies to this C object too, and
+# semb_assert_precise_fp() sees it as one more compilable target.
+# ---------------------------------------------------------------------------
+enable_language(C)
+add_library(u1_public_header_strict_c OBJECT u1_public_header_strict_c.c)
+target_include_directories(u1_public_header_strict_c PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../include")
+if(CMAKE_C_COMPILER_ID STREQUAL "MSVC" OR CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+	target_compile_options(u1_public_header_strict_c PRIVATE /TC /W4 /WX)
+else()
+	target_compile_options(u1_public_header_strict_c PRIVATE -std=c99 -Wall -Wextra -Werror -pedantic)
+endif()
+add_test(
+	NAME u1_public_header_strict_c_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_public_header_strict_c_check.py"
+		--c-compiler "${CMAKE_C_COMPILER}"
+		--cxx-compiler "${CMAKE_CXX_COMPILER}"
+		--compiler-id "${CMAKE_C_COMPILER_ID}"
+		--frontend "${CMAKE_C_COMPILER_FRONTEND_VARIANT}"
+		--include-dir "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+		--scratch "${CMAKE_BINARY_DIR}/_u1_strict_c"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
