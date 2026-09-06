@@ -215,6 +215,23 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c12b_row_digest_check.py" ${_semb_c12b_args}
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+# TE-137: this cell's own R1 leg is the real Qwen3-Embedding-0.6B artifact
+# (633 MB, never committed; CI cannot hold it). Its S1-S5 mechanism legs run
+# against a regenerated synthetic artifact and always execute regardless;
+# R1 already reports MISSING PREREQUISITE (non-failing), never FAIL, when
+# --model is absent -- which is every CI configure, since CI never sets
+# SEMB_C12B_MODEL. The label is therefore applied ONLY when SEMB_C12B_MODEL
+# is actually configured (a certification run, or a future CI change that
+# points at the artifact): a ctest LABEL is per-test, not per-leg, so
+# labelling this cell unconditionally would make `ctest -LE real_artifact`
+# also exclude S1-S5 from every ordinary CI run, which gate 7 requires to
+# keep running. Conditioned this way, the label is a no-op today (nothing
+# in CI carries it, so `-LE real_artifact` changes nothing) and becomes a
+# real, structural exclusion the moment anything -- CI included -- actually
+# points this cell at the real artifact, without a name regex to maintain.
+if(NOT SEMB_C12B_MODEL STREQUAL "")
+	set_tests_properties(c12b_row_digest_check PROPERTIES LABELS "real_artifact")
+endif()
 add_test(
 	NAME ps_n_reference_oracle_selftest
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/ps_n_reference.py" --selftest
@@ -298,6 +315,20 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_raw_text_cells_check.py" ${_semb_u1_args}
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+# TE-137: this driver's own PRODUCT legs need --model AND --tokenizer (the
+# real Qwen3-Embedding-0.6B artifact and its converter-emitted tokenizer,
+# neither committed; CI cannot hold them). Its MECHANISM legs (the synthetic
+# model+tokenizer pair, K-01..K-17, P-00..P-05) always run regardless; the
+# PRODUCT legs already report MISSING PREREQUISITE (non-failing), never
+# FAIL, when either is absent -- every CI configure, since CI never sets
+# SEMB_C12B_MODEL or SEMB_U1_TOKENIZER. See the c12b_row_digest_check label
+# comment above for why the label is conditioned on both being configured
+# rather than applied unconditionally: unconditional would make
+# `ctest -LE real_artifact` also exclude the MECHANISM legs from every
+# ordinary CI run, which gate 7 requires to keep running.
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+	set_tests_properties(u1_raw_text_cells_check PROPERTIES LABELS "real_artifact")
+endif()
 
 # The public header pin: include/superembedder/semb.h must declare the five
 # verbs, the opaque handle, both IN structs and the status enum -- names AND
@@ -378,6 +409,20 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_trailing_special_mutants_check.py" ${_semb_u1_mut_args}
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+# TE-137: this cell's own "R real candidate arms" leg needs --model (the
+# real Qwen3-Embedding-0.6B artifact, never committed; CI cannot hold it).
+# Its "S synthetic pair arms" leg (the commissioning proof over the
+# synthetic model+tokenizer pair) always runs regardless; the R leg already
+# reports MISSING PREREQUISITE (non-failing), never FAIL, when --model is
+# absent -- every CI configure, since CI never sets SEMB_C12B_MODEL. See
+# the c12b_row_digest_check label comment above for why the label is
+# conditioned on SEMB_C12B_MODEL rather than applied unconditionally:
+# unconditional would make `ctest -LE real_artifact` also exclude the
+# "S synthetic pair arms" leg from every ordinary CI run, which gate 7
+# requires to keep running.
+if(NOT SEMB_C12B_MODEL STREQUAL "")
+	set_tests_properties(u1_trailing_special_mutants_check PROPERTIES LABELS "real_artifact")
+endif()
 
 # TE-114: create the seam target in the SAME directory scope as production.
 # CMake source properties are directory-scoped, independently of target usage.

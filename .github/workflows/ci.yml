@@ -1,20 +1,26 @@
 name: ci
 
-# TE-61 (U0 slice A): pin the engine, configure, build, and run the
-# negative-configure matrix (C33's provenance legs, C34's source-provenance
-# legs, and C14's build-configuration legs) on three OSes. Deliberately
-# excludes eval/k1/tests
-# (TE-43: those cells fail rather than skip on a GPU-less runner).
+# TE-61 (U0 slice A) pinned the engine, configured, built, and ran ctest on
+# three OSes against the tree as it stood then (only C33's provenance legs,
+# C34's source-provenance legs, and C14's build-configuration legs existed).
+# TE-137 re-scoped the ctest step's own name and exclusion to match the tree
+# as it stands now: tests/CMakeLists.txt has since grown the full red suite
+# (C1/C3/C12b/C39/C40/U1/K-15/K-16/K-18/witness/etc.), all of which ctest
+# --test-dir build/semb picks up, minus the "real_artifact" label exclusion
+# below. Deliberately excludes eval/k1/tests (TE-43: those cells fail rather
+# than skip on a GPU-less runner).
 #
 # AUTHORED AND VALIDATED AS FAR AS A LOCAL RUN ALLOWS — this workflow has not
 # been executed by GitHub Actions as of this commit (the build seat that
-# wrote it never pushes). Every step it runs was executed locally on Windows
-# during the same session that authored it; the ubuntu/macos legs are the
-# identical steps run through cross-platform-portable tools (Ninja via
-# seanmiddleditch/gha-setup-ninja, system GCC/Clang/AppleClang) and have not
-# themselves been executed anywhere. The three-OS green this workflow would
-# produce is recorded as authored, not executed, and lands when this is
-# pushed.
+# wrote it never pushes). TE-137 executed every step of this file locally on
+# Windows (MSVC, full engine pin, full configure/build/ctest cycle); the
+# ubuntu/macos legs are the identical steps run through cross-platform-
+# portable tools (Ninja via seanmiddleditch/gha-setup-ninja, system
+# GCC/Clang/AppleClang) and have not themselves been executed anywhere,
+# though the strict-C probe itself was separately compiled there under GCC
+# and Clang. The three-OS green this workflow would produce is recorded as
+# authored and locally-verified on one OS, not executed on Linux/macOS, and
+# lands when this is pushed.
 
 on:
   push:
@@ -33,7 +39,17 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          # tools/convert_tokenizer.py's unicode_tables.py (pulled from the
+          # pinned engine clone by tests/fixtures/regenerate_tokenizer_pair_
+          # fixture.py) requires unicodedata.unidata_version to equal
+          # PINNED_UNICODE_VERSION = 15.1.0 (sslm_convert_validate.py) and
+          # raises UnicodeVersionMismatch otherwise. Python's stdlib
+          # unicodedata version tracks the interpreter (3.11 -> 14.0.0,
+          # 3.12 -> 15.0.0); 3.13 is the first CPython release whose stdlib
+          # ships 15.1.0 -- executed locally: Python 3.13.6's unicodedata
+          # reports 15.1.0, Python 3.12.10's reports 15.0.0 and fails the
+          # check.
+          python-version: "3.13"
 
       - name: Install fixture-generation dependencies
         shell: bash
@@ -69,6 +85,17 @@ jobs:
 
       - name: Configure SuperEmbedder
         shell: bash
+        # -DCMAKE_BUILD_TYPE=Release: this tree's own determinism contract
+        # (Claude/Plans/SuperEmbedder_Plan.md sec 9 dim (iii); cmake/
+        # BuildFlags.cmake's semb_assert_precise_fp()) is that a different
+        # optimisation level does not change the emitted vector -- the
+        # guarantee, not a caveat on it -- so building Release here does
+        # not narrow what the negative-configure matrix or C14's tripwire
+        # exercise. Left unset, a single-config Ninja generator's implicit
+        # empty build type carries no -O flag at all, which is both an
+        # untested configuration relative to this project's own C33/C35
+        # cross-optimisation-level legs and, on a suite this size, several
+        # times slower per job -- and hosted Actions minutes are scarce.
         run: |
           cmake -G Ninja -S . -B build/semb \
             -DCMAKE_BUILD_TYPE=Release \
@@ -77,6 +104,16 @@ jobs:
       - name: Build
         shell: bash
         run: cmake --build build/semb
+
+      - name: Build the K-15 workspace-seam test targets (EXCLUDE_FROM_ALL)
+        shell: bash
+        # u1_workspace_seam_test and its superembedder_testseam dependency
+        # (tests/CMakeLists.txt's semb_add_workspace_tests()) are declared
+        # EXCLUDE_FROM_ALL so the default build stays lean; the default
+        # `cmake --build build/semb` above never produces them, so
+        # u1_workspace_seam_absent_check (K-18) has nothing to read without
+        # this explicit target build.
+        run: cmake --build build/semb --target u1_workspace_seam_test
 
       - name: Run the smoke CLI
         shell: bash
@@ -87,6 +124,22 @@ jobs:
             build/semb/semb
           fi
 
-      - name: Run the negative-configure / build-flag matrix (C33, C34, C14)
+      - name: Run the mechanism-cell suite (excludes real-artifact legs)
         shell: bash
-        run: ctest --test-dir build/semb --output-on-failure
+        # -LE real_artifact excludes any cell tests/CMakeLists.txt labels
+        # "real_artifact" (TE-137) -- applied there only when the real
+        # Qwen3-Embedding-0.6B artifact is actually configured
+        # (-DSEMB_C12B_MODEL=... / -DSEMB_U1_TOKENIZER=...), never here: CI
+        # configures neither, so today no cell carries the label and this
+        # flag changes nothing. Each of the three cells that CAN carry it
+        # (c12b_row_digest_check, u1_raw_text_cells_check,
+        # u1_trailing_special_mutants_check) already runs its own mechanism
+        # legs against a synthetic fixture unconditionally and reports its
+        # real-artifact leg as MISSING PREREQUISITE (non-failing) rather
+        # than FAIL when the model is absent, which is what keeps CI green
+        # without this flag doing any work -- the flag is the structural
+        # guard against gate 7's own worry (plan sec 11): if CI, or a
+        # certification run sharing this build tree, is ever reconfigured
+        # to point at the real 633 MB artifact, the label already exists
+        # and this exclusion already applies, with no regex to remember.
+        run: ctest --test-dir build/semb --output-on-failure -LE real_artifact
