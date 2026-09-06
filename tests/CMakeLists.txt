@@ -86,6 +86,13 @@ semb_add_cxx_test(c3_accumulator_bound_test c3_accumulator_bound_test.cpp)
 # cited, not re-authored here).
 semb_add_cxx_test(c14_fp_contraction_tripwire_test c14_fp_contraction_tripwire_test.cpp)
 
+# TE-144 (U1 slice 1): C14's own PS-N mirror -- see the test file's own
+# header comment for the two ties (trivial zero, matching PS-1's own bar;
+# a real round-to-nearest-ties-to-even case through genuine BigUInt
+# arithmetic, this cell's own addition since PS-N has no pooling step to
+# cancel through).
+semb_add_cxx_test(c14_ps_n_fp_contraction_tripwire_test c14_ps_n_fp_contraction_tripwire_test.cpp)
+
 # The W-A population (2,592 cases) against tests/oracle/w_a_population.py.
 semb_add_cxx_test(w_a_pool_population_test w_a_pool_population_test.cpp)
 
@@ -106,6 +113,23 @@ semb_add_cxx_test(c40_chunk_budget_inertness_test c40_chunk_budget_inertness_tes
 # test is permanent, unlike the ID.
 semb_add_cxx_test(seam_hidden_capacity_test seam_hidden_capacity_test.cpp)
 
+# TE-144 (U1 slice 1): C41 parts 1-3 (environment invariance, the
+# cross-thread leg, the cleared-mask legs with their liveness control and
+# engine-pin assertion). Needs the generated engine-pin header
+# (semb_engine_pin.h) that is otherwise PRIVATE to the `superembedder`
+# target, and the platform thread library for its cross-thread leg. This
+# test opens the mechanism synthetic model+tokenizer pair
+# (build/_scratch/u1_pair/*.sslm) minted by tests/u1_raw_text_cells_check.py
+# / tests/fixtures/regenerate_tokenizer_pair_fixture.py -- ctest does not
+# order tests by dependency, so a run of ONLY this test on a fresh build
+# reports SEMB_ARTIFACT_UNREADABLE at open, named in this test's own
+# failure message, rather than a silent skip; running the full suite (or
+# u1_raw_text_cells_check once) mints the pair first.
+find_package(Threads REQUIRED)
+semb_add_cxx_test(c41_environment_invariance_test c41_environment_invariance_test.cpp)
+target_include_directories(c41_environment_invariance_test PRIVATE "${CMAKE_BINARY_DIR}/generated")
+target_link_libraries(c41_environment_invariance_test PRIVATE Threads::Threads)
+
 # ---------------------------------------------------------------------------
 # Python-driven cells, matching tools/ci/run_configure_matrix.py's own
 # convention (a script that runs real checks and reports a leg table),
@@ -115,6 +139,43 @@ semb_add_cxx_test(seam_hidden_capacity_test seam_hidden_capacity_test.cpp)
 add_test(
 	NAME c39_singleton_check
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c39_singleton_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# TE-144 (U1 slice 1): C23, token-id determinism across the {machine, tier,
+# toolchain} crossing. SEMB_TEST_SECOND_TOOLCHAIN_CXX names a second
+# compiler (clang-cl) this driver also builds and runs the standalone
+# instrument under, comparing digests; empty (the default) files that
+# toolchain leg as UNREACHABLE rather than silently narrowing the crossing
+# to one member. SEMB_U1_TOKENIZER (already defined below by the U1
+# raw-text suite) doubles as this cell's own real-artifact gate, matching
+# every other real-artifact leg's single-flag convention in this suite.
+set(SEMB_TEST_SECOND_TOOLCHAIN_CXX "" CACHE FILEPATH
+	"C23/second toolchain leg: a second C++ compiler (e.g. clang-cl.exe) this driver cross-builds the token-id instrument with (empty = filed UNREACHABLE)")
+add_test(
+	NAME c23_token_id_determinism_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c23_token_id_determinism_check.py"
+		--build-dir "${CMAKE_BINARY_DIR}"
+		--engine-prefix "${SEMB_ENGINE_PREFIX}"
+		--primary-cxx-compiler "${CMAKE_CXX_COMPILER}"
+		--secondary-cxx-compiler "${SEMB_TEST_SECOND_TOOLCHAIN_CXX}"
+		--tokenizer "${SEMB_U1_TOKENIZER}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# TE-144 (U1 slice 1): C41 part 4, the instruction-level object-code scan.
+# QUARANTINED per StandardsDocument.md sec 5.4 and this project's own C41
+# disposition -- this test's own exit code is always 0 for a scan that
+# completes (see the script's own header comment); it never gates the
+# build on an uncommissioned instrument's reading. Depends on nothing but
+# the already-built `superembedder` target's own object files.
+set(SEMB_TEST_OBJDUMP "" CACHE FILEPATH
+	"C41 part 4: path to llvm-objdump (empty tries PATH, then MISSING PREREQUISITE)")
+add_test(
+	NAME c41_part4_object_code_scan
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c41_part4_object_code_scan.py"
+		--build-dir "${CMAKE_BINARY_DIR}"
+		--objdump "${SEMB_TEST_OBJDUMP}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
