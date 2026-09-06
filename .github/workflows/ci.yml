@@ -35,6 +35,19 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Install fixture-generation dependencies
+        shell: bash
+        # The synthetic-fixture regenerators (tests/fixtures/regenerate_*.py)
+        # dynamically import the pinned engine's tools/reference_pipeline
+        # (pipeline.py, convert_model.py, sslm_convert_manifest.py,
+        # sslm_convert_validate.py, sslm_model_writer.py) and
+        # tools/convert_tokenizer.py from a hermetic clone at ctest time.
+        # numpy is the ONLY third-party import anywhere in that chain
+        # (verified against the pinned tag's own tools/reference_pipeline/
+        # and tools/*.py); every ctest-invoked script under tests/ is
+        # otherwise stdlib-only.
+        run: python -m pip install --upgrade pip numpy
+
       - name: Set up MSVC dev environment (Windows only)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
@@ -58,6 +71,7 @@ jobs:
         shell: bash
         run: |
           cmake -G Ninja -S . -B build/semb \
+            -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$(pwd)/build/_engine_install"
 
       - name: Build

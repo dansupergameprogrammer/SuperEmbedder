@@ -66,5 +66,18 @@ int semb_u1_public_header_strict_c_probe(void) {
   sum += (int)SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE;
   sum += (int)(sizeof(SEMB_FINGERPRINT_PROVISIONAL_TAG) - 1u);
   sum += enc == NULL;
+
+  /* Every field just assigned is read back here -- a stronger probe than
+   * suppressing GCC/Clang's -Wunused-but-set-variable, and one that still
+   * exercises the type of each field (pointer, size_t, uint32_t) against
+   * what the header declares. */
+  sum += (int)cfg.struct_size;
+  sum += cfg.model_path == NULL;
+  sum += (int)cfg.model_path_len;
+  sum += cfg.tokenizer_path == NULL;
+  sum += (int)cfg.tokenizer_path_len;
+  sum += (int)cfg.max_concurrency;
+  sum += (int)fp.struct_size;
+  sum += (int)fp.digest[0];
   return sum;
 }
