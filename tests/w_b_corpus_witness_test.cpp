@@ -64,6 +64,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -274,6 +275,53 @@ int main(int argc, char** argv) {
     return g_failures ? 1 : 0;
   }
   Verdict(true, "(setup) the committed W-B corpus loads as exactly 16 documents", a.corpus);
+
+  // ---- Compiled-in corpus pin (TE-147, this seat's own brief item 3: "the
+  // compiled-in corpus pinned equal by a cell -- the suite's own manifest
+  // digest is the anchor; if no cell compares them today, add one"). No
+  // cell existed for this before this round. Two things are checked, and
+  // together they close the loop from committed fixture to compiled-in
+  // library data:
+  //  (1) this cell, mechanically: the fixture file's OWN bytes hash to the
+  //      value its own manifest declares -- catches the fixture drifting
+  //      from its manifest (an edit to the jsonl with no matching manifest
+  //      update);
+  //  (2) the achievement cell below (property a), already executed: it
+  //      recomputes W-B from THIS SAME fixture's own text and asserts
+  //      equality against semb_wb_digest's real output, which is driven by
+  //      src/superembedder/wb_corpus.cpp's own COMPILED-IN text -- a byte
+  //      difference between the compiled-in corpus and this fixture would
+  //      make that digest comparison fail (SHA-256 collision resistance),
+  //      so property (a) is the executable pin between (1) and the
+  //      compiled-in data; nothing here duplicates that forward pass. ----
+  {
+    const std::vector<uint8_t> raw = ReadFile(a.corpus);
+    if (raw.empty()) {
+      Missing("(compiled-in-corpus-pin) the fixture file's own bytes hash to its manifest's declared sha256",
+              "cannot read " + a.corpus + " as raw bytes");
+    } else {
+      uint8_t digest[32];
+      superslm::Sha256 h;
+      h.Update(raw.data(), raw.size());
+      h.Final(digest);
+      const std::string actual_hex = Hex(digest);
+
+      const std::string manifest_path = a.corpus.substr(0, a.corpus.find_last_of('/')) + "/wb-corpus.manifest.json";
+      std::ifstream mf(manifest_path);
+      std::string manifest_text((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
+      const std::string needle = "\"sha256\": \"";
+      const size_t pos = manifest_text.find(needle);
+      if (!mf || pos == std::string::npos) {
+        Missing("(compiled-in-corpus-pin) the fixture file's own bytes hash to its manifest's declared sha256",
+                "cannot read/parse " + manifest_path);
+      } else {
+        const std::string declared_hex = manifest_text.substr(pos + needle.size(), 64);
+        Verdict(declared_hex == actual_hex,
+                "(compiled-in-corpus-pin) " + a.corpus + "'s own bytes hash to the sha256 its manifest declares",
+                "declared=" + declared_hex + " actual=" + actual_hex);
+      }
+    }
+  }
 
   // ---- Preconditions the amended handle-scoped shape adds (TE-151 item 1;
   // `tests/semb_wb_witness_abi_contract.h`'s own header states these three
