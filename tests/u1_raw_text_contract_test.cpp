@@ -1250,6 +1250,39 @@ int main(int argc, char** argv) {
         Verdict(sc == st.ok, "K-17b close after the refused encode -> SEMB_OK (no call left in flight)", Name(sc));
       }
     }
+    // K-17d (TE-154/TE-155, D-SLM6341's own fix round item 2): the SAME
+    // allocation-failure policy as K-17b above, isolated -- ONE refused
+    // encode, ONE close, NO intervening retry encode and NO second handle.
+    // K-17b's own sequence (Claude/Curie/te145-slice2-red-2026-09-07.md
+    // sec 10b) interposes a retry encode ("the handle stays usable") on
+    // the SAME handle between the refused call and close; this cell
+    // removes that retry to isolate whether the FIRST refused call ALONE
+    // leaves active_calls nonzero (src/superembedder/encoder.cpp's
+    // HandleLease/semb_encoder_close), or whether the retry encode is the
+    // one that does. This is the pin: if a future change reintroduces the
+    // defect this cell's own close returns SEMB_HANDLE_IN_USE and the
+    // cell goes red.
+    {
+      semb_encoder enc = OpenPair(a, st, "K-17d (setup)");
+      if (enc) {
+        const std::uint64_t before = alloc_hook::g_fail_fired.load();
+        SentinelBuffer buf(need);
+        size_t req = kRequiredSentinel;
+        semb_fingerprint fp = MakeFingerprint();
+        alloc_hook::ArmFail(1);
+        const semb_status s = semb_encode(enc, kDoc, sizeof(kDoc) - 1, buf.Data(), need, &req, &fp);
+        alloc_hook::DisarmFail();
+        const std::uint64_t fired = alloc_hook::g_fail_fired.load() - before;
+        Verdict(fired == 1 && s == st.allocation_failed,
+                "K-17d an allocation failure inside encode (the first request throws std::bad_alloc from the global allocator), NO retry -> SEMB_ALLOCATION_FAILED",
+                std::string(Name(s)) + "; hook fired " + std::to_string(fired) + " time(s) on a " +
+                    std::to_string(alloc_hook::g_fail_fired_size.load()) + "-byte request");
+        const semb_status sc = semb_encoder_close(enc);
+        Verdict(sc == st.ok,
+                "K-17d close IMMEDIATELY after the refused encode, with NO intervening retry call, no second handle -> SEMB_OK",
+                Name(sc));
+      }
+    }
   }
 
   // K-06i (TE-101, TE-97 regression): section 5.6 steps 9-10 require the
