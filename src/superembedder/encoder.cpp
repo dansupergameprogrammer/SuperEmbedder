@@ -191,23 +191,46 @@ std::array<uint8_t, 32> ComputeTemplateDigest() {
 // handle is inserted into the registry, so this is not reachable through
 // the public semb_wb_digest() accessor while it runs.
 //
-// Returns false on an engine refusal from the real forward, OR when a
-// document's own tokenized length would exceed the artifact's context_cap
-// (checked explicitly, below -- the workspace K/V store is sized from
-// context_cap at open, sec 3.1's own "K/V pool ... sized once from the
-// artifact's own geometry"; the seam call below does not itself bound n
-// against it, so an uncapped call here would write past that allocation
-// rather than refuse cleanly). Against the real candidate this never
-// fires: the sixteen documents are short prose and the candidate's own
-// context_cap (32,768) leaves enormous headroom. It is a REAL, reachable
-// refusal against a small synthetic artifact whose tokenizer has few
-// merges (near byte-level): found by execution against this project's own
-// mechanism fixture, not reasoned from the real candidate's numbers alone
-// (StandardsDocument.md sec 5.4). A caller maps a false return to
-// SEMB_ENGINE_REFUSED, the same status every other mid-open engine
-// failure already uses -- no existing status names "this artifact's
-// context window cannot fit the compiled-in witness corpus", and minting
-// one is outside this round's own authorized status additions.
+// TE-155 item 1 (D-SLM6341, ruled by the conductor under delegation,
+// subject to Dan's veto): the witness must be well-defined on every
+// artifact the library legally opens, including a mechanism fixture too
+// small to fit the sixteen compiled-in documents under its own tokenizer
+// (TE-147 sec 4's own finding -- against the mechanism pair, context_cap
+// 64, the sixteen W-B documents tokenize to well over 64 ids apiece under
+// a near-byte-level tokenizer). The fix is a PER-DOCUMENT CUT, not a
+// refusal: each document's own tokenized content is cut to
+// `context_cap - 1` ids -- BEFORE the end token is appended -- so the
+// appended-token count never exceeds context_cap, and the digest is over
+// what actually executed (the cut content), never over the full,
+// untokenized document text. This is the document-side analogue of the
+// plan's own W-Q leg (sec 4.4b, the truncation-order leg: "a witness-
+// internal cap set below that string's own token count"), which already
+// builds an internal cut into the witness for the identical reason.
+// Against the real candidate (context_cap 32,768) this never cuts: the
+// sixteen documents are short prose, tokenizing to a small fraction of
+// that cap, so the executed W-B digest is BYTE-IDENTICAL to what this
+// function computed before this round. Against the mechanism pair (cap
+// 64) every document is cut, deterministically, to the same 63 leading
+// content ids on every call (tokenization is deterministic and the cut is
+// a pure function of context_cap and the tokenized ids) -- so the digest
+// is still exact-computed and reproducible, only over a shorter prefix.
+// `semb_encoder_open` therefore never refuses on account of the witness
+// corpus, on any artifact this library can legally open.
+//
+// The defensive bound check below (`n > context_cap`) is KEPT rather than
+// removed: it is now UNREACHABLE on every input this function is called
+// with (the cut above makes n <= context_cap by construction), which is
+// not the same property as "cannot fire on any input a future change
+// might pass" -- StandardsDocument.md's own "a check that cannot fire on
+// today's inputs is not the same as one that cannot fire" governs exactly
+// this shape, and the K/V workspace overrun the check guards against
+// (sec 3.1's "K/V pool ... sized once from the artifact's own geometry")
+// is memory-unsafe if ever reached, so the guard stays as a structural
+// invariant rather than a currently-exercised branch.
+//
+// Returns false on an engine refusal from the real forward. A caller maps
+// a false return to SEMB_ENGINE_REFUSED, the same status every other
+// mid-open engine failure already uses.
 bool ComputeWbDigest(SembInterimEncoder* interim, const superslm::TokenizerView& tokenizer,
                      uint32_t hidden_size, uint32_t context_cap,
                      std::array<uint8_t, 32>* out_digest) {
@@ -215,13 +238,25 @@ bool ComputeWbDigest(SembInterimEncoder* interim, const superslm::TokenizerView&
   auto put_u64 = [](std::vector<uint8_t>* buf, uint64_t v) {
     for (int i = 0; i < 8; ++i) buf->push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xFF));
   };
+  // D-SLM6341: the largest content-id count that leaves room for the
+  // appended end token without exceeding context_cap. context_cap == 0
+  // (not reachable against a real candidate; guarded rather than assumed)
+  // leaves no room for even the end token alone.
+  const size_t max_content_ids =
+      context_cap > 0 ? static_cast<size_t>(context_cap) - 1 : 0;
   put_u64(&stream, static_cast<uint64_t>(semb::kWbCorpusDocumentCount));
   for (size_t doc_i = 0; doc_i < semb::kWbCorpusDocumentCount; ++doc_i) {
     const semb::WbCorpusDocument& doc = semb::kWbCorpusDocuments[doc_i];
-    const std::vector<int32_t> content_ids =
+    std::vector<int32_t> content_ids =
         tokenizer.Encode(std::string_view(doc.text, doc.text_len));
+    if (content_ids.size() > max_content_ids) {
+      // D-SLM6341's cut: keep the leading max_content_ids ids only. The
+      // digest is over this cut content, not the full document -- stated
+      // as fact in wb_digest_abi.h's own contract comment.
+      content_ids.resize(max_content_ids);
+    }
     const size_t n = content_ids.size() + 1;  // the appended end token
-    if (n > context_cap) return false;
+    if (n > context_cap) return false;  // UNREACHABLE post-cut; see comment above.
     const size_t hidden = hidden_size;
     std::vector<int8_t> codes(n * hidden);
     std::vector<int64_t> m(n), e(n);

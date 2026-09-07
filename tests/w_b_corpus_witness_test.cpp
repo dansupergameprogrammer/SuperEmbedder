@@ -75,6 +75,19 @@
 #include "semb_seam_abi_contract.h"
 #include "semb_wb_witness_abi_contract.h"
 
+// TE-155 item 1 (D-SLM6341): the independent recomputation below needs
+// context_cap to apply the SAME per-document cut
+// src/superembedder/encoder.cpp's own ComputeWbDigest applies, discovered
+// independently of that function (a SEPARATE semb_interim_encoder_open on
+// the identical artifact, below) rather than assumed or hardcoded. This
+// header predates this round (TE-63) and declares no symbol any other
+// included header here already declares (confirmed: SembInterimEncoder,
+// SembInterimGeometry, SembInterimStatus, semb_interim_encoder_open/
+// _geometry/_close are all new names; SembWaPoolStatus, which it also
+// declares via pool_abi.h, is not declared anywhere else this file
+// includes).
+#include "superembedder/encoder_interim_abi.h"
+
 #include "superslm/artifact.h"
 #include "superslm/sha256.h"
 #include "superslm/tokenizer.h"
@@ -186,9 +199,14 @@ void PutU64LE(std::vector<uint8_t>* out, uint64_t v) {
 // formula, using ONLY primitives that predate this round (see the file
 // header). Returns false with `why` set on any setup failure (an engine
 // refusal opening the tokenizer, an absent end token, etc.) -- MISSING
-// PREREQUISITE, not a silent wrong digest.
+// PREREQUISITE, not a silent wrong digest. `out_cut_count`, when non-NULL,
+// receives the number of the 16 documents whose own tokenized content
+// exceeded context_cap-1 ids and was therefore cut before the end token
+// was appended (TE-155 item 1, D-SLM6341) -- 0 when every document fits.
 bool ComputeExpectedWbDigest(const std::string& model_path, const std::string& tokenizer_path,
-                              const std::vector<Record>& corpus, uint8_t out_digest[32], std::string* why) {
+                              const std::vector<Record>& corpus, uint8_t out_digest[32], std::string* why,
+                              size_t* out_cut_count = nullptr) {
+  if (out_cut_count) *out_cut_count = 0;
   const std::vector<uint8_t> tokenizer_bytes = ReadFile(tokenizer_path);
   if (tokenizer_bytes.empty()) { *why = "cannot read tokenizer artifact " + tokenizer_path; return false; }
   superslm::SslmArtifact tokenizer_artifact;
@@ -208,12 +226,64 @@ bool ComputeExpectedWbDigest(const std::string& model_path, const std::string& t
   if (end_ids.size() != 1) { *why = "the canonical end token does not resolve to exactly one id"; return false; }
   const int32_t end_id = end_ids[0];
 
+  // TE-155 item 1 (D-SLM6341): discover context_cap independently of
+  // ComputeWbDigest's own implementation -- a SEPARATE
+  // semb_interim_encoder_open/geometry query against the identical model
+  // artifact (encoder_interim_abi.h predates this round, TE-63), closed
+  // immediately after the geometry read since this recomputation still
+  // drives the actual forward through semb_encode_document_for_witness
+  // (its own, separate open) exactly as it did before this round.
+  SembInterimEncoder* cap_probe = nullptr;
+  const char* cap_probe_status = nullptr;
+  if (semb_interim_encoder_open(model_path.c_str(), end_id, &cap_probe, &cap_probe_status) != kSembInterimOk) {
+    *why = "semb_interim_encoder_open refused while discovering context_cap";
+    return false;
+  }
+  SembInterimGeometry geometry{};
+  geometry.struct_size = sizeof(geometry);
+  const SembInterimStatus geometry_status = semb_interim_encoder_geometry(cap_probe, &geometry);
+  semb_interim_encoder_close(cap_probe);
+  if (geometry_status != kSembInterimOk) { *why = "semb_interim_encoder_geometry refused"; return false; }
+  const size_t max_content_ids =
+      geometry.context_cap > 0 ? static_cast<size_t>(geometry.context_cap) - 1 : 0;
+
   std::vector<uint8_t> stream;
   PutU64LE(&stream, static_cast<uint64_t>(corpus.size()));
   for (const Record& r : corpus) {
     std::vector<int32_t> ids = tokenizer.Encode(std::string_view(r.text));
+    if (ids.size() > max_content_ids) {
+      // D-SLM6341's cut, matching ComputeWbDigest's own rule exactly: keep
+      // the leading max_content_ids ids only, BEFORE the end token below.
+      ids.resize(max_content_ids);
+      if (out_cut_count) ++*out_cut_count;
+    }
     ids.push_back(end_id);  // PS-N: no document frame, terminator appended once (sec 3.1's shared adapter)
 
+    // TE-155 item 1 (found by execution, not by construction,
+    // StandardsDocument.md sec 5.4): `codes` is over-provisioned at
+    // kSembWitnessMaxHidden per position because the real hidden_size is
+    // an OUT parameter, not known until semb_encode_document_for_witness
+    // returns -- but that verb (src/superembedder/engine_adapter_interim.cpp's
+    // semb::Encode) writes each position CONTIGUOUSLY at its own REAL
+    // hidden_size stride (`codes_out + p * hidden`), never at
+    // kSembWitnessMaxHidden's stride, exactly as
+    // tests/c39_seam_digest_test.cpp's own identical construction assumes
+    // (it passes codes.data() straight through with no restride) and as
+    // src/superembedder/seam_serialize.cpp's own semb_seam_serialize_document
+    // reads (`codes[p * hidden + i]`). A PRIOR version of this function
+    // restrided into a SECOND buffer under the assumption that positions
+    // were spaced kSembWitnessMaxHidden apart -- correct only by
+    // coincidence when hidden_size == kSembWitnessMaxHidden (true of every
+    // artifact this achievement cell had executed against before this
+    // round, since the real candidate's hidden_size is exactly 1024) and
+    // silently WRONG whenever they differ (this round's mechanism pair,
+    // hidden 32): every position past 0 read past where the engine
+    // actually wrote and returned zero-initialised vector padding.
+    // Executed and confirmed: at hidden=32, `codes[63*32+i]` (correct)
+    // reads the engine's real last-position output; `codes[63*1024+i]`
+    // (the retired restride) reads unwritten padding. Fixed by passing
+    // `codes.data()` directly, matching c39's own established pattern --
+    // no second buffer, no restride.
     std::vector<int8_t> codes(ids.size() * kSembWitnessMaxHidden);
     std::vector<int64_t> m(ids.size()), e(ids.size());
     size_t hidden = 0;
@@ -225,13 +295,9 @@ bool ComputeExpectedWbDigest(const std::string& model_path, const std::string& t
       return false;
     }
 
-    std::vector<int8_t> flat(ids.size() * hidden);
-    for (size_t p = 0; p < ids.size(); ++p)
-      for (size_t i = 0; i < hidden; ++i) flat[p * hidden + i] = codes[p * kSembWitnessMaxHidden + i];
-
     std::vector<uint8_t> doc_buf(16 + ids.size() * (hidden + 16));
     size_t doc_len = 0;
-    const SembSerializeStatus sst = semb_seam_serialize_document(flat.data(), m.data(), e.data(), ids.size(),
+    const SembSerializeStatus sst = semb_seam_serialize_document(codes.data(), m.data(), e.data(), ids.size(),
                                                                     hidden, doc_buf.data(), doc_buf.size(), &doc_len);
     if (sst != kSembSerializeOk) { *why = "semb_seam_serialize_document refused for " + r.id; return false; }
     stream.insert(stream.end(), doc_buf.begin(), doc_buf.begin() + doc_len);
@@ -364,7 +430,19 @@ int main(int argc, char** argv) {
     std::string why1, why2;
     const bool ok1 = ComputeExpectedWbDigest(a.model, a.tokenizer, corpus, correct, &why1);
     std::vector<Record> mutated_corpus = corpus;
-    mutated_corpus[5].text += " (mutated)";
+    // TE-155 item 1 (D-SLM6341): the mutation is PREPENDED, not appended.
+    // The cap-cut keeps each document's LEADING max_content_ids ids, so a
+    // mutation appended at the end would land entirely inside the CUT
+    // portion whenever the leg's own context_cap is small enough that
+    // document 5 already saturates it (the mechanism pair's 64-token cap,
+    // confirmed by execution: an appended " (mutated)" suffix left this
+    // cell's own digest UNCHANGED against that leg, since the corpus's own
+    // 16 documents each tokenize to well over 63 ids there and every
+    // appended byte was cut away before reaching the forward). Prepending
+    // shifts the whole document's own tokenization from position 0, so the
+    // mutation is visible within the kept prefix regardless of which leg
+    // (real or mechanism) this binary is running against.
+    mutated_corpus[5].text = "(mutated) " + mutated_corpus[5].text;
     const bool ok2 = ComputeExpectedWbDigest(a.model, a.tokenizer, mutated_corpus, mutated, &why2);
     if (ok1 && ok2) {
       Verdict(std::memcmp(correct, mutated, 32) != 0,
@@ -387,9 +465,28 @@ int main(int argc, char** argv) {
   {
     uint8_t expected[32];
     std::string why_expected;
-    if (!ComputeExpectedWbDigest(a.model, a.tokenizer, corpus, expected, &why_expected)) {
+    size_t cut_count = 0;
+    if (!ComputeExpectedWbDigest(a.model, a.tokenizer, corpus, expected, &why_expected, &cut_count)) {
       Missing("W-B semb_wb_digest(enc, ...) equals the independent corpus-witness recomputation", why_expected);
     } else {
+      // ---- Cap-cut witness (TE-155 item 1, D-SLM6341): report how many of
+      // the 16 committed documents needed their tokenized content cut to
+      // context_cap-1 ids before the end token was appended. Reported
+      // rather than asserted against a fixed count, since this SAME binary
+      // runs against both the real candidate (context_cap 32768 -- 0
+      // documents expected to cut, since all 16 are short prose) and the
+      // mechanism pair (context_cap 64 -- every document expected to cut,
+      // since the near-byte-level tokenizer produces well over 64 ids for
+      // an 83-108 character document) with no flag telling it which; the
+      // two invocations' own quoted output is where the "0 on real, > 0 on
+      // mechanism" rule (D-SLM6341) is witnessed, per this suite's own
+      // driver (tests/u1_batch_contract_check.py) running this executable
+      // once per leg. ----
+      Verdict(true,
+              "(cap-cut) documents cut to context_cap-1 content ids before the end token was appended "
+              "(D-SLM6341: semb_encoder_open never refuses on account of the witness corpus)",
+              std::to_string(cut_count) + " of " + std::to_string(corpus.size()) + " document(s) cut");
+
       semb_encoder enc1 = Open(a);
       if (enc1) {
         uint8_t actual[32];

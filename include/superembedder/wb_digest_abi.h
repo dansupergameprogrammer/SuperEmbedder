@@ -39,6 +39,23 @@ extern "C" {
 // (`Claude/Plans/SuperEmbedder_Plan.md` sec 4.4b). Unlike W-A, W-B is NOT
 // model-independent, so this accessor is handle-scoped rather than bare:
 //
+// TE-155 (D-SLM6341, ruled by the conductor under delegation, subject to
+// Dan's veto): EACH DOCUMENT'S OWN TOKENIZED CONTENT IS CUT TO
+// `enc`'s context_cap MINUS ONE ids BEFORE the resolved end token is
+// appended, so the per-document position count never exceeds context_cap
+// on any artifact `enc` was legally opened on. `semb_encoder_open` never
+// refuses solely because the compiled-in W-B corpus cannot fit inside a
+// small artifact's own context window -- the digest this accessor returns
+// is over what the forward actually executed (the cut content), never
+// over the full, untokenized document text. Against an artifact whose
+// context_cap comfortably exceeds every committed document's own
+// tokenized length (the real candidate included), no document is cut and
+// this digest is unaffected. The cut is a pure, deterministic function of
+// `enc`'s own context_cap and the compiled-in corpus's own tokenized
+// content, so it does not disturb this accessor's own determinism
+// (property b), cross-handle agreement (property c), or id-inertness
+// (property d) -- see `tests/w_b_corpus_witness_test.cpp`.
+//
 //   enc == NULL                  -> SEMB_NULL_ARGUMENT, out_digest untouched
 //   enc names no live handle     -> SEMB_INVALID_HANDLE, out_digest untouched
 //   out_digest == NULL           -> SEMB_NULL_ARGUMENT
