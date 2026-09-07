@@ -60,7 +60,23 @@ enum SembEncodeStatus : int32_t {
 // before writing anything, since it cannot take a real capacity
 // parameter without breaking every existing extern "C" caller's fixed
 // signature.
-constexpr size_t kSembWitnessMaxHidden = 64;
+//
+// THIS IS A MANUALLY-KEPT-IN-SYNC DUPLICATE, NOT A SHARED SYMBOL --
+// TE-147 found this while raising the ceiling for the real W-B witness
+// leg: this header does not include superembedder/seam_abi.h (it is the
+// suite's own contract, independent of the product header by this
+// project's own convention), so the two constants are two separate
+// `constexpr` declarations that must be changed together by hand. The
+// TE-145 casebook's own sec 7 states "every one keys off the SAME single
+// constant ... raising it once updates every consumer's own behaviour" --
+// true for src/witness/witness_main.cpp and tests/w_b_corpus_witness_test.cpp
+// (both of which read the real product header), but NOT true for THIS
+// mirror or for tests/c39_seam_digest_test.cpp (which reads this mirror,
+// not the product header) -- confirmed by reading both files' own
+// #include lists rather than taken on the casebook's word. Updated to
+// 1024 in the same edit that raised the product constant, so the two stay
+// equal; a future raise must update both again.
+constexpr size_t kSembWitnessMaxHidden = 1024;
 
 SembEncodeStatus semb_encode_document_for_witness(const char* model_path,
                                                    const int32_t* token_ids, size_t n,

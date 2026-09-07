@@ -34,15 +34,21 @@ enum SembEncodeStatus : int32_t {
 // ceiling on hidden_size, enforced INSIDE the verb once the real value
 // is known (after the model opens, before any write), refusing by name
 // rather than writing past what any caller could safely have allocated.
-// 64 matches BOTH extant callers' own fixed allocations exactly
+//
+// RAISED, TE-147 (U1 slice 2 build): this ceiling's own comment named it
+// owed at U1 ("both are owed together at U1, when this witness-only verb
+// retires in favour of the real product entry point") -- due now that the
+// real W-B witness leg must run against the real candidate artifact
+// (`Claude/Plans/SuperEmbedder_Plan.md` sec 9 dim 4: `hidden_size` 1024).
+// 1024 matches the real candidate exactly (the current committed W-B
+// candidate's own `hidden_size`, TE-145 casebook sec 7); every consumer
+// that sizes a buffer as `n * kSembWitnessMaxHidden`
 // (tests/c39_seam_digest_test.cpp, tests/c40_chunk_budget_inertness_test.cpp,
-// each `n * 64` int8) and the tiny synthetic fixture's real hidden_size
-// (32, F-13) with a 2x margin -- a caller needing a larger hidden_size
-// must allocate more AND this ceiling must rise with it; both are owed
-// together at U1, when this witness-only verb retires in favour of the
-// real product entry point (sec 4.4a: "the cost cell links the library's
-// exported encoder entry and the singleton check's scope moves with it").
-constexpr size_t kSembWitnessMaxHidden = 64;
+// tests/w_b_corpus_witness_test.cpp) tracks the new value with no further
+// change (TE-145 casebook sec 7's own consumer sweep). A future artifact
+// whose own hidden_size exceeds 1024 still needs both halves raised again
+// together, per this same rule.
+constexpr size_t kSembWitnessMaxHidden = 1024;
 
 extern "C" {
 

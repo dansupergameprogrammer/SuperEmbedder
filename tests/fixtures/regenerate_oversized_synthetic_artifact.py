@@ -53,11 +53,14 @@ from pathlib import Path
 
 DEFAULT_REMOTE = "https://github.com/dansupergameprogrammer/SuperSLM.git"
 
-# hidden_size = num_attention_heads * head_dim = 8 * 16 = 128, twice
-# kSembWitnessMaxHidden (64) -- scaled 4x from the T-2199 fixture's own
-# 32/4/2/8 shape, preserving its own GQA group size (2) and every domain
-# ratio reference_pipeline's own checks require.
-OVERSIZED_HIDDEN = 128
+# TE-147 (U1 slice 2 build): kSembWitnessMaxHidden rose from 64 to 1024
+# (the real candidate's own hidden_size, seam_abi.h's own comment) -- this
+# default rises with it, twice the NEW ceiling (2048), the same "well past
+# its own boundary, not merely one byte over it" margin the original 128
+# value held against the retired 64 ceiling. hidden_size = num_attention_heads
+# * head_dim = 128 * 16 = 2048; the GQA group size (2) and every other
+# domain ratio reference_pipeline's own checks require are unchanged.
+OVERSIZED_HIDDEN = 2048
 
 
 def _rmtree_onerror(func, path, exc_info):
@@ -159,8 +162,9 @@ def main(argv: list) -> int:
     ap.add_argument("--source", default=DEFAULT_REMOTE)
     ap.add_argument("--workdir", default="build/_oversized_fixture_workdir")
     ap.add_argument("--hidden-size", type=int, default=OVERSIZED_HIDDEN,
-                     help="TE-83 (N-7): defaults to the over-the-ceiling 128; pass "
-                          "--hidden-size 64 for the AT-THE-BOUND fixture instead.")
+                     help="TE-83 (N-7): defaults to the over-the-ceiling value "
+                          f"({OVERSIZED_HIDDEN}); pass --hidden-size 1024 (TE-147: the "
+                          "current kSembWitnessMaxHidden) for the AT-THE-BOUND fixture instead.")
     args = ap.parse_args(argv)
 
     lock_path = Path(args.lock)
