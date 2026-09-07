@@ -54,6 +54,21 @@ SENTINEL = "SEMB_STATUS_NEXT_FREE"
 RETIRED = ["SEMB_INVALID_ARGUMENT"]
 CPP_ONLY_TOKENS = ["class", "namespace", "template", "nullptr", "bool", "constexpr", "static_assert", "::", "&&"]
 
+# TE-159 item 4 (S-4, D-SLM6353's sibling finding): the batch struct contract
+# and the seam ceiling mirror, both hand-synced duplicates the TE-148 review
+# found unpinned by any cell (S-3, S-4).
+BATCH_CONTRACT = REPO_ROOT / "tests" / "semb_batch_abi_contract.h"
+SEAM_HEADER = REPO_ROOT / "include" / "superembedder" / "seam_abi.h"
+SEAM_CONTRACT = REPO_ROOT / "tests" / "semb_seam_abi_contract.h"
+CEILING_NAME = "kSembWitnessMaxHidden"
+
+
+def ceiling_value(text: str, name: str):
+    """The integer literal a `constexpr size_t <name> = N;` declaration
+    carries, or None if no such declaration is found."""
+    m = re.search(r"constexpr\s+size_t\s+" + re.escape(name) + r"\s*=\s*(\d+)\s*;", text)
+    return int(m.group(1)) if m else None
+
 
 def strip_comments(text: str) -> str:
     text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
@@ -145,6 +160,20 @@ def main(argv) -> int:
     if not contract_list:
         print(f"[FAIL] H-0 the contract header's SEMB_CONTRACT_STATUS_LIST parses to at least one entry: got {contract_list}")
         return 1
+    # H-0b (TE-159 item 6, M-3): the count itself stays UNPINNED by a literal
+    # (deliberate, TE-145's own design -- restating N here as a hardcoded
+    # number is exactly the decaying-literal shape this file's own docstring
+    # rejects), but the contract's OWN internal structure is now checked:
+    # its ordinals are the contiguous set 0..N-1 with no gap and no
+    # duplicate. This is what "lost pin" actually named -- not the count's
+    # absolute value, but that nothing verified the parsed list was even
+    # internally well-formed before it became every other check's baseline.
+    ordinals = sorted(v for _, v in contract_list)
+    if ordinals != list(range(n_statuses)):
+        print(f"[FAIL] H-0b the contract's own ordinals are exactly 0..{n_statuses - 1} with no gap or "
+              f"duplicate: got {ordinals}")
+        return 1
+    print(f"[PASS] H-0b the contract's own {n_statuses} ordinals are exactly 0..{n_statuses - 1}, no gap or duplicate")
     if not header.exists():
         print(f"[RED-UNIMPLEMENTED] H-1 the public header exists: {header} does not exist -- the frozen "
               f"sec 3.1 surface has not been built; H-2..H-6 are red-unimplemented, not verified")
@@ -173,6 +202,25 @@ def main(argv) -> int:
     verdict(not re.search(r"\bappended_token_id\b", htext),
             "H-4c the public header carries no appended_token_id member anywhere (P-1)",
             "absent" if not re.search(r"\bappended_token_id\b", htext) else "PRESENT")
+
+    # H-4d (TE-159 item 4, S-3, TE-96 sec 4.7's own named obligation): the
+    # product's semb_document (include/superembedder/semb.h) and the test
+    # author's own pin (tests/semb_batch_abi_contract.h) are two INDEPENDENT
+    # struct definitions -- extern "C" linkage checks names, never layout,
+    # so nothing before this check compared them. Reordering a member in
+    # either copy left the whole suite green (S-3's own reproduction);
+    # mutation-proved: flipping id/id_len in a scratch copy of either file
+    # turns this line red (see this round's own build record).
+    if not BATCH_CONTRACT.exists():
+        verdict(False, "H-4d the batch contract header exists", f"{BATCH_CONTRACT} missing")
+    else:
+        batch_ctext = strip_comments(BATCH_CONTRACT.read_text(encoding="utf-8"))
+        bm = struct_members(batch_ctext, "semb_document")
+        hm2 = struct_members(htext, "semb_document")
+        verdict(bm is not None and hm2 is not None and hm2 == bm and hm2[0].startswith("uint32_t struct_size"),
+                "H-4d struct semb_document carries exactly the batch contract's five members in order, "
+                "struct_size first (TE-96 sec 4.7)",
+                f"contract={bm} header={hm2}")
 
     contract_names = [n for n, _ in contract_list]
     missing = [n for n in contract_names if not re.search(r"\b" + n + r"\b", htext)]
@@ -208,6 +256,27 @@ def main(argv) -> int:
     hits = [t for t in CPP_ONLY_TOKENS if re.search(r"(?<![A-Za-z0-9_])" + re.escape(t) + r"(?![A-Za-z0-9_])", outside)]
     verdict(not hits, "H-6 no C++-only token outside the __cplusplus guard (the compiled proof is K-16)",
             "hits: " + (", ".join(hits) if hits else "none"))
+
+    # H-7 (TE-159 item 4, S-4, D-SLM6353's sibling): kSembWitnessMaxHidden is
+    # a hand-synced duplicate between the product seam header and the test
+    # suite's own mirror (tests/semb_seam_abi_contract.h does not include
+    # seam_abi.h -- confirmed by reading its own #include list, S-4's own
+    # finding). The verb takes no capacity parameter, so the buffer size
+    # every mirror-reading cell allocates and the refusal bound the product
+    # verb enforces must agree, or a future raise on one side alone
+    # overflows the other's buffers silently. Mutation-proved: changing
+    # either file's own literal alone turns this line red.
+    if not SEAM_HEADER.exists() or not SEAM_CONTRACT.exists():
+        verdict(False, "H-7 both seam ceiling files exist",
+                f"header={SEAM_HEADER.exists()} contract={SEAM_CONTRACT.exists()}")
+    else:
+        seam_htext = strip_comments(SEAM_HEADER.read_text(encoding="utf-8"))
+        seam_ctext = strip_comments(SEAM_CONTRACT.read_text(encoding="utf-8"))
+        header_ceiling = ceiling_value(seam_htext, CEILING_NAME)
+        contract_ceiling = ceiling_value(seam_ctext, CEILING_NAME)
+        verdict(header_ceiling is not None and header_ceiling == contract_ceiling,
+                f"H-7 {CEILING_NAME} agrees between {SEAM_HEADER.name} and {SEAM_CONTRACT.name}",
+                f"header={header_ceiling} contract={contract_ceiling}")
 
     print(f"\nu1_public_header_parity_check: {failures} failure(s)")
     return 1 if failures else 0
