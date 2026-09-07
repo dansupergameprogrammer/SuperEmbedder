@@ -70,7 +70,15 @@ using namespace std::chrono_literals;
 namespace leak_hook {
 std::atomic<int64_t> g_live_bytes{0};
 std::atomic<int64_t> g_live_allocations{0};
-struct Header { size_t size; };
+// TE-159 item 5 (S-5, D-SLM6353): plain `struct Header { size_t size; };` is
+// 8 bytes, so `raw + sizeof(Header)` returns memory 8-mod-16 on x64 (malloc
+// itself returns 16-aligned) -- violating `operator new`'s own alignment
+// contract (__STDCPP_DEFAULT_NEW_ALIGNMENT__). Executed proof (TE-148
+// review F-6): 10 of 12 measured std::vector<float> allocations under the
+// unfixed hook landed at offset 8 mod 16. `alignas` here pads Header's own
+// size up to the alignment, so `raw + sizeof(Header)` lands back on a
+// 16-aligned boundary for every allocation this hook returns.
+struct alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__) Header { size_t size; };
 void* Allocate(std::size_t n) {
   const size_t total = n + sizeof(Header);
   void* raw = std::malloc(total == 0 ? 1 : total);
