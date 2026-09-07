@@ -683,3 +683,94 @@ extern "C" SembInterimStatus semb_interim_encode_ps_n(
   if (dq != kSembOk) return kSembInterimDequantizeRefused;
   return kSembInterimOk;
 }
+
+// TE-147 (U1 slice 2 build): the batch composed path, ONE workspace
+// acquisition for the whole call. See encoder_interim_abi.h's own doc
+// comment for the contract; this is `semb_interim_encode_ps_n`'s per-call
+// acquire/release replaced by a single acquire/release spanning every
+// document, with the per-document seam+select+dequantize steps unchanged
+// (select and dequantize touch no workspace, so they are called exactly as
+// the singleton path calls them; only the seam step -- semb::Encode -- is
+// inlined here against the ALREADY-HELD workspace rather than going through
+// semb_interim_encode_seam's own internal acquire).
+extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
+    SembInterimEncoder* encoder, const int32_t* const* docs_content_ids,
+    const size_t* docs_n_content, size_t doc_count, size_t chunk_budget, float* out_vectors,
+    size_t out_capacity_bytes, size_t* out_required_bytes, size_t* out_failed_index,
+    SembWaPoolStatus* out_dequantize_status, const char** out_engine_status_name) {
+  if (out_engine_status_name) *out_engine_status_name = OkName();
+  if (out_dequantize_status) *out_dequantize_status = kSembOk;
+  if (out_failed_index) *out_failed_index = 0;
+  if (!encoder || !out_required_bytes) return kSembInterimNullArgument;
+  semb::EncoderModel* m = encoder->model;
+  const size_t hidden = m->hidden_size;
+  const size_t required = doc_count * hidden * sizeof(float);
+  *out_required_bytes = required;
+  if (out_capacity_bytes < required) return kSembInterimBufferTooSmall;
+  if (!out_vectors) return kSembInterimNullArgument;
+  if (doc_count == 0) return kSembInterimOk;  // the caller's own CORPUS_EMPTY guards n==0 earlier
+  if (!docs_content_ids || !docs_n_content) return kSembInterimNullArgument;
+
+  size_t workspace_index = 0;
+  if (!semb::TryAcquireWorkspace(m, &workspace_index)) {
+    return kSembInterimConcurrencyExceeded;
+  }
+  semb::WorkspaceLease lease{m, workspace_index};
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+  // Exactly ONE acquisition for the whole call, recorded before any
+  // document's own forward begins (TE-96 sec 4.2 step 12; C26b's own
+  // per-call parking point, tests/u1_batch_workspace_test.cpp).
+  semb::test_seam::OnAcquired();
+#endif
+
+  for (size_t doc = 0; doc < doc_count; ++doc) {
+    const size_t n_content = docs_n_content[doc];
+    const size_t n = n_content + 1;  // the appended end token
+    std::vector<int32_t> tokens(n);
+    if (n_content > 0) {
+      std::memcpy(tokens.data(), docs_content_ids[doc], n_content * sizeof(int32_t));
+    }
+    tokens[n_content] = m->appended_token_id;
+
+    std::vector<int8_t> codes(n * hidden);
+    std::vector<superslm::CarriedScale> scales(n);
+    const superslm::SslmForwardStatus st = semb::Encode(
+        m, m->workspaces[workspace_index].bytes, tokens.data(), n, chunk_budget,
+        kSembForwardLegChunkBatched, codes.data(), scales.data());
+    if (st != superslm::SslmForwardStatus::Ok) {
+      if (out_engine_status_name) {
+        *out_engine_status_name = semb::SetEngineStatus(superslm::SslmForwardStatusName(st));
+      }
+      if (out_failed_index) *out_failed_index = doc;
+      return kSembInterimEngineRefused;
+    }
+
+    std::vector<int64_t> ms(n), es(n);
+    for (size_t p = 0; p < n; ++p) {
+      ms[p] = scales[p].m;
+      es[p] = scales[p].e;
+    }
+
+    // PS-N's position rule: the LAST position. Neither select nor
+    // dequantize touches the workspace, so these are the SAME public
+    // primitives the singleton path calls (encoder_interim_abi.h).
+    std::vector<int8_t> sel(hidden);
+    int64_t sel_m = 0, sel_e = 0;
+    const SembInterimStatus sel_st =
+        semb_interim_ps_n_select(encoder, codes.data(), ms.data(), es.data(), n, n - 1, sel.data(),
+                                  &sel_m, &sel_e, out_engine_status_name);
+    if (sel_st != kSembInterimOk) {
+      if (out_failed_index) *out_failed_index = doc;
+      return sel_st;
+    }
+
+    const SembWaPoolStatus dq =
+        semb_ps_n_dequantize(sel.data(), sel_m, sel_e, hidden, out_vectors + doc * hidden);
+    if (out_dequantize_status) *out_dequantize_status = dq;
+    if (dq != kSembOk) {
+      if (out_failed_index) *out_failed_index = doc;
+      return kSembInterimDequantizeRefused;
+    }
+  }
+  return kSembInterimOk;
+}

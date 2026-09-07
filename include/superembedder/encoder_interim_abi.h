@@ -167,6 +167,26 @@ SembInterimStatus semb_interim_encode_ps_n(SembInterimEncoder* encoder, const in
                                             SembWaPoolStatus* out_dequantize_status,
                                             const char** out_engine_status_name);
 
+// THE BATCH COMPOSED PATH (TE-147, U1 slice 2): the SAME seam -> select ->
+// dequantize composition as semb_interim_encode_ps_n, run for `doc_count`
+// independent documents against ONE workspace acquired ONCE for the WHOLE
+// call (`Claude/Plans/SuperEmbedder_Plan.md` sec 3.1 concurrency clause;
+// TE-96 sec 4.2 step 12: "one workspace for the whole call ... rows run
+// serially on that slot") -- unlike calling semb_interim_encode_ps_n once
+// per document, which would acquire and release the pool's own slot once
+// PER DOCUMENT. `docs_content_ids[i]`/`docs_n_content[i]` describe document
+// `i`'s own content token ids (the terminator is appended internally,
+// exactly as the raw path does); `out_vectors` receives `doc_count`
+// consecutive `hidden`-sized rows, row-major, no padding. On any refusal
+// `*out_failed_index` names which document failed (0 on a precondition
+// refusal that precedes the loop); the workspace is released exactly once,
+// on every return path, by RAII.
+SembInterimStatus semb_interim_encode_batch_ps_n(
+    SembInterimEncoder* encoder, const int32_t* const* docs_content_ids,
+    const size_t* docs_n_content, size_t doc_count, size_t chunk_budget, float* out_vectors,
+    size_t out_capacity_bytes, size_t* out_required_bytes, size_t* out_failed_index,
+    SembWaPoolStatus* out_dequantize_status, const char** out_engine_status_name);
+
 }  // extern "C"
 
 // C++ product-layer entry: transfers the exactly-once file read into the
