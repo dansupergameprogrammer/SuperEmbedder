@@ -424,7 +424,19 @@ int main(int argc, char** argv) {
   {
     constexpr int kCycles = 50;
     constexpr int kWarmupCycles = 10;
+    // TE-147 (U1 slice 2 build): RESERVED up front. Found by execution: an
+    // un-reserved vector here means ITS OWN geometric reallocation, growing
+    // one int64_t per cycle under this same global-allocator instrument,
+    // shows up as part of the "live bytes" reading being measured -- an
+    // isolated, model-free reproduction (no encoder, no engine, just this
+    // exact push_back pattern under the identical leak_hook) reproduced the
+    // SAME 400-byte growth this cell originally reported (cycle 0 -> final)
+    // byte for byte. Reserving the full capacity up front removes the
+    // instrument's own bookkeeping from the quantity it measures, so a
+    // reading that moves is the product's own allocations moving, not this
+    // vector's.
     std::vector<int64_t> live_after_cycle;
+    live_after_cycle.reserve(kCycles);
     bool cycle_ok = true;
     for (int i = 0; i < kCycles && cycle_ok; ++i) {
       semb_encoder cyc = Open(a, 1);
