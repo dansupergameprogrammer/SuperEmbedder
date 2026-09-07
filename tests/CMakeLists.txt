@@ -357,6 +357,41 @@ foreach(_semb_u1_cell u1_raw_text_contract_test u1_raw_text_parity_test)
 	target_compile_definitions(${_semb_u1_cell}_legacy PRIVATE SEMB_CONTRACT_LEGACY_APPENDED_ID_MEMBER=1)
 endforeach()
 
+# ---------------------------------------------------------------------------
+# TE-145 (U1 slice 2): semb_encode_batch's red suite. Both link against
+# symbols undefined at this branch's own base c0f52d4
+# (semb_encode_batch, and w_b_corpus_witness_test's semb_wb_digest), so both
+# are EXCLUDE_FROM_ALL; tests/u1_batch_contract_check.py builds each on
+# demand and reports the unresolved symbol by name, the same red-first shape
+# tests/u1_raw_text_cells_check.py already uses. u1_batch_contract_test
+# carries the cells that need no K-15 seam observable (the precedence/
+# refusal/row-identity driver, plus C27's corpus form); u1_batch_workspace_test
+# and w_b_corpus_witness_test are registered further below, inside
+# semb_add_workspace_tests(), because the seam-observable cells (C4's
+# no-forward-ran proof, C26's two races, C48, C49, C50) and the witness leg's
+# own primitives (semb_encode_document_for_witness, semb_seam_serialize_document)
+# need the identical testseam wiring u1_workspace_seam_test already uses.
+# ---------------------------------------------------------------------------
+add_executable(u1_batch_contract_test EXCLUDE_FROM_ALL u1_batch_contract_test.cpp)
+target_link_libraries(u1_batch_contract_test PRIVATE superembedder superslm::superslm)
+target_include_directories(u1_batch_contract_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+set(_semb_batch_args --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}")
+if(NOT SEMB_C12B_MODEL STREQUAL "")
+	list(APPEND _semb_batch_args --model "${SEMB_C12B_MODEL}")
+endif()
+if(NOT SEMB_U1_TOKENIZER STREQUAL "")
+	list(APPEND _semb_batch_args --tokenizer "${SEMB_U1_TOKENIZER}")
+endif()
+add_test(
+	NAME u1_batch_contract_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u1_batch_contract_check.py" ${_semb_batch_args}
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+	set_tests_properties(u1_batch_contract_check PROPERTIES LABELS "real_artifact")
+endif()
+
 # The converter-emitted Qwen3-Embedding-0.6B tokenizer artifact (3.4 MB, never
 # committed; regenerated bit-for-bit by tools/tokenizer/regenerate_qwen3_tokenizer_artifact.py
 # and held to tests/fixtures/tokenizer/qwen3-embedding-0.6b-tokenizer.manifest.json).
@@ -541,9 +576,24 @@ function(semb_add_workspace_tests)
   add_executable(u1_workspace_seam_test EXCLUDE_FROM_ALL "${_semb_test_dir}/u1_workspace_seam_test.cpp")
   target_link_libraries(u1_workspace_seam_test PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
   target_include_directories(u1_workspace_seam_test PRIVATE "${_semb_test_dir}")
+  # TE-145 (U1 slice 2): the seam-observable batch cells (C4's no-forward-ran
+  # proof, C26's two races, C48, C49, C50) and the real W-B witness leg both
+  # need the identical testseam wiring this function already builds for
+  # u1_workspace_seam_test -- registered here rather than as ordinary
+  # semb_add_cxx_test targets because semb_encode_batch (and, for the
+  # witness leg, semb_wb_digest) do not exist at this branch's own base
+  # c0f52d4; both are EXCLUDE_FROM_ALL, built and run on demand by
+  # tests/u1_batch_contract_check.py (the same driver that builds
+  # u1_batch_contract_test above).
+  add_executable(u1_batch_workspace_test EXCLUDE_FROM_ALL "${_semb_test_dir}/u1_batch_workspace_test.cpp")
+  target_link_libraries(u1_batch_workspace_test PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
+  target_include_directories(u1_batch_workspace_test PRIVATE "${_semb_test_dir}")
+  add_executable(w_b_corpus_witness_test EXCLUDE_FROM_ALL "${_semb_test_dir}/w_b_corpus_witness_test.cpp")
+  target_link_libraries(w_b_corpus_witness_test PRIVATE superembedder_testseam superslm::superslm)
+  target_include_directories(w_b_corpus_witness_test PRIVATE "${_semb_test_dir}")
   set_target_properties(superembedder_testseam PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
-  set_target_properties(u1_workspace_seam_test PROPERTIES
+  set_target_properties(u1_workspace_seam_test u1_batch_workspace_test w_b_corpus_witness_test PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
   # Explicit diagnostic configurations compile generated fault copies only into
   # the noninstalled seam target. The production source/target is unchanged.

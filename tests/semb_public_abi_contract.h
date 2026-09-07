@@ -61,6 +61,15 @@
 //          SEMB_NULL_ARGUMENT; the config's path spans follow the same rule
 //          (`(NULL, 0)` path = an unreadable artifact, SEMB_ARTIFACT_UNREADABLE).
 //
+// TE-145 (U1 Slice 2, `Claude/Fable/te96-u1-contract-closure-2026-09-05.md`
+// sec 4.4, P-5): four statuses APPENDED for `semb_encode_batch`
+// (`tests/semb_batch_abi_contract.h`), ordinals 18-21, SEMB_STATUS_NEXT_FREE
+// now 22. This is the append this header's own comment above promises --
+// "the last renumber, append-only from this header on" -- landing for the
+// first time. SEMB_CORPUS_EMPTY moves from kPlanStatusNames (below, "named
+// in the plan, not yet required by any verb this slice pins") into the real
+// list, since TE-96 sec 4.2 step 3 now requires it of a frozen verb.
+//
 // STATUSES ARE PINNED BY NAME AND BY ORDINAL, AND THE CELLS COMPARE BY NAME.
 // Behavioural cells resolve every status through `semb_status_name` (StatusByName
 // below) so that a cell is red for its own reason -- a behaviour that differs
@@ -108,7 +117,11 @@ typedef int32_t semb_status;
   X(SEMB_TEMPLATE_TOKEN_ABSENT,    14) \
   X(SEMB_POOLED_SUBNORMAL,         15) \
   X(SEMB_POOLED_OVERFLOW,          16) \
-  X(SEMB_ALLOCATION_FAILED,        17)
+  X(SEMB_ALLOCATION_FAILED,        17) \
+  X(SEMB_CORPUS_EMPTY,             18) \
+  X(SEMB_DOCUMENT_ID_INVALID,      19) \
+  X(SEMB_DOCUMENT_ID_DUPLICATE,    20) \
+  X(SEMB_CORPUS_TOO_LARGE,         21)
 
 enum : int32_t {
 #define SEMB_CONTRACT_STATUS_ENUM_(name, value) name = value,
@@ -117,7 +130,7 @@ enum : int32_t {
   SEMB_STATUS_NEXT_FREE  // the sentinel: never returned, never a valid argument, never named
 };
 
-static_assert(SEMB_STATUS_NEXT_FREE == 18, "the contract pins 18 named statuses, ordinals 0-17");
+static_assert(SEMB_STATUS_NEXT_FREE == 22, "the contract pins 22 named statuses, ordinals 0-21 (TE-145 appends 18-21)");
 
 // sec 3.1 item 5: library-owned, opaque, not copyable, released only by
 // semb_encoder_close; a double close returns SEMB_INVALID_HANDLE.
@@ -178,7 +191,7 @@ inline const StatusEntry kStatusTable[] = {
 #undef SEMB_CONTRACT_STATUS_ENTRY_
 };
 inline constexpr size_t kStatusCount = sizeof(kStatusTable) / sizeof(kStatusTable[0]);
-static_assert(kStatusCount == 18, "18 named statuses");
+static_assert(kStatusCount == 22, "22 named statuses (TE-145 appends 18-21)");
 
 // The name every non-member int32_t resolves to (P-5: static storage, never NULL).
 inline constexpr const char* kUnknownStatusName = "SEMB_UNKNOWN";
@@ -201,7 +214,6 @@ inline const char* const kPlanStatusNames[] = {
     "SEMB_BANK_SIZE_MISMATCH",
     "SEMB_ARTIFACT_SHA_MISMATCH",
     "SEMB_ACCUMULATOR_OVERFLOW",
-    "SEMB_CORPUS_EMPTY",
     "SEMB_EPOCH_BYTES_DIVERGED",
     "SEMB_EPOCH_LINEAGE_DIVERGED",
     "SEMB_EPOCH_ENTRY_MODIFIED",

@@ -1,0 +1,18 @@
+{
+  "schema": "semb_wb_corpus_manifest_v1",
+  "minted": "2026-09-07",
+  "minted_by": "Claude/Curie/te145-slice2-red-2026-09-07.md (this round, TE-145)",
+  "selection_rule": "The identical sixteen-document W-B witness corpus SuperEmbedder_Plan.md sec 4.4b names as authored for this purpose -- one register (short vendor lines from the shopkeeper domain), previously used unchanged across two prior probe rounds (D:\\Wizard\\Claude\\Vitruvius\\t2217-fold4-probe\\cost\\t2217_fold9_cell.cpp, kDocs[16], comment: \"The same 16 documents fold round 8 measured, unchanged, so the price rows are comparable across the two rounds and only the encoder's provenance moved\"). Committed here for the first time as SuperEmbedder product-tree test data (D-SLM4090: not drawn from the 239-document evaluation corpus or from any W-Q population), with ids wb-00..wb-15 assigned in the source's own array order.",
+  "provenance": {
+    "source_file": "D:\\Wizard\\Claude\\Vitruvius\\t2217-fold4-probe\\cost\\t2217_fold9_cell.cpp",
+    "source_array": "kDocs[16]",
+    "source_comment": "carried unchanged from fold round 8's own price measurement"
+  },
+  "documents": 16,
+  "wb-corpus.jsonl": {
+    "sha256": "2509e18dfc48e38d44c5ffbcb0180d1ee1bf701544b3c92dac0c9dcee9c54028",
+    "bytes": 1934,
+    "lines": 16
+  },
+  "id_scheme": "wb-00 through wb-15, decimal, two digits, zero-padded, in the source array's own order -- TE-96 sec 4.7's id-inertness cell (tests/w_b_corpus_witness_test.cpp) is what pins that these specific id VALUES are inert to the witness digest."
+}

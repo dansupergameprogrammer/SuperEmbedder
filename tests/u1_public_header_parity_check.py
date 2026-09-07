@@ -21,12 +21,14 @@ text and requires:
        contract's members, in order, `struct_size` first (sec 3.1 item 6;
        P-1: six config members, no appended-token member; P-2: two
        fingerprint members);
-  H-5  the status enum: (a) every one of the contract's 18 names is an
-       enumerator; (b) each carries its EXPLICIT contract ordinal, in the
-       contract's order, 0-17, and SEMB_STATUS_NEXT_FREE is the last
-       enumerator with no explicit value (P-5); (c) the enum carries no other
-       enumerator -- the retired SEMB_INVALID_ARGUMENT in particular is absent
-       everywhere in the header (P-4);
+  H-5  the status enum: (a) every one of the contract's N names is an
+       enumerator (N read from the contract's own X-macro, never restated
+       here -- TE-145 grew it from 18 to 22); (b) each carries its EXPLICIT
+       contract ordinal, in the contract's order, 0..N-1, and
+       SEMB_STATUS_NEXT_FREE is the last enumerator with no explicit value
+       (P-5); (c) the enum carries no other enumerator -- the retired
+       SEMB_INVALID_ARGUMENT in particular is absent everywhere in the header
+       (P-4);
   H-6  the header is C99-shaped by inspection: no C++-only token outside the
        `#ifdef __cplusplus` guard (the compiled strict-C cell K-16,
        tests/u1_public_header_strict_c_check.py, is the executed proof; this
@@ -136,8 +138,12 @@ def main(argv) -> int:
         return 1
     ctext = strip_comments(contract.read_text(encoding="utf-8"))
     contract_list = contract_status_list(ctext)
-    if not contract_list or len(contract_list) != 18:
-        print(f"[FAIL] H-0 the contract header's SEMB_CONTRACT_STATUS_LIST parses to 18 entries: got {contract_list}")
+    # TE-145: the count is READ from the contract's own X-macro, never
+    # restated as a literal here -- the contract header's own comment states
+    # the append-only law this script must track, not re-fix, on every append.
+    n_statuses = len(contract_list) if contract_list else 0
+    if not contract_list:
+        print(f"[FAIL] H-0 the contract header's SEMB_CONTRACT_STATUS_LIST parses to at least one entry: got {contract_list}")
         return 1
     if not header.exists():
         print(f"[RED-UNIMPLEMENTED] H-1 the public header exists: {header} does not exist -- the frozen "
@@ -170,7 +176,7 @@ def main(argv) -> int:
 
     contract_names = [n for n, _ in contract_list]
     missing = [n for n in contract_names if not re.search(r"\b" + n + r"\b", htext)]
-    verdict(not missing, "H-5a every one of the contract's 18 status names is an enumerator in the public header",
+    verdict(not missing, f"H-5a every one of the contract's {n_statuses} status names is an enumerator in the public header",
             "missing: " + (", ".join(missing) if missing else "none"))
     body = header_enum_body(htext)
     if body is None:
@@ -178,8 +184,8 @@ def main(argv) -> int:
     else:
         pairs, shape = header_status_pairs(htext, body)
         verdict(pairs == contract_list,
-                "H-5b the enum carries the contract's 18 names with EXPLICIT ordinals 0-17 in the contract's order (P-5)",
-                f"shape={shape}; header={pairs}" if pairs != contract_list else f"shape={shape}; 18 of 18 agree")
+                f"H-5b the enum carries the contract's {n_statuses} names with EXPLICIT ordinals 0-{n_statuses - 1} in the contract's order (P-5)",
+                f"shape={shape}; header={pairs}" if pairs != contract_list else f"shape={shape}; {n_statuses} of {n_statuses} agree")
         # The sentinel is the last enumerator and carries no explicit value.
         idents = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", body)
         macro_names = set(re.findall(r"#define\s+([A-Za-z_][A-Za-z0-9_]*)", htext))
@@ -187,7 +193,7 @@ def main(argv) -> int:
         last_semb = semb_idents[-1] if semb_idents else None
         sentinel_explicit = bool(re.search(r"\b" + SENTINEL + r"\s*=", body))
         verdict(last_semb == SENTINEL and not sentinel_explicit,
-                "H-5b' SEMB_STATUS_NEXT_FREE is the last enumerator and carries no explicit value (auto-valued 18)",
+                f"H-5b' SEMB_STATUS_NEXT_FREE is the last enumerator and carries no explicit value (auto-valued {n_statuses})",
                 f"last={last_semb} explicit_value={sentinel_explicit}")
         extras = sorted(set(semb_idents) - set(contract_names) - {SENTINEL})
         verdict(not extras, "H-5c the enum carries no enumerator outside the contract's list (P-5: append when a verb lands, never ahead of it)",
