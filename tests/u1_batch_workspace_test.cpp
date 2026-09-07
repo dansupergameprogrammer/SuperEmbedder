@@ -31,11 +31,11 @@
 //     regardless, TE-140 sec 4/6).
 //
 // RED-UNIMPLEMENTED at this branch's own base c0f52d4: semb_encode_batch
-// does not exist. This target is EXCLUDE_FROM_ALL, built by
-// tests/u1_batch_contract_check.py on demand (same driver as the plain
-// contract cells; --workspace-target names this executable), which reports
-// the unresolved symbol by name -- the same shape TE-110's
-// u1_workspace_seam_absent_check already establishes for the seam target.
+// does not exist. This target is EXCLUDE_FROM_ALL, built and run by
+// tests/u1_batch_contract_check.py on demand (the same driver that builds
+// the plain contract cells above), which reports the unresolved symbol by
+// name -- the same shape TE-110's u1_workspace_seam_absent_check already
+// establishes for the seam target.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
