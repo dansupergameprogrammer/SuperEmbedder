@@ -108,6 +108,7 @@ set(SEMB_LIBRARY_SOURCES
 	src/superembedder/ps_n_pool.cpp
 	src/superembedder/seam_serialize.cpp
 	src/superembedder/wa_digest.cpp
+	src/superembedder/wb_corpus.cpp
 	src/superembedder/witness_build_generation.cpp
 	src/superembedder/engine_adapter_interim.cpp
 )
