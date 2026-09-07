@@ -1,12 +1,14 @@
-// tests/w_b_corpus_witness_test.cpp -- TE-145 (U1 slice 2): the real W-B
-// witness leg (`Claude/Plans/SuperEmbedder_Plan.md` sec 4.4b, sec 3.3 row 1
-// and row 9; TE-96 sec 4.5's W-B row). Wires `semb_wb_digest`
-// (`tests/semb_wb_witness_abi_contract.h`, TE-145's own accessor, specified
-// in that header's comment) against an INDEPENDENT, test-side recomputation
-// of W-B's own formula -- a FEATURE oracle (Curie's own dimension-10
-// discipline: an achievement claim gets a test that executes the definition
-// and asserts the end-state, never a self-comparison), built from ALREADY-
-// EXISTING library primitives only:
+// tests/w_b_corpus_witness_test.cpp -- TE-145 (U1 slice 2), AMENDED TE-151
+// (fix round, item 1): the real W-B witness leg
+// (`Claude/Plans/SuperEmbedder_Plan.md` sec 4.4b, sec 3.3 row 1 and row 9;
+// TE-96 sec 4.5's W-B row). Wires `semb_wb_digest`
+// (`tests/semb_wb_witness_abi_contract.h`, TE-145's own accessor, AMENDED
+// TE-151 to be HANDLE-SCOPED -- see that header's own comment for why a
+// bare accessor cannot be correct for W-B) against an INDEPENDENT,
+// test-side recomputation of W-B's own formula -- a FEATURE oracle
+// (Curie's own dimension-10 discipline: an achievement claim gets a test
+// that executes the definition and asserts the end-state, never a
+// self-comparison), built from ALREADY-EXISTING library primitives only:
 //
 //   1. Tokenize each of the 16 committed W-B documents through the SAME
 //      engine call sequence encoder.cpp's own semb_encode/(future)
@@ -36,11 +38,25 @@
 // corpus data, exactly the independence `StandardsDocument.md` sec 5.4's
 // comparison-evidence rule requires of a reference.
 //
-// RED-UNIMPLEMENTED at this branch's own base c0f52d4: `semb_wb_digest` and
+// RED-UNIMPLEMENTED at this branch's own base c0f52d4, AND at TE-151's own
+// tip after the accessor's shape changed: `semb_wb_digest` and
 // `semb_encode_batch` are both undeclared in `superembedder`
 // (`git grep -n "semb_wb_digest\|semb_encode_batch" src/ include/` returns
-// nothing at c0f52d4) -- this executable fails to LINK until the builder's
-// round adds both.
+// nothing at either base) -- this executable fails to LINK until the
+// builder's round adds both, now against the amended two-argument
+// `semb_wb_digest(semb_encoder, uint8_t[32])` signature.
+//
+// THE FOUR PROPERTIES THIS FILE PINS OVER THE HANDLE-SCOPED SHAPE (per
+// `tests/semb_wb_witness_abi_contract.h`'s own header comment): (a) the
+// achievement cell, `semb_wb_digest(enc, ...)` equals the independent
+// recomputation below, over the SAME model and tokenizer `enc` was opened
+// on; (b) two calls on ONE handle agree (determinism within a process);
+// (c) two handles opened on the SAME artifacts agree (the value is a
+// function of the artifacts, not of the handle's own identity or open
+// order); (d) a caller's own `semb_encode_batch` calls, with arbitrary
+// ids, are INERT to it (TE-96 sec 4.7's must-accept). Plus the three
+// calling-convention preconditions the amended shape adds: NULL `enc`,
+// a non-live `enc` cookie, and NULL `out_digest`.
 //
 // USAGE: --model <.sslm> --tokenizer <.sslm> --dims <n>
 #include <cstdint>
@@ -79,6 +95,11 @@ void Missing(const std::string& cell, const std::string& why) {
 }
 const char* Name(semb_status s) { const char* n = semb_status_name(s); return n ? n : "<NULL>"; }
 bool Is(semb_status s, const char* name) { return s == semb_contract::StatusByName(name); }
+bool AllBytesEqual(const uint8_t bytes[32], uint8_t value) {
+  for (int i = 0; i < 32; ++i)
+    if (bytes[i] != value) return false;
+  return true;
+}
 
 struct Args {
   std::string model, tokenizer, corpus;
@@ -254,6 +275,39 @@ int main(int argc, char** argv) {
   }
   Verdict(true, "(setup) the committed W-B corpus loads as exactly 16 documents", a.corpus);
 
+  // ---- Preconditions the amended handle-scoped shape adds (TE-151 item 1;
+  // `tests/semb_wb_witness_abi_contract.h`'s own header states these three
+  // dispositions as fact, "out_digest untouched" included -- checked here,
+  // not merely described, per this suite's own sentinel-fill convention,
+  // e.g. `tests/u1_raw_text_contract_test.cpp` K-02b/K-02d). The precedence
+  // pattern (NULL enc checked before a live-handle requirement, a closed
+  // cookie distinct from NULL) matches the rest of this surface, e.g.
+  // `tests/u1_batch_contract_test.cpp`'s own step1/step2 split. ----
+  {
+    uint8_t out[32];
+    std::memset(out, 0xA5, sizeof(out));
+    const semb_status s1 = semb_wb_digest(nullptr, out);
+    Verdict(Is(s1, "SEMB_NULL_ARGUMENT") && AllBytesEqual(out, 0xA5),
+            "(precondition) enc == NULL -> SEMB_NULL_ARGUMENT, out_digest untouched", Name(s1));
+
+    semb_encoder closed = Open(a);
+    if (closed) {
+      semb_encoder_close(closed);
+      std::memset(out, 0xA5, sizeof(out));
+      const semb_status s2 = semb_wb_digest(closed, out);
+      Verdict(Is(s2, "SEMB_INVALID_HANDLE") && AllBytesEqual(out, 0xA5),
+              "(precondition) a closed (non-live) cookie -> SEMB_INVALID_HANDLE, out_digest untouched",
+              Name(s2));
+    }
+
+    semb_encoder live = Open(a);
+    if (live) {
+      const semb_status s3 = semb_wb_digest(live, nullptr);
+      Verdict(Is(s3, "SEMB_NULL_ARGUMENT"), "(precondition) out_digest == NULL -> SEMB_NULL_ARGUMENT", Name(s3));
+      semb_encoder_close(live);
+    }
+  }
+
   // ---- Mutation-proof of THIS FILE'S OWN oracle (Curie's "pin the
   // documented claim" discipline): the recomputation must actually be
   // sensitive to corpus content, or the comparison below is vacuous. ----
@@ -275,41 +329,69 @@ int main(int argc, char** argv) {
     }
   }
 
-  // ---- The achievement cell: semb_wb_digest() equals the independent
-  // recomputation over the committed corpus. ----
+  // ---- The achievement cell (property a): semb_wb_digest(enc, ...) equals
+  // the independent recomputation over the committed corpus, for a handle
+  // opened on the same model and tokenizer the recomputation reads.
+  // Property (b), determinism, is two calls on this SAME handle; property
+  // (c), cross-handle agreement, opens a SECOND handle on the identical
+  // artifacts and compares. All three share one setup, since all three
+  // need the achievement value to compare against. ----
   {
     uint8_t expected[32];
     std::string why_expected;
     if (!ComputeExpectedWbDigest(a.model, a.tokenizer, corpus, expected, &why_expected)) {
-      Missing("W-B semb_wb_digest() equals the independent corpus-witness recomputation", why_expected);
+      Missing("W-B semb_wb_digest(enc, ...) equals the independent corpus-witness recomputation", why_expected);
     } else {
-      uint8_t actual[32];
-      semb_wb_digest(actual);
-      Verdict(std::memcmp(expected, actual, 32) == 0,
-              "W-B semb_wb_digest() equals the independent recomputation of sec 4.4b's own formula over "
-              "the committed 16-document corpus (achievement claim: the wiring reads the REAL corpus, not "
-              "kWbPendingSentinel)",
-              "expected=" + Hex(expected) + " actual=" + Hex(actual));
+      semb_encoder enc1 = Open(a);
+      if (enc1) {
+        uint8_t actual[32];
+        const semb_status sa = semb_wb_digest(enc1, actual);
+        Verdict(Is(sa, "SEMB_OK") && std::memcmp(expected, actual, 32) == 0,
+                "(a) W-B semb_wb_digest(enc, ...) equals the independent recomputation of sec 4.4b's own "
+                "formula over the committed 16-document corpus, for a handle opened on the same model and "
+                "tokenizer (achievement claim: the wiring reads the REAL corpus, not kWbPendingSentinel)",
+                std::string(Name(sa)) + " expected=" + Hex(expected) + " actual=" + Hex(actual));
 
-      // Determinism: two calls in the same process agree (D-SLM3978: no
-      // cache, but re-execution must be stable within one process, since
-      // the corpus and the artifact are both fixed).
-      uint8_t again[32];
-      semb_wb_digest(again);
-      Verdict(std::memcmp(actual, again, 32) == 0,
-              "W-B semb_wb_digest() is deterministic across two calls in the same process", Hex(again));
+        // (b) Determinism: two calls on ONE handle agree (D-SLM3978: no
+        // cache, but re-execution must be stable within one process, since
+        // the corpus and the artifact are both fixed).
+        uint8_t again[32];
+        const semb_status sb = semb_wb_digest(enc1, again);
+        Verdict(Is(sb, "SEMB_OK") && std::memcmp(actual, again, 32) == 0,
+                "(b) W-B semb_wb_digest is deterministic across two calls on ONE handle",
+                std::string(Name(sb)) + " " + Hex(again));
+
+        // (c) Cross-handle agreement: a SECOND handle opened on the
+        // identical artifacts computes the identical value -- the digest
+        // is a function of the artifacts, not of the handle's own
+        // identity, open order, or any per-handle state.
+        semb_encoder enc2 = Open(a);
+        if (enc2) {
+          uint8_t second_handle[32];
+          const semb_status sc = semb_wb_digest(enc2, second_handle);
+          Verdict(Is(sc, "SEMB_OK") && std::memcmp(actual, second_handle, 32) == 0,
+                  "(c) W-B semb_wb_digest agrees across TWO handles independently opened on the same "
+                  "model and tokenizer",
+                  std::string(Name(sc)) + " " + Hex(second_handle));
+          semb_encoder_close(enc2);
+        }
+        semb_encoder_close(enc1);
+      }
     }
   }
 
-  // ---- Id-inertness (TE-96 sec 4.7 must-accept): a CALLER's own
+  // ---- (d) Id-inertness (TE-96 sec 4.7 must-accept): a CALLER's own
   // semb_encode_batch calls, with arbitrary/permuted ids on UNRELATED
   // documents, never perturb the internal, compiled-in W-B corpus digest --
-  // the caller's batch calls and the fixed witness corpus are independent. ----
+  // the caller's batch calls and the fixed witness corpus are independent.
+  // Both readings are taken on the SAME handle, matching the shape every
+  // other call this file makes to the accessor. ----
   {
     semb_encoder enc = Open(a);
     if (enc) {
       uint8_t before[32];
-      semb_wb_digest(before);
+      const semb_status sd0 = semb_wb_digest(enc, before);
+      Verdict(Is(sd0, "SEMB_OK"), "(d, setup) semb_wb_digest(enc, ...) before the caller's batch calls", Name(sd0));
 
       std::vector<std::pair<std::string, std::string>> perm1 = {{"zeta", "unrelated document one"},
                                                                   {"alpha", "unrelated document two"}};
@@ -334,12 +416,12 @@ int main(int argc, char** argv) {
       }
 
       uint8_t after[32];
-      semb_wb_digest(after);
-      Verdict(std::memcmp(before, after, 32) == 0,
-              "W-B-inertness ids are inert: two caller batch calls with different id permutations on "
+      const semb_status sd1 = semb_wb_digest(enc, after);
+      Verdict(Is(sd1, "SEMB_OK") && std::memcmp(before, after, 32) == 0,
+              "(d) W-B-inertness ids are inert: two caller batch calls with different id permutations on "
               "unrelated documents leave the internal committed-corpus witness digest UNCHANGED "
               "(TE-96 sec 4.7 must-accept)",
-              "before=" + Hex(before) + " after=" + Hex(after));
+              std::string(Name(sd1)) + " before=" + Hex(before) + " after=" + Hex(after));
       semb_encoder_close(enc);
     }
   }

@@ -1,44 +1,74 @@
-// tests/semb_wb_witness_abi_contract.h -- TE-145 (U1 slice 2): the test
-// author's own pin of a diagnostic accessor for W-B's corpus digest, in the
-// same shape `include/superembedder/witness_abi.h` already exposes for W-A
-// (`void semb_wa_digest(uint8_t out_digest[32]);`, TE-78, already compiled
-// into the library and already called by both `src/superembedder/encoder.cpp`
-// and `src/witness/witness_main.cpp`).
+// tests/semb_wb_witness_abi_contract.h -- TE-145 (U1 slice 2), AMENDED
+// TE-151 (fix round): the test author's own pin of a diagnostic accessor
+// for W-B's corpus digest, in the same PURPOSE `include/superembedder/
+// witness_abi.h` already serves for W-A (`void semb_wa_digest(uint8_t
+// out_digest[32]);`, TE-78, already compiled into the library and already
+// called by both `src/superembedder/encoder.cpp` and
+// `src/witness/witness_main.cpp`) -- but NOT the same SHAPE, and the
+// reason is stated here rather than assumed (routed at TE-145 sec 13 as
+// this seat's own item to close; TE-151 item 1).
 //
-// WHY THIS ACCESSOR IS NEEDED, STATED RATHER THAN ASSUMED. `witness_sha`
-// (one of `encoder_fingerprint`'s five fields) is SHA-256 over
-// `W-A digest || W-B digest || W-Q digest` (`Claude/Plans/SuperEmbedder_Plan.md`
-// sec 4.4b) and is itself only reachable through the OPAQUE, top-level
-// `encoder_fingerprint` a caller receives from `semb_encode`/`semb_encode_batch`
-// -- there is no public accessor that decomposes a fingerprint back into its
-// five fields, let alone `witness_sha`'s own three sub-components. A cell
-// that wants to assert "wb_sha is the real corpus witness, not
-// `kWbPendingSentinel`" therefore needs SOME way to observe W-B's own 32-byte
-// value directly, exactly the problem W-A already solved for itself with
-// `semb_wa_digest`. This header specifies the identical shape for W-B: a
-// diagnostic, non-ABI-frozen C symbol (sec 3.1's twelve-verb freeze,
-// D-SLM4646, does not cover it, the same way it does not cover
-// `semb_wa_digest`, `semb_seam_serialize_document` or
-// `semb_encode_document_for_witness` -- none of the four is in the frozen
-// twelve) that the WITNESS EXECUTABLE and `ComputeProvisionalFingerprint`
-// (`src/superembedder/encoder.cpp`) both call, so a test calling it observes
-// the SAME value the library actually hashed into `witness_sha`, not a
-// second, independently-implemented copy of the corpus-witness computation
-// that could silently drift from what `semb_encoder_open` really does.
+// WHY A BARE ACCESSOR IS WRONG FOR W-B, WHERE IT IS RIGHT FOR W-A. W-A is
+// model-independent: it drives the arithmetic primitives over a fixed
+// synthetic population and a compiled-in splitmix64 seed, so a call with
+// no argument is well-defined -- there is nothing for it to read. W-B is
+// NOT: `Claude/Plans/SuperEmbedder_Plan.md` sec 4.4b defines it as the
+// seam serialisation of the sixteen committed documents ENCODED ON THE
+// ARTIFACT `model_sha` NAMES, tokenized through THAT ARTIFACT'S OWN
+// tokenizer, with THAT ARTIFACT'S OWN resolved end-token id appended --
+// and sec 3.1 places its derivation inside `semb_encoder_open`, from the
+// bytes that handle read once (sec 3.3's one-read rule). A bare
+// `void semb_wb_digest(uint8_t[32])` has no model, no tokenizer and no
+// end-token id to compute from; the only ways to give it one without a
+// handle argument are exactly the constructions sec 3.3's producer-
+// identity rule and sec 4.4b's D-SLM3978 no-cache rule forbid: a
+// compiled-in artifact path, a process-global "last opened handle", or a
+// second read of a file another field was derived from. This header's
+// first version (TE-145) specified the W-A shape verbatim and missed
+// this; this round amends it to be HANDLE-SCOPED instead.
+//
+// THE SHAPE: `semb_status semb_wb_digest(semb_encoder enc, uint8_t
+// out_digest[32])`, refusing like the rest of the surface rather than
+// inventing a construction sec 3.3 forbids:
+//   - `enc == NULL`               -> SEMB_NULL_ARGUMENT
+//   - `enc` names no live handle  -> SEMB_INVALID_HANDLE
+//   - `out_digest == NULL`        -> SEMB_NULL_ARGUMENT
+//   - else: writes the 32 bytes and returns SEMB_OK
+//
+// STATED AS FACT, THE BUILDER'S OWN OBLIGATION AND THIS HEADER'S OWN
+// CLAIM: the same handle-derived value this accessor returns for a given
+// live `enc` IS the value `ComputeProvisionalFingerprint`
+// (`src/superembedder/encoder.cpp`) hashes into that handle's own
+// `witness_sha`, in place of the literal `kWbPendingSentinel` it hashes
+// today. Whether the builder recomputes it fresh on every call or returns
+// the value the handle already derived at `semb_encoder_open` is the
+// builder's own mechanism, not this header's concern (D-SLM3978's no-
+// cache rule binds the FINGERPRINT derivation, not how many times this
+// diagnostic accessor happens to be called against an already-open
+// handle) -- what the cells below pin is only the properties any correct
+// mechanism must have.
 //
 // Per this seat's own brief ("where a cell needs a library entry the
-// product does not yet expose, specify it in a test-side contract header and
-// name it in the handoff -- the builder owns the mechanism, the cell owns
-// the claim"): `semb_wb_digest` is not defined anywhere in `superembedder`
-// yet (confirmed: `git grep -n semb_wb_digest src/ include/` at this
-// branch's own base `c0f52d4` returns nothing). Every test that includes
-// this header and calls it fails to LINK until the builder's round adds it,
-// wiring it to drive `semb_encode_document_for_witness` +
-// `semb_seam_serialize_document` (both ALREADY built, TE-63) over the
-// sixteen committed W-B documents (`tests/fixtures/wb/wb-corpus.jsonl`,
-// this same round) exactly the way `semb_wa_digest` already drives W-A's
-// own population, and to replace `kWbPendingSentinel` in
-// `ComputeProvisionalFingerprint` with this same value.
+// product does not yet expose, specify it in a test-side contract header
+// and name it in the handoff -- the builder owns the mechanism, the cell
+// owns the claim"): `semb_wb_digest` is not defined anywhere in
+// `superembedder` yet under EITHER shape (confirmed: `git grep -n
+// semb_wb_digest src/ include/` at this branch's own tip returns
+// nothing). Every test that includes this header and calls it fails to
+// LINK until the builder's round adds it, wiring it to drive
+// `semb_encode_document_for_witness` + `semb_seam_serialize_document`
+// (both ALREADY built, TE-63) over the handle's own sixteen committed W-B
+// documents (`tests/fixtures/wb/wb-corpus.jsonl`, TE-145) exactly the way
+// `semb_wa_digest` already drives W-A's own population, and to replace
+// `kWbPendingSentinel` in `ComputeProvisionalFingerprint` with this same
+// value.
+//
+// SYMBOLS THIS HEADER USES BUT DOES NOT DECLARE: `semb_status` and
+// `semb_encoder`, exactly the convention `tests/semb_batch_abi_contract.h`
+// already establishes ("nothing here redeclares semb_encoder_open/
+// _close/_dims/semb_encode/semb_status_name or the semb_status enum") --
+// a TU that includes this header includes `tests/semb_public_abi_contract.h`
+// FIRST, which owns both types.
 #ifndef SEMB_WB_WITNESS_ABI_CONTRACT_H
 #define SEMB_WB_WITNESS_ABI_CONTRACT_H
 
@@ -46,17 +76,20 @@
 
 extern "C" {
 
-// Writes W-B's own 32-byte digest -- SHA-256 over the committed sixteen-
-// document corpus's seam serialisation, `u64(document_count)` first, then
-// each document's own `semb_seam_serialize_document` stream in committed
-// order (`Claude/Plans/SuperEmbedder_Plan.md` sec 4.4b's own per-document
-// layout, wrapped exactly as that section's prose states: "across the
-// corpus, u64(document_count) then each document's stream in committed
-// order"). Computed in the calling process, freshly, on every call
-// (D-SLM3978: no cache, the digest is re-executed, never read from a stored
-// value) -- the same "computed by the process that is about to emit
-// vectors, in that process" rule sec 4.4b states for the whole witness.
-void semb_wb_digest(uint8_t out_digest[32]);
+// Writes W-B's own 32-byte digest for the artifacts `enc` was opened on --
+// SHA-256 over the committed sixteen-document corpus's seam serialisation,
+// `u64(document_count)` first, then each document's own
+// `semb_seam_serialize_document` stream in committed order
+// (`Claude/Plans/SuperEmbedder_Plan.md` sec 4.4b's own per-document
+// layout: "across the corpus, u64(document_count) then each document's
+// stream in committed order"), each document tokenized through `enc`'s
+// OWN tokenizer with `enc`'s OWN resolved end-token id appended.
+//
+//   enc == NULL                  -> SEMB_NULL_ARGUMENT, out_digest untouched
+//   enc names no live handle     -> SEMB_INVALID_HANDLE, out_digest untouched
+//   out_digest == NULL           -> SEMB_NULL_ARGUMENT
+//   else                         -> the 32 bytes written, SEMB_OK
+semb_status semb_wb_digest(semb_encoder enc, uint8_t out_digest[32]);
 
 }  // extern "C"
 
