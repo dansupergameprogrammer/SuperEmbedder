@@ -5,8 +5,11 @@
 #include "superembedder/semb.h"
 
 #include "superembedder/encoder_interim_abi.h"
+#include "superembedder/seam_abi.h"
 #include "superembedder/witness_abi.h"
+#include "superembedder/wb_digest_abi.h"
 #include "encoder_open_internal.h"
+#include "wb_corpus.h"
 
 #include <array>
 #include <atomic>
@@ -20,6 +23,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -39,6 +43,13 @@ struct semb_encoder_s {
   uint32_t context_cap = 0;
   size_t chunk_budget = 0;
   std::array<uint8_t, 32> fingerprint{};
+  // W-B's own digest for this handle's artifacts, derived once at open (see
+  // ComputeWbDigest's own comment) and returned by semb_wb_digest without a
+  // second computation -- D-SLM3978's no-cache rule binds the FINGERPRINT
+  // derivation (no re-read of a file another field derived from), not how
+  // many times a diagnostic accessor is called against an already-open
+  // handle (witness_abi.h's own semb_wb_digest comment).
+  std::array<uint8_t, 32> wb_digest{};
   std::atomic<uint32_t> active_calls{0};
 
   ~semb_encoder_s() {
@@ -51,7 +62,11 @@ namespace {
 constexpr char kQueryPrefix[] =
     "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:";
 constexpr char kCanonicalEndToken[] = "<|endoftext|>";
-constexpr char kWbPendingSentinel[] = "SEMB-W-B-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
+// W-B's own sentinel retired, TE-147: ComputeProvisionalFingerprint now
+// takes a real, handle-derived wb_digest (ComputeWbDigest, below) instead
+// of hashing a placeholder literal. W-Q is still out of this slice's own
+// scope (SuperEmbedder_Plan.md sec 4.4c: "specification, probe-proven, not
+// yet built") and keeps its sentinel.
 constexpr char kWqPendingSentinel[] = "SEMB-W-Q-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
 constexpr char kCertificationPendingSentinel[] =
     "SEMB-CERTIFIED-BUILDS-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
@@ -158,14 +173,95 @@ std::array<uint8_t, 32> ComputeTemplateDigest() {
   return out;
 }
 
+// TE-147 (U1 slice 2 build): W-B's own real digest, replacing the literal
+// kWbPendingSentinel this function used to hash. Drives the SAME compiled-
+// in library primitives semb_wa_digest already uses the pattern of
+// (`Claude/Plans/SuperEmbedder_Plan.md` sec 4.4b): tokenize each of the
+// sixteen compiled-in W-B documents through THIS handle's own tokenizer,
+// append THIS handle's own resolved end-token id, run the real forward via
+// the seam (position 0 included, pre-final-norm -- semb_interim_encode_seam
+// already produces exactly this), serialise via semb_seam_serialize_document
+// (TE-63, byte-exact per w_b_serialization_test.cpp), concatenate
+// u64(document_count) first then each document's stream in committed
+// order, and SHA-256 the whole thing with the engine's own portable
+// routine -- "the same routine model_sha uses, so the fingerprint contains
+// one hash function and not two" (sec 4.4b). Called once, from
+// semb_encoder_open, AFTER the interim encoder has opened (the forward
+// needs it) and the tokenizer's own end-token id has resolved -- BEFORE the
+// handle is inserted into the registry, so this is not reachable through
+// the public semb_wb_digest() accessor while it runs.
+//
+// Returns false on an engine refusal from the real forward, OR when a
+// document's own tokenized length would exceed the artifact's context_cap
+// (checked explicitly, below -- the workspace K/V store is sized from
+// context_cap at open, sec 3.1's own "K/V pool ... sized once from the
+// artifact's own geometry"; the seam call below does not itself bound n
+// against it, so an uncapped call here would write past that allocation
+// rather than refuse cleanly). Against the real candidate this never
+// fires: the sixteen documents are short prose and the candidate's own
+// context_cap (32,768) leaves enormous headroom. It is a REAL, reachable
+// refusal against a small synthetic artifact whose tokenizer has few
+// merges (near byte-level): found by execution against this project's own
+// mechanism fixture, not reasoned from the real candidate's numbers alone
+// (StandardsDocument.md sec 5.4). A caller maps a false return to
+// SEMB_ENGINE_REFUSED, the same status every other mid-open engine
+// failure already uses -- no existing status names "this artifact's
+// context window cannot fit the compiled-in witness corpus", and minting
+// one is outside this round's own authorized status additions.
+bool ComputeWbDigest(SembInterimEncoder* interim, const superslm::TokenizerView& tokenizer,
+                     uint32_t hidden_size, uint32_t context_cap,
+                     std::array<uint8_t, 32>* out_digest) {
+  std::vector<uint8_t> stream;
+  auto put_u64 = [](std::vector<uint8_t>* buf, uint64_t v) {
+    for (int i = 0; i < 8; ++i) buf->push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xFF));
+  };
+  put_u64(&stream, static_cast<uint64_t>(semb::kWbCorpusDocumentCount));
+  for (size_t doc_i = 0; doc_i < semb::kWbCorpusDocumentCount; ++doc_i) {
+    const semb::WbCorpusDocument& doc = semb::kWbCorpusDocuments[doc_i];
+    const std::vector<int32_t> content_ids =
+        tokenizer.Encode(std::string_view(doc.text, doc.text_len));
+    const size_t n = content_ids.size() + 1;  // the appended end token
+    if (n > context_cap) return false;
+    const size_t hidden = hidden_size;
+    std::vector<int8_t> codes(n * hidden);
+    std::vector<int64_t> m(n), e(n);
+    size_t positions = 0;
+    const char* engine_status = nullptr;
+    const SembInterimStatus st = semb_interim_encode_seam(
+        interim, content_ids.data(), content_ids.size(), /*chunk_budget=*/0,
+        kSembForwardLegChunkBatched, codes.data(), codes.size(), m.data(), e.data(), n,
+        &positions, &engine_status);
+    if (st != kSembInterimOk) return false;
+
+    std::vector<uint8_t> doc_buf(16 + n * (hidden + 16));
+    size_t doc_len = 0;
+    const SembSerializeStatus sst = semb_seam_serialize_document(
+        codes.data(), m.data(), e.data(), n, hidden, doc_buf.data(), doc_buf.size(), &doc_len);
+    if (sst != kSembSerializeOk) return false;
+    stream.insert(stream.end(), doc_buf.begin(), doc_buf.begin() + doc_len);
+  }
+  superslm::Sha256 hash;
+  hash.Update(stream.data(), stream.size());
+  hash.Final(out_digest->data());
+  return true;
+}
+
+// model_sha and tokenizer_sha are computed by the CALLER, from the exact
+// owned buffers semb_encoder_open reads once (sec 3.3's one-read rule) --
+// BEFORE model_bytes is moved into the interim encoder's own open, which
+// must happen before W-B's own forward can run. wb_digest is
+// ComputeWbDigest's own output, likewise computed by the caller once the
+// interim encoder and the tokenizer's resolved end-token id are both
+// available (sec 3.1: "derives all five fingerprint fields ... runs the
+// witness", moved here from before the interim open per this round's own
+// open-sequence change).
 std::array<uint8_t, 32> ComputeProvisionalFingerprint(
-    const std::vector<uint8_t>& model_bytes,
-    const std::vector<uint8_t>& tokenizer_bytes) {
-  uint8_t model_sha[32], tokenizer_sha[32], wa_sha[32], wb_sha[32], wq_sha[32];
-  Hash(model_bytes.data(), model_bytes.size(), model_sha);
-  Hash(tokenizer_bytes.data(), tokenizer_bytes.size(), tokenizer_sha);
+    const uint8_t model_sha[32], const uint8_t tokenizer_sha[32],
+    const std::array<uint8_t, 32>& wb_digest) {
+  uint8_t wa_sha[32], wq_sha[32];
+  uint8_t wb_sha[32];
   semb_wa_digest(wa_sha);
-  Hash(kWbPendingSentinel, sizeof(kWbPendingSentinel) - 1, wb_sha);
+  std::memcpy(wb_sha, wb_digest.data(), 32);
   Hash(kWqPendingSentinel, sizeof(kWqPendingSentinel) - 1, wq_sha);
 
   uint8_t witness_sha[32];
@@ -325,8 +421,17 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
     // were successfully read but cannot form an engine artifact.
     if (model_bytes.empty()) return SEMB_ENGINE_REFUSED;
 
-    handle->fingerprint =
-        ComputeProvisionalFingerprint(model_bytes, handle->tokenizer_bytes);
+    // model_sha/tokenizer_sha: computed from the exact owned buffers NOW,
+    // before model_bytes is moved into the interim open below (sec 3.3's
+    // one-read rule -- each artifact digested from the same buffer that
+    // backs the handle, never a second read). The REST of the fingerprint
+    // (witness_sha, which needs W-B's own real forward) is derived further
+    // down, once the interim encoder has opened (TE-147: "the open
+    // sequence moves the derivation after step 8 of sec 3.1's open table
+    // without changing the first refusal a caller sees").
+    uint8_t model_sha[32], tokenizer_sha[32];
+    Hash(model_bytes.data(), model_bytes.size(), model_sha);
+    Hash(handle->tokenizer_bytes.data(), handle->tokenizer_bytes.size(), tokenizer_sha);
 
     const uint32_t max_concurrency = cfg->max_concurrency == 0 ? 1 : cfg->max_concurrency;
     SembInterimEncoder* interim = nullptr;
@@ -348,6 +453,18 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
     if (semb_interim_encoder_geometry(interim, &geometry) != kSembInterimOk) {
       return SEMB_ENGINE_REFUSED;
     }
+
+    // W-B: the real forward over the sixteen compiled-in documents, now
+    // that the interim encoder is open and the tokenizer's own resolved
+    // end-token id is known. Folded into witness_sha below, replacing the
+    // literal kWbPendingSentinel this open used to hash.
+    std::array<uint8_t, 32> wb_digest{};
+    if (!ComputeWbDigest(interim, tokenizer, geometry.hidden_size, geometry.context_cap, &wb_digest)) {
+      return SEMB_ENGINE_REFUSED;
+    }
+
+    handle->fingerprint = ComputeProvisionalFingerprint(model_sha, tokenizer_sha, wb_digest);
+    handle->wb_digest = wb_digest;
 
     handle->interim = interim_guard.release();
     handle->tokenizer_artifact = std::move(tokenizer_artifact);
@@ -445,6 +562,162 @@ extern "C" semb_status semb_encode(semb_encoder enc, const char* utf8, size_t ut
     *out_required_bytes = interim_required;
     std::memcpy(out_fingerprint->digest, lease.get()->fingerprint.data(),
                 lease.get()->fingerprint.size());
+    return SEMB_OK;
+  } catch (const std::bad_alloc&) {
+    return SEMB_ALLOCATION_FAILED;
+  } catch (const std::length_error&) {
+    return SEMB_ALLOCATION_FAILED;
+  } catch (...) {
+    return SEMB_ENGINE_REFUSED;
+  }
+}
+
+// TE-147 (U1 slice 2 build): W-B's own diagnostic accessor
+// (`include/superembedder/witness_abi.h`; the contract of record is
+// `tests/semb_wb_witness_abi_contract.h`, AMENDED TE-151 to this
+// handle-scoped shape). The value is derived once, at semb_encoder_open,
+// and simply returned here -- D-SLM3978's no-cache rule binds the
+// FINGERPRINT derivation (no re-read of a file another field was derived
+// from), not how many times this accessor is called against an
+// already-open handle.
+extern "C" semb_status semb_wb_digest(semb_encoder enc, uint8_t out_digest[32]) {
+  if (!enc) return SEMB_NULL_ARGUMENT;
+  HandleLease lease(enc);
+  if (!lease.get()) return SEMB_INVALID_HANDLE;
+  if (!out_digest) return SEMB_NULL_ARGUMENT;
+  std::memcpy(out_digest, lease.get()->wb_digest.data(), lease.get()->wb_digest.size());
+  return SEMB_OK;
+}
+
+// TE-147 (U1 slice 2 build): the bake-side corpus entry
+// (`Claude/Plans/SuperEmbedder_Plan.md` sec 3.1; the ratified contract is
+// `Claude/Fable/te96-u1-contract-closure-2026-09-05.md` sec 4.2, quoted by
+// step number throughout this function). Validation is shape-before-
+// content-before-work, completed before any forward; nothing is written to
+// `out_rows` on any non-SEMB_OK return; `*out_required_bytes` is written on
+// exactly SEMB_OK and SEMB_BUFFER_TOO_SMALL.
+extern "C" semb_status semb_encode_batch(semb_encoder enc, const semb_document* docs, size_t n,
+                                          float* out_rows, size_t out_capacity_bytes,
+                                          size_t* out_required_bytes) {
+  // Step 1: enc==NULL, out_required_bytes==NULL, or docs==NULL && n>0 (P-8's
+  // span rule on the array) -> SEMB_NULL_ARGUMENT. Checked before the
+  // handle needs to be live, matching the table's own step ordering.
+  if (!enc || !out_required_bytes || (!docs && n > 0)) return SEMB_NULL_ARGUMENT;
+  try {
+    HandleLease lease(enc);
+    // Step 2: enc not a live cookie -> SEMB_INVALID_HANDLE.
+    if (!lease.get()) return SEMB_INVALID_HANDLE;
+    semb_encoder_s* h = lease.get();
+
+    // Step 3: n == 0 (whatever docs is) -> SEMB_CORPUS_EMPTY.
+    if (n == 0) return SEMB_CORPUS_EMPTY;
+    // Step 4: n > kSembMaxCorpusRows (1u << 28, FORMAT.md's kMaxBankRows),
+    // checked BEFORE the multiplication -- so an oversized n with a
+    // deliberately non-dereferenceable docs pointer refuses cleanly rather
+    // than touching docs[0] or overflowing the size computation below.
+    constexpr size_t kMaxCorpusRows = size_t{1} << 28;
+    if (n > kMaxCorpusRows) return SEMB_CORPUS_TOO_LARGE;
+
+    // Step 5: required = n * dims * 4, computed using the handle's actual
+    // uint32 dimensions. n <= 2^28 (step 4) and dims <= 2^32-1, so
+    // n * dims * 4 <= 2^28 * (2^32-1) * 4 < 2^62, which fits uint64
+    // unconditionally; the size_t conversion is still checked so a build
+    // where size_t is narrower than 62 bits refuses by name rather than
+    // silently truncating.
+    const uint64_t required64 =
+        static_cast<uint64_t>(n) * static_cast<uint64_t>(h->dims) * 4ull;
+    if (required64 > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+      return SEMB_CORPUS_TOO_LARGE;
+    }
+    const size_t required = static_cast<size_t>(required64);
+
+    // Step 6: out_rows != NULL and not 16-byte aligned -> MISALIGNED_BUFFER,
+    // checked BEFORE step 7's capacity so a generously-sized-but-misaligned
+    // buffer refuses for the right reason.
+    if (out_rows && (reinterpret_cast<uintptr_t>(out_rows) & 15u) != 0) {
+      return SEMB_MISALIGNED_BUFFER;
+    }
+    // Step 7: out_capacity_bytes < required -> BUFFER_TOO_SMALL, required
+    // stated. The query form (NULL, 0) lands here.
+    if (out_capacity_bytes < required) {
+      *out_required_bytes = required;
+      return SEMB_BUFFER_TOO_SMALL;
+    }
+    // Step 8: out_rows == NULL with sufficient capacity -> NULL_ARGUMENT,
+    // distinct from the query form above (which has capacity 0).
+    if (!out_rows) return SEMB_NULL_ARGUMENT;
+
+    // Step 9: per document, in index order, the first failing document's
+    // first failing check. Stops at the FIRST document that fails any
+    // check; later documents (even invalid ones) are never examined.
+    for (size_t i = 0; i < n; ++i) {
+      const semb_document& d = docs[i];
+      if (d.struct_size != sizeof(semb_document)) return SEMB_STRUCT_SIZE_MISMATCH;
+      if (!d.id && d.id_len > 0) return SEMB_NULL_ARGUMENT;
+      if (!d.utf8 && d.utf8_len > 0) return SEMB_NULL_ARGUMENT;
+      if (d.id_len == 0) return SEMB_DOCUMENT_ID_INVALID;
+      if (std::memchr(d.id, '\0', d.id_len) != nullptr) return SEMB_DOCUMENT_ID_INVALID;
+      if (!ValidUtf8(d.id, d.id_len)) return SEMB_DOCUMENT_ID_INVALID;
+      if (d.utf8_len == 0) return SEMB_INPUT_EMPTY;
+      if (!ValidUtf8(d.utf8, d.utf8_len)) return SEMB_INVALID_UTF8;
+    }
+
+    // Step 10: uniqueness over ALL n ids, byte identity (sec 4.3: no
+    // normalization, no case folding) -> DOCUMENT_ID_DUPLICATE. Reached
+    // only once every document has individually passed step 9.
+    {
+      std::unordered_set<std::string_view> seen;
+      seen.reserve(n);
+      for (size_t i = 0; i < n; ++i) {
+        if (!seen.emplace(std::string_view(docs[i].id, docs[i].id_len)).second) {
+          return SEMB_DOCUMENT_ID_DUPLICATE;
+        }
+      }
+    }
+
+    // Step 11: tokenize EVERY document (up to the first cap violation), per
+    // document content + 1 > context_cap -> CONTEXT_CAP_EXCEEDED. All rows
+    // tokenized before any forward, so a later bad document leaves an
+    // earlier good one unwritten too.
+    std::vector<std::vector<int32_t>> content_ids(n);
+    for (size_t i = 0; i < n; ++i) {
+      content_ids[i] = h->tokenizer.Encode(std::string_view(docs[i].utf8, docs[i].utf8_len));
+      // Defensive, matching the raw path's own equivalent check: zero
+      // content ids is unreachable for byte-level BPE over a non-empty
+      // span (utf8_len > 0 already established by step 9).
+      if (content_ids[i].empty()) return SEMB_INPUT_EMPTY;
+      if (content_ids[i].size() >= h->context_cap) return SEMB_CONTEXT_CAP_EXCEEDED;
+    }
+
+    // Steps 12-13: one workspace for the whole call; forward each row into
+    // staged storage; any runtime refusal discards the stage entirely
+    // (out_rows is only ever written on full success, step 14).
+    std::vector<float> staged(n * static_cast<size_t>(h->dims));
+    std::vector<const int32_t*> doc_ptrs(n);
+    std::vector<size_t> doc_lens(n);
+    for (size_t i = 0; i < n; ++i) {
+      doc_ptrs[i] = content_ids[i].data();
+      doc_lens[i] = content_ids[i].size();
+    }
+
+    SembWaPoolStatus dequantize = kSembOk;
+    const char* engine_status = nullptr;
+    size_t failed_index = 0;
+    size_t batch_required = 0;
+    const SembInterimStatus batch_status = semb_interim_encode_batch_ps_n(
+        h->interim, doc_ptrs.data(), doc_lens.data(), n, h->chunk_budget, staged.data(),
+        staged.size() * sizeof(float), &batch_required, &failed_index, &dequantize,
+        &engine_status);
+    (void)engine_status;
+    (void)failed_index;  // D-SLM4653: the enum name is the whole diagnosis (sec 4.2's own note)
+    if (batch_status != kSembInterimOk) {
+      return MapInterimStatus(batch_status, dequantize);
+    }
+
+    // Step 14: copy all rows to out_rows (contiguous, row-major, stride
+    // dims * 4, no padding, input order); *out_required_bytes = required.
+    std::memcpy(out_rows, staged.data(), required);
+    *out_required_bytes = required;
     return SEMB_OK;
   } catch (const std::bad_alloc&) {
     return SEMB_ALLOCATION_FAILED;
