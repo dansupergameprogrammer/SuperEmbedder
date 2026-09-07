@@ -127,6 +127,15 @@ struct Args {
   std::string model, tokenizer;
   unsigned dims = 0;
   size_t context_cap = 0;
+  // TE-155 item 3: step11's own construction is a single document whose
+  // tokenized length approaches context_cap (the K-12a shape) -- against
+  // the real candidate (context_cap 32768) this is a genuine, expensive
+  // O(n^2)-in-position-count forward, observed to run 6h41m when TE-120
+  // executed the identical construction in the raw-text suite (D-SLM6326,
+  // credited). --skip-step11 excludes ONLY this one cell so the rest of
+  // the real leg can run to completion in this round; the excluded cell is
+  // owed to a detached run the conductor schedules separately.
+  bool skip_step11 = false;
 };
 
 Args ParseArgs(int argc, char** argv) {
@@ -138,6 +147,7 @@ Args ParseArgs(int argc, char** argv) {
     else if (k == "--tokenizer") next(&a.tokenizer);
     else if (k == "--dims") { std::string v; next(&v); a.dims = static_cast<unsigned>(std::atoi(v.c_str())); }
     else if (k == "--context-cap") { std::string v; next(&v); a.context_cap = static_cast<size_t>(std::atoll(v.c_str())); }
+    else if (k == "--skip-step11") a.skip_step11 = true;
   }
   return a;
 }
@@ -519,7 +529,14 @@ int main(int argc, char** argv) {
   }
 
   // ---- Step 11: tokenize EVERY document before any forward -----------------
-  if (a.context_cap > 0) {
+  if (a.skip_step11) {
+    Missing("step11 a later document over context_cap -> SEMB_CONTEXT_CAP_EXCEEDED, NO row written for the "
+            "earlier good document either (all rows tokenized before any forward -- TE-96 sec 4.2's own "
+            "'a late bad row never exposes a partial matrix')",
+            "excluded by --skip-step11 (TE-155 item 3): this construction's own tokenized length approaches "
+            "context_cap against the real candidate, observed to run 6h41m (D-SLM6326, credited) -- owed to "
+            "a detached run the conductor schedules separately, not run in this round");
+  } else if (a.context_cap > 0) {
     std::string over_cap;
     for (size_t i = 0; i < a.context_cap; ++i) over_cap += (i % 2 == 0 ? 'a' : 'b');  // context_cap positions of content -> content+1 > cap
     std::vector<semb_document> docs = {docs_arena.Add("ok", "fine"), docs_arena.Add("bad", over_cap)};

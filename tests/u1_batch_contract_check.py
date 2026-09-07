@@ -115,10 +115,17 @@ def run_target(table: Table, cmake: str, build_dir: Path, target: str, args: Lis
 
 
 def run_all(table: Table, cmake: str, build_dir: Path, model: str, tokenizer: str, dims: int,
-            context_cap: int, label: str) -> None:
+            context_cap: int, label: str, skip_step11: bool = False) -> None:
     common = ["--model", model, "--tokenizer", tokenizer, "--dims", str(dims)]
-    run_target(table, cmake, build_dir, "u1_batch_contract_test", common + ["--context-cap", str(context_cap)],
-               f"{label}/contract")
+    contract_args = common + ["--context-cap", str(context_cap)]
+    if skip_step11:
+        # TE-155 item 3: step11's own near-cap document is a genuine,
+        # expensive real forward against the real candidate (observed
+        # 6h41m, D-SLM6326) -- excluded here, named, rather than run or
+        # silently backgrounded; owed to a detached run the conductor
+        # schedules separately.
+        contract_args = contract_args + ["--skip-step11"]
+    run_target(table, cmake, build_dir, "u1_batch_contract_test", contract_args, f"{label}/contract")
     run_target(table, cmake, build_dir, "u1_batch_workspace_test", common, f"{label}/workspace")
     run_target(table, cmake, build_dir, "w_b_corpus_witness_test", common, f"{label}/wb-witness")
 
@@ -140,10 +147,12 @@ def main(argv: List[str]) -> int:
     run_all(table, args.cmake_executable, build_dir, str(pair_dir / "u1_pair_model.sslm"),
             str(pair_dir / "u1_pair_tokenizer.sslm"), MECH_DIMS, MECH_CONTEXT_CAP, "mechanism")
 
-    # PRODUCT: only when both real artifacts are named.
+    # PRODUCT: only when both real artifacts are named. step11 excluded
+    # (TE-155 item 3, D-SLM6326) -- the mechanism leg above runs it in full,
+    # since its own near-cap document is trivial at context_cap 64.
     if args.model and args.tokenizer:
         run_all(table, args.cmake_executable, build_dir, args.model, args.tokenizer, CANDIDATE_DIMS, 32768,
-                "product")
+                "product", skip_step11=True)
     else:
         table.add("product (all cells)", "MISSING PREREQUISITE",
                    "no --model/--tokenizer given -- the real Qwen3-Embedding-0.6B artifact and its "
