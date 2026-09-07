@@ -65,6 +65,17 @@ extern "C" {
 // `ComputeProvisionalFingerprint` (src/superembedder/encoder.cpp) folds
 // into that handle's own `witness_sha`, in place of the literal
 // `kWbPendingSentinel` it hashed before this round.
+//
+// TE-159 (C-2, D-SLM6354, the conductor's ruling): this digest is derived
+// through THE SAME COMPOSITION `semb_encode_batch` itself wraps
+// (semb_interim_encode_batch_ps_n, encoder_interim_abi.h -- see that
+// function's own seam-tap doc comment), not a second, independent forward.
+// A change to the batch verb's own composition (special-token handling,
+// a document-frame application once PS-1 lands, truncation ordering) moves
+// this digest -- proven by execution, not merely asserted: a scratch build
+// with the composition's own appended-token handling perturbed produced a
+// different digest than the unperturbed build (see this round's own build
+// record for both quoted values).
 semb_status semb_wb_digest(semb_encoder enc, uint8_t out_digest[32]);
 
 }  // extern "C"

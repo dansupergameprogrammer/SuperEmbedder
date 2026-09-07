@@ -181,11 +181,41 @@ SembInterimStatus semb_interim_encode_ps_n(SembInterimEncoder* encoder, const in
 // `*out_failed_index` names which document failed (0 on a precondition
 // refusal that precedes the loop); the workspace is released exactly once,
 // on every return path, by RAII.
+//
+// out_vectors == nullptr: the row-output half of the composition (select +
+// dequantize) is SKIPPED entirely for every document -- a caller that wants
+// only the seam tap below pays for the forward alone. out_capacity_bytes is
+// ignored in this mode; *out_required_bytes still reports doc_count *
+// hidden * sizeof(float) (the size a caller WOULD need to get rows too).
+// out_vectors != nullptr behaves exactly as before this parameter existed:
+// out_capacity_bytes is validated against that same required size.
+//
+// out_seam_stream (TE-159, C-2, D-SLM6354 -- the conductor's ruling that
+// W-B's own digest must derive through this SAME composition rather than a
+// second, independent forward): when non-null, each document's FULL
+// per-position seam -- every position, pre-final-norm, both scale fields,
+// the identical {codes, m, e} the row path selects ONE position out of --
+// is serialised via semb_seam_serialize_document (superembedder/seam_abi.h)
+// and appended to *out_seam_stream, in call order, with NO framing between
+// documents beyond what that serialisation already writes. This is the
+// exact byte sequence a caller hashes to get a digest that is sensitive to
+// this function's own composition (the tokenizer call this function's
+// caller made, the appended-token id, the chunk-batched forward, the
+// workspace-sharing) -- the same property `semb_encode_batch`'s own rows
+// have, now shared by anything that taps the seam instead of the rows.
+// out_seam_stream_capacity is validated BEFORE any document's forward runs
+// (the same shape-before-work discipline `semb_encode_batch` itself uses):
+// insufficient capacity returns kSembInterimBufferTooSmall with
+// *out_seam_stream_len holding the exact required length, before touching
+// out_seam_stream. On success *out_seam_stream_len holds the exact length
+// written. A caller that wants only rows passes out_seam_stream == nullptr
+// and pays nothing extra (no serialisation call is made per document).
 SembInterimStatus semb_interim_encode_batch_ps_n(
     SembInterimEncoder* encoder, const int32_t* const* docs_content_ids,
     const size_t* docs_n_content, size_t doc_count, size_t chunk_budget, float* out_vectors,
     size_t out_capacity_bytes, size_t* out_required_bytes, size_t* out_failed_index,
-    SembWaPoolStatus* out_dequantize_status, const char** out_engine_status_name);
+    SembWaPoolStatus* out_dequantize_status, const char** out_engine_status_name,
+    uint8_t* out_seam_stream, size_t out_seam_stream_capacity, size_t* out_seam_stream_len);
 
 }  // extern "C"
 

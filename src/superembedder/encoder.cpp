@@ -173,23 +173,45 @@ std::array<uint8_t, 32> ComputeTemplateDigest() {
   return out;
 }
 
-// TE-147 (U1 slice 2 build): W-B's own real digest, replacing the literal
-// kWbPendingSentinel this function used to hash. Drives the SAME compiled-
-// in library primitives semb_wa_digest already uses the pattern of
-// (`Claude/Plans/SuperEmbedder_Plan.md` sec 4.4b): tokenize each of the
-// sixteen compiled-in W-B documents through THIS handle's own tokenizer,
-// append THIS handle's own resolved end-token id, run the real forward via
-// the seam (position 0 included, pre-final-norm -- semb_interim_encode_seam
-// already produces exactly this), serialise via semb_seam_serialize_document
-// (TE-63, byte-exact per w_b_serialization_test.cpp), concatenate
-// u64(document_count) first then each document's stream in committed
-// order, and SHA-256 the whole thing with the engine's own portable
-// routine -- "the same routine model_sha uses, so the fingerprint contains
-// one hash function and not two" (sec 4.4b). Called once, from
-// semb_encoder_open, AFTER the interim encoder has opened (the forward
-// needs it) and the tokenizer's own end-token id has resolved -- BEFORE the
-// handle is inserted into the registry, so this is not reachable through
-// the public semb_wb_digest() accessor while it runs.
+// TE-159 (C-2, D-SLM6354, the conductor's ruling): W-B's own real digest,
+// now derived through THE SAME COMPOSITION `semb_encode_batch` wraps
+// (semb_interim_encode_batch_ps_n's seam tap, encoder_interim_abi.h)
+// instead of a second, independent forward call
+// (semb_interim_encode_seam) that TE-148's review (C-2) found bypasses the
+// batch verb structurally -- under PS-N the bytes happened to coincide
+// because the document frame is empty, but the PROPERTY the plan's own
+// entry-point crossing table asserts (a drift in semb_encode_batch's own
+// composition moves witness_sha) did not hold, because nothing actually
+// ran through that composition. This function now tokenizes the sixteen
+// compiled-in documents exactly as before (TE-155's D-SLM6341 cut applied
+// identically) and hands them to semb_interim_encode_batch_ps_n -- the
+// SAME function, same one-workspace-for-the-whole-call acquisition,
+// semb_encode_batch's own steps 12-13 wrap -- tapped for its serialised
+// seam stream rather than its rows (see that function's own doc comment
+// for the tap's exact byte layout). Concatenates u64(document_count) first
+// then the tapped stream (each document's own semb_seam_serialize_document
+// record, in committed order, identical to before), and SHA-256s the
+// whole thing with the engine's own portable routine -- "the same routine
+// model_sha uses, so the fingerprint contains one hash function and not
+// two" (SuperEmbedder_Plan.md sec 4.4b). The byte sequence hashed is
+// UNCHANGED from before this round (same tokenization, same cut, same
+// appended token, same forward, same per-document serialisation, same
+// concatenation order) -- only HOW it is produced changed, from a second
+// bespoke forward to a tap on the real composition -- so the digest values
+// this round's own build record quotes are byte-identical to TE-147/
+// TE-155's own prior readings; the difference the property now carries is
+// that a change to the batch composition itself (special-token handling,
+// document-frame application once PS-1 lands, truncation ordering) moves
+// this value, because it is no longer computed by code that runs alongside
+// the composition -- it runs THROUGH it.
+//
+// Called once, from semb_encoder_open, AFTER the handle already carries a
+// live cookie in the registry (so the composition function can reach it
+// through the ordinary path semb_encode_batch itself would use) but BEFORE
+// *out is published to the caller -- "no caller can observe a handle
+// without its fingerprint" (this round's own brief). A refusal here rolls
+// back the registry insertion; see semb_encoder_open's own comment at the
+// call site for the exact rollback.
 //
 // TE-155 item 1 (D-SLM6341, ruled by the conductor under delegation,
 // subject to Dan's veto): the witness must be well-defined on every
@@ -202,79 +224,81 @@ std::array<uint8_t, 32> ComputeTemplateDigest() {
 // `context_cap - 1` ids -- BEFORE the end token is appended -- so the
 // appended-token count never exceeds context_cap, and the digest is over
 // what actually executed (the cut content), never over the full,
-// untokenized document text. This is the document-side analogue of the
-// plan's own W-Q leg (sec 4.4b, the truncation-order leg: "a witness-
-// internal cap set below that string's own token count"), which already
-// builds an internal cut into the witness for the identical reason.
-// Against the real candidate (context_cap 32,768) this never cuts: the
-// sixteen documents are short prose, tokenizing to a small fraction of
-// that cap, so the executed W-B digest is BYTE-IDENTICAL to what this
-// function computed before this round. Against the mechanism pair (cap
-// 64) every document is cut, deterministically, to the same 63 leading
-// content ids on every call (tokenization is deterministic and the cut is
-// a pure function of context_cap and the tokenized ids) -- so the digest
-// is still exact-computed and reproducible, only over a shorter prefix.
-// `semb_encoder_open` therefore never refuses on account of the witness
-// corpus, on any artifact this library can legally open.
+// untokenized document text. Against the real candidate (context_cap
+// 32,768) this never cuts: the sixteen documents are short prose,
+// tokenizing to a small fraction of that cap. Against the mechanism pair
+// (cap 64) every document is cut, deterministically, to the same 63
+// leading content ids on every call.
 //
-// The defensive bound check below (`n > context_cap`) is KEPT rather than
-// removed: it is now UNREACHABLE on every input this function is called
-// with (the cut above makes n <= context_cap by construction), which is
-// not the same property as "cannot fire on any input a future change
-// might pass" -- StandardsDocument.md's own "a check that cannot fire on
-// today's inputs is not the same as one that cannot fire" governs exactly
-// this shape, and the K/V workspace overrun the check guards against
-// (sec 3.1's "K/V pool ... sized once from the artifact's own geometry")
-// is memory-unsafe if ever reached, so the guard stays as a structural
-// invariant rather than a currently-exercised branch.
-//
-// Returns false on an engine refusal from the real forward. A caller maps
-// a false return to SEMB_ENGINE_REFUSED, the same status every other
-// mid-open engine failure already uses.
+// Returns false on an engine refusal from the real forward (including the
+// composition's own buffer-too-small path, which this call site sizes
+// exactly and therefore does not expect to hit). A caller maps a false
+// return to SEMB_ENGINE_REFUSED, the same status every other mid-open
+// engine failure already uses.
 bool ComputeWbDigest(SembInterimEncoder* interim, const superslm::TokenizerView& tokenizer,
                      uint32_t hidden_size, uint32_t context_cap,
                      std::array<uint8_t, 32>* out_digest) {
-  std::vector<uint8_t> stream;
-  auto put_u64 = [](std::vector<uint8_t>* buf, uint64_t v) {
-    for (int i = 0; i < 8; ++i) buf->push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xFF));
-  };
+  // The composition below is reached via `interim` directly, the same
+  // handle semb_interim_encode_batch_ps_n itself takes -- it needs no
+  // semb_encoder cookie or HandleLease (those guard the FROZEN public ABI;
+  // this is the interim layer semb_encode_batch itself calls into). The
+  // handle's cookie is nonetheless already live in the registry by the
+  // time this runs -- semb_encoder_open's own call-site comment states why
+  // ("no caller can observe a handle without its fingerprint" is an
+  // invariant about what a PUBLIC caller can reach, not a requirement this
+  // function itself has).
   // D-SLM6341: the largest content-id count that leaves room for the
   // appended end token without exceeding context_cap. context_cap == 0
   // (not reachable against a real candidate; guarded rather than assumed)
   // leaves no room for even the end token alone.
   const size_t max_content_ids =
       context_cap > 0 ? static_cast<size_t>(context_cap) - 1 : 0;
-  put_u64(&stream, static_cast<uint64_t>(semb::kWbCorpusDocumentCount));
+
+  std::vector<std::vector<int32_t>> content_ids(semb::kWbCorpusDocumentCount);
+  std::vector<const int32_t*> doc_ptrs(semb::kWbCorpusDocumentCount);
+  std::vector<size_t> doc_lens(semb::kWbCorpusDocumentCount);
   for (size_t doc_i = 0; doc_i < semb::kWbCorpusDocumentCount; ++doc_i) {
     const semb::WbCorpusDocument& doc = semb::kWbCorpusDocuments[doc_i];
-    std::vector<int32_t> content_ids =
-        tokenizer.Encode(std::string_view(doc.text, doc.text_len));
-    if (content_ids.size() > max_content_ids) {
+    content_ids[doc_i] = tokenizer.Encode(std::string_view(doc.text, doc.text_len));
+    if (content_ids[doc_i].size() > max_content_ids) {
       // D-SLM6341's cut: keep the leading max_content_ids ids only. The
       // digest is over this cut content, not the full document -- stated
       // as fact in wb_digest_abi.h's own contract comment.
-      content_ids.resize(max_content_ids);
+      content_ids[doc_i].resize(max_content_ids);
     }
-    const size_t n = content_ids.size() + 1;  // the appended end token
-    if (n > context_cap) return false;  // UNREACHABLE post-cut; see comment above.
-    const size_t hidden = hidden_size;
-    std::vector<int8_t> codes(n * hidden);
-    std::vector<int64_t> m(n), e(n);
-    size_t positions = 0;
-    const char* engine_status = nullptr;
-    const SembInterimStatus st = semb_interim_encode_seam(
-        interim, content_ids.data(), content_ids.size(), /*chunk_budget=*/0,
-        kSembForwardLegChunkBatched, codes.data(), codes.size(), m.data(), e.data(), n,
-        &positions, &engine_status);
-    if (st != kSembInterimOk) return false;
-
-    std::vector<uint8_t> doc_buf(16 + n * (hidden + 16));
-    size_t doc_len = 0;
-    const SembSerializeStatus sst = semb_seam_serialize_document(
-        codes.data(), m.data(), e.data(), n, hidden, doc_buf.data(), doc_buf.size(), &doc_len);
-    if (sst != kSembSerializeOk) return false;
-    stream.insert(stream.end(), doc_buf.begin(), doc_buf.begin() + doc_len);
+    doc_ptrs[doc_i] = content_ids[doc_i].data();
+    doc_lens[doc_i] = content_ids[doc_i].size();
   }
+
+  // The seam tap's own required size, computed with the exact formula
+  // semb_interim_encode_batch_ps_n itself checks (encoder_interim_abi.h's
+  // own doc comment): 16 + n*(hidden+16) per document.
+  size_t seam_required = 0;
+  for (size_t doc_i = 0; doc_i < semb::kWbCorpusDocumentCount; ++doc_i) {
+    const size_t n = doc_lens[doc_i] + 1;
+    seam_required += 16 + n * (static_cast<size_t>(hidden_size) + 16);
+  }
+  std::vector<uint8_t> seam_stream(seam_required);
+  size_t seam_len = 0;
+  size_t failed_index = 0;
+  size_t rows_required_ignored = 0;
+  SembWaPoolStatus dequantize_ignored = kSembOk;
+  const char* engine_status = nullptr;
+  const SembInterimStatus st = semb_interim_encode_batch_ps_n(
+      interim, doc_ptrs.data(), doc_lens.data(), semb::kWbCorpusDocumentCount,
+      /*chunk_budget=*/0, /*out_vectors=*/nullptr, /*out_capacity_bytes=*/0,
+      &rows_required_ignored, &failed_index, &dequantize_ignored, &engine_status,
+      seam_stream.data(), seam_stream.size(), &seam_len);
+  if (st != kSembInterimOk) return false;
+
+  std::vector<uint8_t> stream;
+  stream.reserve(8 + seam_len);
+  auto put_u64 = [](std::vector<uint8_t>* buf, uint64_t v) {
+    for (int i = 0; i < 8; ++i) buf->push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xFF));
+  };
+  put_u64(&stream, static_cast<uint64_t>(semb::kWbCorpusDocumentCount));
+  stream.insert(stream.end(), seam_stream.begin(), seam_stream.begin() + seam_len);
+
   superslm::Sha256 hash;
   hash.Update(stream.data(), stream.size());
   hash.Final(out_digest->data());
@@ -489,18 +513,20 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
       return SEMB_ENGINE_REFUSED;
     }
 
-    // W-B: the real forward over the sixteen compiled-in documents, now
-    // that the interim encoder is open and the tokenizer's own resolved
-    // end-token id is known. Folded into witness_sha below, replacing the
-    // literal kWbPendingSentinel this open used to hash.
-    std::array<uint8_t, 32> wb_digest{};
-    if (!ComputeWbDigest(interim, tokenizer, geometry.hidden_size, geometry.context_cap, &wb_digest)) {
-      return SEMB_ENGINE_REFUSED;
-    }
-
-    handle->fingerprint = ComputeProvisionalFingerprint(model_sha, tokenizer_sha, wb_digest);
-    handle->wb_digest = wb_digest;
-
+    // The handle is otherwise complete (everything but its fingerprint):
+    // fill it in and register its cookie NOW, before W-B runs (TE-159,
+    // C-2, D-SLM6354, the conductor's ruling). W-B's own digest must
+    // derive through semb_interim_encode_batch_ps_n -- the SAME composition
+    // semb_encode_batch's own steps 12-13 wrap -- and that composition is
+    // the interim layer's, reached via `interim` directly rather than a
+    // semb_encoder cookie; the handle is registered at this point anyway,
+    // ahead of the derivation, so that from here on the invariant reads the
+    // same way it will for every future caller: a live registry entry
+    // reached through the ordinary path always has a real fingerprint by
+    // the time anything outside this function can reach it. *out is NOT
+    // written yet -- "no caller can observe a handle without its
+    // fingerprint" -- so a caller can never obtain this cookie before the
+    // fingerprint below is set; the window is internal to this call.
     handle->interim = interim_guard.release();
     handle->tokenizer_artifact = std::move(tokenizer_artifact);
     handle->tokenizer = std::move(tokenizer);
@@ -509,12 +535,36 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
     handle->context_cap = geometry.context_cap;
     handle->chunk_budget = 0;
     semb_encoder cookie = nullptr;
+    semb_encoder_s* const h = handle.get();
     {
       std::lock_guard<std::mutex> lock(RegistryMutex());
       if (!AllocateHandleCookie(&cookie)) return SEMB_ALLOCATION_FAILED;
       const auto inserted = Registry().emplace(cookie, std::move(handle));
       if (!inserted.second) return SEMB_ENGINE_REFUSED;
     }
+
+    // W-B: the real forward over the sixteen compiled-in documents, now
+    // that the interim encoder is open and the tokenizer's own resolved
+    // end-token id is known, run through the batch verb's own composition
+    // (see ComputeWbDigest's own comment). Folded into witness_sha below,
+    // replacing the literal kWbPendingSentinel this open used to hash. A
+    // refusal here is the one new refusal point TE-147 added to open's own
+    // sequence; it moves with the derivation (now after registration) but
+    // stays functionally in the same place from a caller's perspective --
+    // after every pre-existing failure mode, before the caller can ever
+    // observe a cookie -- because the just-inserted, not-yet-published
+    // entry is rolled back before returning.
+    std::array<uint8_t, 32> wb_digest{};
+    if (!ComputeWbDigest(h->interim, h->tokenizer, geometry.hidden_size, geometry.context_cap,
+                         &wb_digest)) {
+      std::lock_guard<std::mutex> lock(RegistryMutex());
+      Registry().erase(cookie);
+      return SEMB_ENGINE_REFUSED;
+    }
+
+    h->fingerprint = ComputeProvisionalFingerprint(model_sha, tokenizer_sha, wb_digest);
+    h->wb_digest = wb_digest;
+
     *out = cookie;
     return SEMB_OK;
   } catch (const std::bad_alloc&) {
@@ -742,9 +792,15 @@ extern "C" semb_status semb_encode_batch(semb_encoder enc, const semb_document* 
     const SembInterimStatus batch_status = semb_interim_encode_batch_ps_n(
         h->interim, doc_ptrs.data(), doc_lens.data(), n, h->chunk_budget, staged.data(),
         staged.size() * sizeof(float), &batch_required, &failed_index, &dequantize,
-        &engine_status);
+        &engine_status, /*out_seam_stream=*/nullptr, /*out_seam_stream_capacity=*/0,
+        /*out_seam_stream_len=*/nullptr);
     (void)engine_status;
     (void)failed_index;  // D-SLM4653: the enum name is the whole diagnosis (sec 4.2's own note)
+    // TE-159 item 6 (M-4): batch_required is written by the composed call
+    // (it always equals `required`, already computed and checked at step
+    // 5/7 above) and was never read afterward -- a dead store beside
+    // failed_index's own explicit, named discard. Named the same way.
+    (void)batch_required;
     if (batch_status != kSembInterimOk) {
       return MapInterimStatus(batch_status, dequantize);
     }

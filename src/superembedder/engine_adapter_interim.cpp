@@ -43,7 +43,7 @@
 //     all" -- is decided by running both entry points on the same document in
 //     the same process, per row, never inherited from the header's claim.
 #include "superembedder/encoder_interim_abi.h"
-#include "superembedder/seam_abi.h"
+#include "superembedder/seam_abi.h"  // semb_seam_serialize_document (TE-159 C-2's seam tap)
 #include "encoder_open_internal.h"
 
 #include <cstring>
@@ -697,7 +697,8 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
     SembInterimEncoder* encoder, const int32_t* const* docs_content_ids,
     const size_t* docs_n_content, size_t doc_count, size_t chunk_budget, float* out_vectors,
     size_t out_capacity_bytes, size_t* out_required_bytes, size_t* out_failed_index,
-    SembWaPoolStatus* out_dequantize_status, const char** out_engine_status_name) {
+    SembWaPoolStatus* out_dequantize_status, const char** out_engine_status_name,
+    uint8_t* out_seam_stream, size_t out_seam_stream_capacity, size_t* out_seam_stream_len) {
   if (out_engine_status_name) *out_engine_status_name = OkName();
   if (out_dequantize_status) *out_dequantize_status = kSembOk;
   if (out_failed_index) *out_failed_index = 0;
@@ -705,11 +706,33 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
   semb::EncoderModel* m = encoder->model;
   const size_t hidden = m->hidden_size;
   const size_t required = doc_count * hidden * sizeof(float);
+  // TE-159 (C-2): row output is now OPTIONAL. out_vectors == nullptr skips
+  // the capacity gate and the select+dequantize half of the composition
+  // entirely for every document -- a caller that only taps the seam (W-B)
+  // never has to supply a row buffer or pay for PS-N's own final-norm
+  // selection and dequantize. *out_required_bytes still reports what a row
+  // buffer WOULD need, matching every other capacity-convention verb here.
   *out_required_bytes = required;
-  if (out_capacity_bytes < required) return kSembInterimBufferTooSmall;
-  if (!out_vectors) return kSembInterimNullArgument;
+  if (out_vectors) {
+    if (out_capacity_bytes < required) return kSembInterimBufferTooSmall;
+  }
   if (doc_count == 0) return kSembInterimOk;  // the caller's own CORPUS_EMPTY guards n==0 earlier
   if (!docs_content_ids || !docs_n_content) return kSembInterimNullArgument;
+
+  // The seam tap's own capacity, checked BEFORE any forward runs (shape-
+  // before-work, the same discipline semb_encode_batch's own steps 1-11
+  // apply before its first forward). Each document's serialised record is
+  // exactly semb_seam_serialize_document's own VERBATIM layout: u64(n) ||
+  // u64(hidden) || n * (codes[hidden] || u64(m) || u64(e)).
+  size_t seam_required = 0;
+  if (out_seam_stream) {
+    for (size_t doc = 0; doc < doc_count; ++doc) {
+      const size_t n = docs_n_content[doc] + 1;
+      seam_required += 16 + n * (hidden + 16);
+    }
+    if (out_seam_stream_len) *out_seam_stream_len = seam_required;
+    if (out_seam_stream_capacity < seam_required) return kSembInterimBufferTooSmall;
+  }
 
   size_t workspace_index = 0;
   if (!semb::TryAcquireWorkspace(m, &workspace_index)) {
@@ -719,10 +742,16 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
   // Exactly ONE acquisition for the whole call, recorded before any
   // document's own forward begins (TE-96 sec 4.2 step 12; C26b's own
-  // per-call parking point, tests/u1_batch_workspace_test.cpp).
+  // per-call parking point, tests/u1_batch_workspace_test.cpp). This now
+  // also covers W-B's own open-time tap (TE-159 C-2): a single acquisition
+  // for the sixteen committed documents, matching the batch verb's own
+  // one-workspace-per-call contract rather than the sixteen separate
+  // acquisitions the pre-C-2 ComputeWbDigest made through
+  // semb_interim_encode_seam's own per-call acquire.
   semb::test_seam::OnAcquired();
 #endif
 
+  size_t seam_offset = 0;
   for (size_t doc = 0; doc < doc_count; ++doc) {
     const size_t n_content = docs_n_content[doc];
     const size_t n = n_content + 1;  // the appended end token
@@ -751,26 +780,53 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
       es[p] = scales[p].e;
     }
 
-    // PS-N's position rule: the LAST position. Neither select nor
-    // dequantize touches the workspace, so these are the SAME public
-    // primitives the singleton path calls (encoder_interim_abi.h).
-    std::vector<int8_t> sel(hidden);
-    int64_t sel_m = 0, sel_e = 0;
-    const SembInterimStatus sel_st =
-        semb_interim_ps_n_select(encoder, codes.data(), ms.data(), es.data(), n, n - 1, sel.data(),
-                                  &sel_m, &sel_e, out_engine_status_name);
-    if (sel_st != kSembInterimOk) {
-      if (out_failed_index) *out_failed_index = doc;
-      return sel_st;
+    // The seam tap (TE-159, C-2): this document's FULL per-position seam --
+    // every position, pre-final-norm, exactly what select below reads ONE
+    // position out of -- serialised and appended in call order. Uses the
+    // capacity this function already validated above, so a length mismatch
+    // here would be this function's own arithmetic being wrong, not a
+    // caller-supplied-buffer problem; still checked, never assumed.
+    if (out_seam_stream) {
+      size_t doc_len = 0;
+      const SembSerializeStatus sst = semb_seam_serialize_document(
+          codes.data(), ms.data(), es.data(), n, hidden, out_seam_stream + seam_offset,
+          out_seam_stream_capacity - seam_offset, &doc_len);
+      if (sst != kSembSerializeOk) {
+        if (out_failed_index) *out_failed_index = doc;
+        return kSembInterimBufferTooSmall;
+      }
+      seam_offset += doc_len;
     }
 
-    const SembWaPoolStatus dq =
-        semb_ps_n_dequantize(sel.data(), sel_m, sel_e, hidden, out_vectors + doc * hidden);
-    if (out_dequantize_status) *out_dequantize_status = dq;
-    if (dq != kSembOk) {
-      if (out_failed_index) *out_failed_index = doc;
-      return kSembInterimDequantizeRefused;
+    // PS-N's position rule: the LAST position. Neither select nor
+    // dequantize touches the workspace, so these are the SAME public
+    // primitives the singleton path calls (encoder_interim_abi.h). Skipped
+    // entirely when no row output was requested (TE-159 C-2): a seam-only
+    // caller does not need PS-N's own final-norm selection or dequantize,
+    // and skipping means a dequantize corner (kSembPooledSubnormal /
+    // kSembPooledOverflow) on a committed W-B document can never turn into
+    // a spurious semb_encoder_open refusal that has nothing to do with the
+    // digest actually derived.
+    if (out_vectors) {
+      std::vector<int8_t> sel(hidden);
+      int64_t sel_m = 0, sel_e = 0;
+      const SembInterimStatus sel_st =
+          semb_interim_ps_n_select(encoder, codes.data(), ms.data(), es.data(), n, n - 1, sel.data(),
+                                    &sel_m, &sel_e, out_engine_status_name);
+      if (sel_st != kSembInterimOk) {
+        if (out_failed_index) *out_failed_index = doc;
+        return sel_st;
+      }
+
+      const SembWaPoolStatus dq =
+          semb_ps_n_dequantize(sel.data(), sel_m, sel_e, hidden, out_vectors + doc * hidden);
+      if (out_dequantize_status) *out_dequantize_status = dq;
+      if (dq != kSembOk) {
+        if (out_failed_index) *out_failed_index = doc;
+        return kSembInterimDequantizeRefused;
+      }
     }
   }
+  if (out_seam_stream && out_seam_stream_len) *out_seam_stream_len = seam_offset;
   return kSembInterimOk;
 }
