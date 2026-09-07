@@ -49,6 +49,20 @@ CANDIDATE_DIMS = 1024
 MECH_DIMS = 32
 MECH_CONTEXT_CAP = 64
 
+# TE-159 item 2 (C-1, D-SLM6348): the driver's own per-subprocess cap, now
+# named PER LEG rather than one shared 600 s literal. The mechanism leg's
+# fixture is tiny (context_cap 64) and stays well inside 600 s; the product
+# workspace leg carries C49's fifty real open/bake/close cycles, and W-B's
+# real forward at every open (D-SLM6352: ~19.8 s/open) measured the leg at
+# 1,250 s (TE-148 review F-2). The cap below is that measurement plus
+# margin -- not a population this round shrinks to fit an unchanged cap.
+LEG_TIMEOUT_S = {
+    "contract": 900,
+    "workspace": 2000,
+    "wb-witness": 900,
+}
+DEFAULT_LEG_TIMEOUT_S = 900
+
 
 def build_target(cmake: str, build_dir: Path, target: str) -> Tuple[bool, List[str], str]:
     """Returns (built, unresolved frozen symbols, output tail)."""
@@ -82,7 +96,8 @@ class Table:
         sys.stdout.flush()
 
 
-def run_target(table: Table, cmake: str, build_dir: Path, target: str, args: List[str], label: str) -> None:
+def run_target(table: Table, cmake: str, build_dir: Path, target: str, args: List[str], label: str,
+               leg_key: str = "") -> None:
     built, unresolved, tail = build_target(cmake, build_dir, target)
     if unresolved:
         table.add(f"{label} link", "RED-UNIMPLEMENTED",
@@ -95,8 +110,22 @@ def run_target(table: Table, cmake: str, build_dir: Path, target: str, args: Lis
     if not exe:
         table.add(f"{label} build", "FAIL", f"target {target} built but its executable was not found under {build_dir}")
         return
-    proc = subprocess.run([str(exe), *args], cwd=REPO_ROOT, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=600)
+    timeout_s = LEG_TIMEOUT_S.get(leg_key, DEFAULT_LEG_TIMEOUT_S)
+    # TE-159 item 2 (C-1, D-SLM6348): a subprocess timeout is a NAMED FAIL
+    # row for this leg, never an uncaught exception. Before this fix,
+    # TimeoutExpired propagated out of run_target/run_all/main and killed
+    # the whole driver process with a traceback -- dropping every leg after
+    # the one that timed out AND the summary line, so ctest reported the
+    # entry FAILED with no cell name in the output (TE-148 review C-1).
+    try:
+        proc = subprocess.run([str(exe), *args], cwd=REPO_ROOT, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        table.add(f"{label} process", "FAIL",
+                   f"TimeoutExpired after {timeout_s}s (leg={leg_key or 'unknown'}) -- the subprocess was "
+                   f"killed; no cell result from this leg is known. Raise LEG_TIMEOUT_S['{leg_key}'] if this "
+                   f"leg's own real cost has grown, rather than shrinking any cell's population to fit.")
+        return
     for line in proc.stdout.splitlines():
         m = re.match(r"\[(PASS|FAIL|MISSING PREREQUISITE|PHASE|OBSERVED)\]\s*(.*)", line)
         if not m:
@@ -125,9 +154,12 @@ def run_all(table: Table, cmake: str, build_dir: Path, model: str, tokenizer: st
         # silently backgrounded; owed to a detached run the conductor
         # schedules separately.
         contract_args = contract_args + ["--skip-step11"]
-    run_target(table, cmake, build_dir, "u1_batch_contract_test", contract_args, f"{label}/contract")
-    run_target(table, cmake, build_dir, "u1_batch_workspace_test", common, f"{label}/workspace")
-    run_target(table, cmake, build_dir, "w_b_corpus_witness_test", common, f"{label}/wb-witness")
+    run_target(table, cmake, build_dir, "u1_batch_contract_test", contract_args, f"{label}/contract",
+               leg_key="contract")
+    run_target(table, cmake, build_dir, "u1_batch_workspace_test", common, f"{label}/workspace",
+               leg_key="workspace")
+    run_target(table, cmake, build_dir, "w_b_corpus_witness_test", common, f"{label}/wb-witness",
+               leg_key="wb-witness")
 
 
 def main(argv: List[str]) -> int:
