@@ -30,7 +30,11 @@ typedef struct semb_encoder_s* semb_encoder;
   X(SEMB_TEMPLATE_TOKEN_ABSENT,    14) \
   X(SEMB_POOLED_SUBNORMAL,         15) \
   X(SEMB_POOLED_OVERFLOW,          16) \
-  X(SEMB_ALLOCATION_FAILED,        17)
+  X(SEMB_ALLOCATION_FAILED,        17) \
+  X(SEMB_CORPUS_EMPTY,             18) \
+  X(SEMB_DOCUMENT_ID_INVALID,      19) \
+  X(SEMB_DOCUMENT_ID_DUPLICATE,    20) \
+  X(SEMB_CORPUS_TOO_LARGE,         21)
 
 typedef enum semb_status {
 #define SEMB_STATUS_ENUM_VALUE_(name, value) name = value,
@@ -58,6 +62,19 @@ struct semb_fingerprint {
   uint8_t digest[32];
 };
 
+// The bake-side corpus entry's per-document argument
+// (`Claude/Fable/te96-u1-contract-closure-2026-09-05.md` sec 4.1). The id is
+// opaque bytes to the library: validated, never interpreted, never
+// tokenized, never digested by any fingerprint field.
+typedef struct semb_document semb_document;
+struct semb_document {
+  uint32_t struct_size;    // sizeof(semb_document), validated exactly, per document
+  const char* id;          // the row's id, sized UTF-8 span; required iff id_len > 0
+  size_t id_len;            // > 0: every document carries an id (plan sec 3.4)
+  const char* utf8;         // the document text, sized UTF-8 span; required iff utf8_len > 0
+  size_t utf8_len;
+};
+
 // U1's raw-text slice does not yet carry the certified W-B, W-Q, and epoch
 // fields required by the final five-field fingerprint. Successful encodes are
 // therefore marked in-band: digest[0..7] equals this eight-byte tag. Consumers
@@ -73,6 +90,13 @@ semb_status semb_encode(semb_encoder enc, const char* utf8, size_t utf8_len,
                         float* out_vector, size_t out_capacity_bytes,
                         size_t* out_required_bytes,
                         semb_fingerprint* out_fingerprint);
+// The bake-side corpus entry (`Claude/Fable/te96-u1-contract-closure-2026-09-05.md`
+// sec 4.2). Validation is shape-before-content-before-work; nothing is
+// written to `out_rows` on any non-SEMB_OK return; `*out_required_bytes` is
+// written on exactly SEMB_OK and SEMB_BUFFER_TOO_SMALL.
+semb_status semb_encode_batch(semb_encoder enc, const semb_document* docs, size_t n,
+                              float* out_rows, size_t out_capacity_bytes,
+                              size_t* out_required_bytes);
 const char* semb_status_name(semb_status s);
 
 #ifdef __cplusplus
