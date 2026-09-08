@@ -144,16 +144,13 @@ def run_target(table: Table, cmake: str, build_dir: Path, target: str, args: Lis
 
 
 def run_all(table: Table, cmake: str, build_dir: Path, model: str, tokenizer: str, dims: int,
-            context_cap: int, label: str, skip_step11: bool = False) -> None:
+            context_cap: int, label: str) -> None:
     common = ["--model", model, "--tokenizer", tokenizer, "--dims", str(dims)]
+    # TE-182 (D-SLM6375's own remedy, D-SLM6434 item 1): step11's own
+    # over-cap document is now sized by TOKENIZED length through the real
+    # tokenizer, which refuses in milliseconds -- --skip-step11 (TE-155
+    # item 3) is retired; every leg runs step 11 in full.
     contract_args = common + ["--context-cap", str(context_cap)]
-    if skip_step11:
-        # TE-155 item 3: step11's own near-cap document is a genuine,
-        # expensive real forward against the real candidate (observed
-        # 6h41m, D-SLM6326) -- excluded here, named, rather than run or
-        # silently backgrounded; owed to a detached run the conductor
-        # schedules separately.
-        contract_args = contract_args + ["--skip-step11"]
     run_target(table, cmake, build_dir, "u1_batch_contract_test", contract_args, f"{label}/contract",
                leg_key="contract")
     run_target(table, cmake, build_dir, "u1_batch_workspace_test", common, f"{label}/workspace",
@@ -179,12 +176,14 @@ def main(argv: List[str]) -> int:
     run_all(table, args.cmake_executable, build_dir, str(pair_dir / "u1_pair_model.sslm"),
             str(pair_dir / "u1_pair_tokenizer.sslm"), MECH_DIMS, MECH_CONTEXT_CAP, "mechanism")
 
-    # PRODUCT: only when both real artifacts are named. step11 excluded
-    # (TE-155 item 3, D-SLM6326) -- the mechanism leg above runs it in full,
-    # since its own near-cap document is trivial at context_cap 64.
+    # PRODUCT: only when both real artifacts are named. step11 now runs in
+    # full here too (TE-182, D-SLM6375's own remedy) -- the tokenized-length
+    # construction refuses in milliseconds against the real candidate's own
+    # context_cap (32768), never the 2h3m character-counted forward
+    # D-SLM6375 measured.
     if args.model and args.tokenizer:
         run_all(table, args.cmake_executable, build_dir, args.model, args.tokenizer, CANDIDATE_DIMS, 32768,
-                "product", skip_step11=True)
+                "product")
     else:
         table.add("product (all cells)", "MISSING PREREQUISITE",
                    "no --model/--tokenizer given -- the real Qwen3-Embedding-0.6B artifact and its "
