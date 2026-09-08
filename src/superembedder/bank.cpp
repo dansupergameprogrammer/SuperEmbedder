@@ -210,9 +210,14 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
 
     // FORMAT.md sec 1: "header geometry over the format ceilings ...
     // rejected on the header fields alone, BEFORE any payload size is
-    // computed from them." D-SLM6393 provisionally names this class
-    // SEMB_BANK_GEOMETRY_CEILING_EXCEEDED (D-SLM6392).
-    if (dims <= 0 || dims > kMaxCrossDeviceDims || count < 0 || count > kMaxBankRows) {
+    // computed from them." D-SLM6393 provisionally names the over-ceiling
+    // class SEMB_BANK_GEOMETRY_CEILING_EXCEEDED (D-SLM6392). TE-193 P-12:
+    // a dims of 0 or a negative count is not "over a ceiling" -- it is a
+    // malformed header value, the same class every other malformed header
+    // field here refuses with (SEMB_ARTIFACT_UNREADABLE); the plan's own
+    // ordinal-31 row names only "dims > 131,072 or count > 2^28".
+    if (dims <= 0 || count < 0) return SEMB_ARTIFACT_UNREADABLE;
+    if (dims > kMaxCrossDeviceDims || count > kMaxBankRows) {
       return SEMB_BANK_GEOMETRY_CEILING_EXCEEDED;
     }
 

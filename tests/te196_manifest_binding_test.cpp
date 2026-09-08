@@ -313,6 +313,43 @@ int main(int argc, char** argv) {
     // bake writes opens; no additional control is needed here.
   }
 
+  // =========================================================================
+  // TE-193 P-12 -- dims:0 and count:-1 are malformed header values, not
+  // values over a format ceiling: they refuse SEMB_ARTIFACT_UNREADABLE, and
+  // the ceiling status is reserved for dims > 131,072 / count > 2^28 (the
+  // only values the plan's own ordinal-31 row names).
+  // =========================================================================
+  {
+    const semb_status st_unreadable = ResolveStatus("SEMB_ARTIFACT_UNREADABLE");
+    const semb_status st_ceiling = ResolveStatus("SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
+    const std::string dims_field = "\"dims\": " + std::to_string(a.dims);
+    const std::string count_field = "\"count\": 2";
+    {
+      const fs::path stem = scratch / (a.stem + "_t_dims_zero");
+      if (CopyTriple(good_stem, stem, label + "/P12 dims: 0", nullptr,
+                     [dims_field](std::string header) { return ReplaceOnce(header, dims_field, "\"dims\": 0"); })) {
+        TryOpenExpect(label + "/P12 dims 0 (malformed, not over a ceiling) -> SEMB_ARTIFACT_UNREADABLE",
+                      stem, st_unreadable, "SEMB_ARTIFACT_UNREADABLE");
+      }
+    }
+    {
+      const fs::path stem = scratch / (a.stem + "_t_count_neg");
+      if (CopyTriple(good_stem, stem, label + "/P12 count: -1", nullptr,
+                     [count_field](std::string header) { return ReplaceOnce(header, count_field, "\"count\": -1"); })) {
+        TryOpenExpect(label + "/P12 count -1 (malformed, not over a ceiling) -> SEMB_ARTIFACT_UNREADABLE",
+                      stem, st_unreadable, "SEMB_ARTIFACT_UNREADABLE");
+      }
+    }
+    {
+      const fs::path stem = scratch / (a.stem + "_t_dims_ceiling_control");
+      if (CopyTriple(good_stem, stem, label + "/P12 dims over the ceiling (control)", nullptr,
+                     [dims_field](std::string header) { return ReplaceOnce(header, dims_field, "\"dims\": 999999999"); })) {
+        TryOpenExpect(label + "/P12 dims over 131,072 still -> SEMB_BANK_GEOMETRY_CEILING_EXCEEDED (control)",
+                      stem, st_ceiling, "SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
+      }
+    }
+  }
+
   std::printf("\nte196_manifest_binding_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
   return g_failures ? 1 : 0;
 }
