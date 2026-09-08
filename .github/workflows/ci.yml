@@ -99,7 +99,8 @@ jobs:
         # TE-166 item 6: TE-165 (N-4, D-SLM6386, D-SLM6390 item 5) pinned
         # the certified toolchain set as a CMake structure
         # (cmake/ToolchainPin.cmake, cmake/toolchain-pin.json) -- MSVC
-        # 19.33.31631.0, clang-cl 18.1.8 (frontend=MSVC), GNU 13.4.0 -- so a
+        # 19.33.31631.0, clang-cl 18.1.8 (frontend=MSVC), GNU 13.3.0 (TE-184,
+        # N-6, D-SLM6403: the runner's own real version) -- so a
         # configure that resolves an uncertified compiler refuses by name
         # (SEMB_TOOLCHAIN_PIN_MISMATCH). windows-latest is left PINNED
         # (no override): ilammy/msvc-dev-cmd@v1 installs an MSVC this
