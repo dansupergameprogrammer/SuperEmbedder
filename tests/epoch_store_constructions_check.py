@@ -44,8 +44,9 @@ script controls completely.
      lineage.tsv held fixed)      -> SEMB_EPOCH_BYTES_DIVERGED
   2. the lineage digest moving alone (fp1's lineage.tsv flipped,
      vectors.f32/row-digest.tsv held fixed) -> SEMB_EPOCH_LINEAGE_DIVERGED
-  3. an entry re-minted in place (fp1's three files wholesale-replaced with
-     fp2's own original bytes)    -> SEMB_EPOCH_ENTRY_MODIFIED
+  3. an entry re-minted in place (fp1's three files each get one byte
+     flipped, together -- every member moves, distinct from constructions
+     1 and 2, which each move exactly one member group) -> SEMB_EPOCH_ENTRY_MODIFIED
   4. an append that leaves every prior entry untouched (a third entry, fp3,
      added; fp1/fp2 byte-identical to the base commit) -> GREEN
   5. archive-by-move accepted (fp2 removed from live/, its own original

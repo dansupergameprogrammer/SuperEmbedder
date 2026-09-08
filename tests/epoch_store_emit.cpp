@@ -4,13 +4,17 @@
 // materialise a well-formed, independently-derived epoch-store entry
 // (`vectors.f32`, `row-digest.tsv`, `lineage.tsv`) for a given corpus and
 // artifact -- and to print the artifact's own current fingerprint. This is
-// INFRASTRUCTURE, not itself a graded cell (EXCLUDE_FROM_ALL; no
-// PASS/FAIL verdict of its own) -- the same role `tests/support/` already
-// holds for `u1_workspace_seam_test.cpp`'s helpers, applied here to a
-// standalone executable because Python cannot call the C ABI directly in
-// this project (every existing Python check drives a built C++ executable
-// by subprocess, e.g. tests/u1_batch_contract_check.py's own header
-// comment).
+// INFRASTRUCTURE, not itself a graded cell (no PASS/FAIL verdict of its
+// own) -- the same role `tests/support/` already holds for
+// `u1_workspace_seam_test.cpp`'s helpers, applied here to a standalone
+// executable because Python cannot call the C ABI directly in this
+// project (every existing Python check drives a built C++ executable by
+// subprocess, e.g. tests/u1_batch_contract_check.py's own header
+// comment). UNLIKE those EXCLUDE_FROM_ALL helpers, this target IS built
+// by default (`tests/CMakeLists.txt`'s own `add_executable(epoch_store_emit
+// ...)`, no such keyword, M3 TE-170): ctest needs the binary present
+// without a separate build step, since epoch_store_check.py and
+// epoch_store_constructions_check.py both shell out to it at test time.
 //
 // WHAT IT COMPUTES, independent of any store on disk (it never reads
 // epoch-store/ -- the checkers that USE this tool's output are the ones
@@ -46,9 +50,15 @@
 //      whichever handle it is given, and those are a property of the
 //      artifact FILE, not of which entry point opened it, so this does
 //      not repeat step 2's forward pass -- step 2's own codes are reused
-//      unchanged. This is row-digest.tsv's own psn_vector_sha256 column's
-//      source, and vectors.f32's own row bytes, for every document that
-//      has no committed text (the synthetic leg).
+//      unchanged. It ALSO supplies `hidden` -- select's own stride into
+//      the caller's `codes` buffer -- which is likewise the artifact
+//      file's own property and not a second one this file independently
+//      tracks; asserted equal to the witness call's own `hidden` at setup
+//      (M8, TE-170), since both handles opening the same --model path is
+//      what makes that equality true rather than merely convenient. This
+//      is row-digest.tsv's own psn_vector_sha256 column's source, and
+//      vectors.f32's own row bytes, for every document that has no
+//      committed text (the synthetic leg).
 //
 //      WHY semb_encode(text) and this composition are the SAME quantity,
 //      when step 5 below has text to compare against: semb_encode's own
@@ -383,10 +393,16 @@ int main(int argc, char** argv) {
   // ---- A second, throwaway interim handle, opened once per invocation on
   // the identical --model path, solely so semb_interim_ps_n_select (step 4
   // of this file's own header comment) has a handle to read the engine's
-  // final-norm gain and site constant from. It runs no forward of its own
-  // -- every document's own codes still come from the witness call below,
-  // and select is applied to those, never to a second seam this handle
-  // would produce. ----
+  // final-norm gain and site constant from -- AND, M8 (TE-170), its own
+  // `hidden_size`, which select uses as the STRIDE into the caller's
+  // `codes` buffer (the witness call's own output, sized by the witness
+  // call's own `hidden`). Safe today only because both handles are opened
+  // on the identical --model path, so the two hidden sizes are the same
+  // number by construction -- a real invariant this file did not state or
+  // check before this round. It runs no forward of its own -- every
+  // document's own codes still come from the witness call below, and
+  // select is applied to those, never to a second seam this handle would
+  // produce. ----
   const char* interim_open_engine_status = nullptr;
   SembInterimEncoder* interim_enc = nullptr;
   const SembInterimStatus interim_open_status =
@@ -398,6 +414,35 @@ int main(int argc, char** argv) {
                  interim_open_engine_status ? interim_open_engine_status : "?");
     semb_encoder_close(enc);
     return 1;
+  }
+
+  // M8 (TE-170): assert the invariant the comment above now states, rather
+  // than leave it unstated and unchecked -- the interim handle's own
+  // hidden_size (what select strides `codes` by) must equal --dims (what
+  // the witness call below sizes `codes` to). Both handles open the same
+  // --model path today, so this cannot fire yet; it exists so a future
+  // change that opens them on different paths fails here, at setup,
+  // rather than as a silently-mis-strided read inside select.
+  {
+    SembInterimGeometry geom{};
+    geom.struct_size = sizeof(geom);
+    const SembInterimStatus geo_st = semb_interim_encoder_geometry(interim_enc, &geom);
+    if (geo_st != kSembInterimOk) {
+      std::fprintf(stderr, "epoch_store_emit: semb_interim_encoder_geometry refused (status %d)\n",
+                   static_cast<int>(geo_st));
+      semb_interim_encoder_close(interim_enc);
+      semb_encoder_close(enc);
+      return 1;
+    }
+    if (geom.hidden_size != a.dims) {
+      std::fprintf(stderr,
+                   "epoch_store_emit: interim handle hidden_size=%u != --dims %u -- select would stride the "
+                   "witness call's codes buffer by the wrong amount (M8, TE-170)\n",
+                   geom.hidden_size, a.dims);
+      semb_interim_encoder_close(interim_enc);
+      semb_encoder_close(enc);
+      return 1;
+    }
   }
 
   // Fingerprint: one throwaway semb_encode call.

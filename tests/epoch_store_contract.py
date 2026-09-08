@@ -51,14 +51,19 @@ def u64_le(value: int) -> bytes:
     return struct.pack("<Q", value)
 
 
+_HEX_LOWER_DIGITS = frozenset("0123456789abcdef")
+
+
 def is_fingerprint_dir_name(name: str) -> bool:
+    """M5, TE-170: an explicit lowercase-hex-digit check, never `int(name,
+    16)` -- that accepts a leading sign, surrounding whitespace, and
+    PEP-515 underscore digit separators, none of which are a hex digit, so
+    `'+' + 'a'*63`, `' ' + 'a'*63`, and `'a'*31 + '_' + 'a'*32` all read as
+    valid 64-character fingerprints under the prior version (confirmed by
+    execution)."""
     if len(name) != FINGERPRINT_HEX_CHARS:
         return False
-    try:
-        int(name, 16)
-    except ValueError:
-        return False
-    return name == name.lower()
+    return all(c in _HEX_LOWER_DIGITS for c in name)
 
 
 def entry_dir(store_root: Path, section: str, fingerprint_hex: str) -> Path:
