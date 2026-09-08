@@ -316,15 +316,34 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
     // A zero-norm row under metric "cosine" (FORMAT.md sec 1; sec 2 of
     // FORMAT.md: "zero-norm rows are a bake-time error" under cosine).
     // D-SLM6392's own proposed name: SEMB_BANK_ZERO_NORM_ROW.
+    //
+    // TE-193 P-7: the scan computes NO floating-point arithmetic. The
+    // previous double sum-of-squares is exactly equivalent to the integer
+    // bit test below, so the swap changes no accepted or refused input:
+    // after the finite check above, every element is finite; a finite
+    // float's square is non-negative and is zero iff the element is +-0.0
+    // (double cannot underflow a float's square -- the smallest positive
+    // float's square is 2^-298, well inside double's subnormal range --
+    // and 131,072 squares of FLT_MAX cannot overflow it either), and a
+    // sum of non-negative doubles is zero iff every term is; so sumsq ==
+    // 0.0 held iff every element was +-0.0, which holds iff every
+    // element's bits with the sign bit masked are zero. That integer form
+    // is what the C41 part 4 object-code scan demands of a library TU on
+    // the reproducible path: zero floating-point instructions.
     if (metric_v->as_string == "cosine") {
       const char* base = bin_bytes.data();
       for (int64_t row = 0; row < count; ++row) {
-        double sumsq = 0.0;
+        bool all_zero = true;
+        const char* row_base = base + static_cast<size_t>(row * dims) * sizeof(float);
         for (int64_t d = 0; d < dims; ++d) {
-          const double v = DecodeFloatLE(base + static_cast<size_t>(row * dims + d) * sizeof(float));
-          sumsq += v * v;
+          uint32_t bits = 0;
+          std::memcpy(&bits, row_base + static_cast<size_t>(d) * sizeof(float), sizeof(bits));
+          if ((bits & 0x7FFFFFFFu) != 0) {
+            all_zero = false;
+            break;
+          }
         }
-        if (sumsq == 0.0) return SEMB_BANK_ZERO_NORM_ROW;
+        if (all_zero) return SEMB_BANK_ZERO_NORM_ROW;
       }
     }
 

@@ -30,13 +30,20 @@ name the scope explicitly, verbatim: `encoder.cpp`, `ps1_pool.cpp`,
 The two headers are never compiled as their own translation unit -- they
 are #included into ps1_pool.cpp and ps_n_pool.cpp (binary32_construct.h)
 and, transitively, wherever big_uint.h lands -- so their compiled code is
-scoped in by scanning the OBJECT FILES for the four named .cpp TUs, which
+scoped in by scanning the OBJECT FILES for the named .cpp TUs, which
 is where a header's own inlined code actually appears as machine
 instructions. This is Slice 1's own INITIAL scan, explicitly scoped to
 today's library surface (`SuperEmbedder_Plan.md` sec 8 C41 part 4: "scoped
 to today's library surface"); Slices 2 and 5 widen it as
 `semb_encode_batch` and `semb_query_encode` add entry points, closing fully
-only at Slice 5 (this project's own sequencing, `te140` sec 6).
+only at Slice 5 (this project's own sequencing, `te140` sec 6). TE-196
+(TE-193 review P-7) widens it for Slice 4's own additions the same way:
+`bank.cpp` (the one Slice 4 TU that performs floating-point arithmetic on
+data -- the cosine zero-norm scan, since replaced by the integer-exact bit
+form -- plus `<unordered_map>`/`<unordered_set>` bucket bookkeeping) and
+`json_lite.cpp` (the JSON reader the bank verbs parse with), both appended
+to `SEMB_LIBRARY_SOURCES` in this same slice and both inside the scan from
+the moment their source landed, rather than a slice behind it.
 
 THE MNEMONIC CLASS -- STATED, AND ITS OWN LIMIT NAMED. sec 8's C41 part 4
 text says this scan uses "the same mnemonic class the engine-side scan
@@ -84,6 +91,9 @@ SCOPED_TUS = [
     "ps1_pool.cpp",
     "ps_n_pool.cpp",
     "wa_digest.cpp",
+    # TE-196 (TE-193 review P-7): Slice 4's own library additions.
+    "bank.cpp",
+    "json_lite.cpp",
 ]
 
 # Header files inlined into the TUs above (binary32_construct.h into both
