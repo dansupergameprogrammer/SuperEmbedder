@@ -2,32 +2,18 @@
 // real 239-document semb_bake_to_path call against the real candidate
 // artifact, independent of tests/te163_bank_pair_test.cpp's own --real leg.
 //
-// WHY THIS EXISTS. tests/te163_bank_pair_test.cpp's own 239-document real
-// bake leg (guarded by --real, source lines ~783-823) is unreachable this
-// round: an earlier cell in the same binary (the "unknown schemaVersion"
-// tamper construction, CopyTriple(good_stem, stem, <lambda>) at line ~512)
-// passes its schemaVersion-edit lambda as CopyTriple's edit_manifest
-// parameter (the 3rd positional argument) rather than edit_header (the
-// 4th) -- but "schemaVersion" is a .wvbank.json HEADER field (FORMAT.md
-// sec 1), never present in the .semb.json MANIFEST this round's own bake
-// writes (verified directly against a freshly-baked manifest: no
-// "schemaVersion" key). ReplaceOnce() therefore throws
-// std::runtime_error("... not found"), uncaught by main(), and the whole
-// process fails fast (observed exit code 3221226505 / 0xC0000409) before
-// any of the nine tamper cells after it, the 50-cycle leak check, or this
-// 239-document leg ever runs -- on BOTH the mechanism and product
-// invocations. This is a tests/ defect (tests/** is outside this seat's
-// writable scope: `Claude/Bach/briefs/te166-slice4-build.md` Contract) and
-// is filed as a finding for the test author. This tool exists only so
-// item 5's own required evidence -- the 239-document bake's wall clock and
-// its SEMB_OK status on the real candidate -- can still be produced this
-// round; it duplicates no row derivation (it calls the SAME
-// semb_bake_to_path this round's own casebook item 3 built, on the SAME
-// committed fixture tests/fixtures/c12b/corpus-239.jsonl the test intended
-// to drive) and asserts nothing the test suite itself does not already
-// assert once its own bug is fixed. Diagnostic only -- not part of the red
-// suite, not wired to ctest, and not a substitute for the test's own
-// (blocked) coverage of this cell.
+// WHY THIS EXISTS. It was introduced as a workaround: the tamper cell in
+// te163_bank_pair_test.cpp that made that binary's --real leg unreachable
+// (the unknown-schemaVersion construction's own ReplaceOnce throwing an
+// uncaught std::runtime_error, exiting 0xC0000409 before the leg) was
+// closed at ac12fac/c2b8380, and the --real leg now runs to completion --
+// 48 cells, 0 failures at 21b1735, including the 239-document bake this
+// tool also times. The tool is kept as a standalone timing diagnostic: an
+// independent wall-clock reading of the bake that does not rerun the
+// suite, calling the SAME semb_bake_to_path on the SAME committed fixture
+// tests/fixtures/c12b/corpus-239.jsonl. It duplicates no row derivation,
+// asserts nothing the suite itself does not already assert, and is not
+// wired to ctest -- diagnostic only.
 #include <chrono>
 #include <cstdio>
 #include <fstream>

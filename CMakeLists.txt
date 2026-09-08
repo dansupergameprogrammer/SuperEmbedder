@@ -154,11 +154,12 @@ target_include_directories(semb PRIVATE "${CMAKE_BINARY_DIR}/generated")
 # ---------------------------------------------------------------------------
 # TE-166 diagnostic only (not part of the red suite, not wired to ctest):
 # times a real 239-document semb_bake_to_path call independent of
-# tests/te163_bank_pair_test.cpp's own --real leg, which this round found
-# unreachable because an earlier tamper cell in that same binary throws
-# uncaught (tools/te166_bake_239_timer.cpp's own header comment has the
-# full account). Exists only to produce item 5's required 239-document bake
-# wall clock while that tests/ defect stands; duplicates no row derivation.
+# tests/te163_bank_pair_test.cpp's own --real leg. The tamper-cell defect
+# that made that --real leg unreachable was closed at ac12fac/c2b8380 --
+# the leg now runs to completion (48 cells, 0 failures at 21b1735, the
+# 239-document bake included) -- so this target is no longer a workaround;
+# it is kept as a standalone wall-clock reading of the bake that does not
+# rerun the suite. Duplicates no row derivation.
 # ---------------------------------------------------------------------------
 add_executable(te166_bake_239_timer EXCLUDE_FROM_ALL tools/te166_bake_239_timer.cpp)
 target_link_libraries(te166_bake_239_timer PRIVATE superembedder)
