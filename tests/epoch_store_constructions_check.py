@@ -181,8 +181,11 @@ def expect(condition: bool, name: str, detail: str, failures: List[str]) -> None
         failures.append(name)
 
 
-def main() -> int:
-    p = argparse.ArgumentParser()
+def add_shared_args(p: argparse.ArgumentParser) -> None:
+    """The base-repo setup's own flags, shared verbatim by this script's
+    --leg-less `main()` and by tests/epoch_store_commission_leg.py (TE-180
+    item 1, D-SLM6433 ruling 1) -- one definition, so the two scripts cannot
+    drift on a default."""
     p.add_argument("--emit-binary", required=True)
     p.add_argument("--repo-root", required=True)
     p.add_argument("--synthetic-model", default="", help="empty = regenerate tests/fixtures/regenerate_tokenizer_pair_fixture.py's own pair")
@@ -193,8 +196,51 @@ def main() -> int:
     p.add_argument("--scratch-dir", required=True)
     p.add_argument("--git", default="git")
     p.add_argument("--doc-id", default="syn-a", help="one document id from --synthetic-tokens to mint fp1 from")
-    args = p.parse_args()
 
+
+class BaseRepo:
+    """The scratch git repository this suite mutates, and its BASE commit:
+    fp1 (a real, emit-minted entry) + fp2 (a byte-identical copy under a
+    distinct key) -- see build_base_repo()'s own docstring. fp3/fp4/fp5 are
+    reserved, fixed-shape fingerprints distinct from fp1/fp2 and from each
+    other, minted by no tool, for constructions that need a THIRD/FOURTH/
+    FIFTH key (never pre-populated in the base commit; a construction that
+    wants one under live/ copies fp1's or fp2's own bytes to it itself)."""
+
+    def __init__(self, repo: Path, git: str, repo_root: Path, base_sha: str,
+                 fp1: str, fp2: str, fp3: str, fp4: str, fp5: str) -> None:
+        self.repo = repo
+        self.git = git
+        self.repo_root = repo_root
+        self.base_sha = base_sha
+        self.fp1 = fp1
+        self.fp2 = fp2
+        self.fp3 = fp3
+        self.fp4 = fp4
+        self.fp5 = fp5
+
+
+def build_base_repo(args) -> BaseRepo:
+    """Mints fp1 for real (the SAME support tool cell 1(b) uses), builds a
+    fresh scratch git repository, and commits the BASE state every
+    construction branches from: fp1 (real, minted) + fp2 (a byte-identical
+    copy of fp1 under a second, fixed, distinct key) -- see this module's
+    own header comment, "THE SCRATCH REPO," for the full rationale (two
+    genuinely well-formed entries under two different keys is enough to
+    prove append-only/archive-by-move/the three divergence statuses,
+    without needing a second real artifact).
+
+    Shared by this script's own main() (the eleven-construction population)
+    and by tests/epoch_store_commission_leg.py (the must-accept/must-reject
+    pair TE-162-epoch-store-check's own registration needs as two literal,
+    independently-exit-coded commands, D-SLM6427/D-SLM6433) -- ONE base-repo
+    setup, so the population both scripts build on top of cannot drift.
+
+    Raises RuntimeError, with the same [FAIL] (setup) ... text main() used
+    to print inline, on any setup failure -- the caller decides what that
+    means for its own exit code (main() below returns 1; the commission-leg
+    script's own accept/reject exit mapping, D-SLM6433 ruling 1, differs by
+    leg and is the leg script's own to apply)."""
     scratch = Path(args.scratch_dir)
     if scratch.exists():
         shutil.rmtree(scratch, ignore_errors=True)
@@ -211,8 +257,7 @@ def main() -> int:
             synthetic_model = synthetic_model or pair_model
             synthetic_tokenizer = synthetic_tokenizer or pair_tokenizer
         except RuntimeError as ex:
-            print(f"[FAIL] (setup) regenerate the synthetic tokenizer-capable pair: {ex}")
-            return 1
+            raise RuntimeError(f"(setup) regenerate the synthetic tokenizer-capable pair: {ex}") from ex
 
     # ---- Mint fp1 for real, via the SAME support tool cell 1(b) uses. ----
     proc = subprocess.run(
@@ -221,20 +266,18 @@ def main() -> int:
          str(args.synthetic_terminator_id), "--out-dir", str(emit_out), "--doc-ids", args.doc_id],
         cwd=str(repo_root), capture_output=True, text=True)
     if proc.returncode != 0:
-        print(f"[FAIL] (setup) epoch_store_emit mints fp1: {proc.stdout}\n{proc.stderr}")
-        return 1
+        raise RuntimeError(f"(setup) epoch_store_emit mints fp1: {proc.stdout}\n{proc.stderr}")
     fp1 = ""
     for line in proc.stdout.splitlines():
         if line.startswith("fingerprint="):
             fp1 = line.split("=", 1)[1]
     if not contract.is_fingerprint_dir_name(fp1):
-        print(f"[FAIL] (setup) epoch_store_emit reports a valid fingerprint: got {fp1!r}")
-        return 1
+        raise RuntimeError(f"(setup) epoch_store_emit reports a valid fingerprint: got {fp1!r}")
     fp2 = FP2_FIXED if FP2_FIXED != fp1 else "1" * 64
     fp3 = FP3_FIXED if FP3_FIXED not in (fp1, fp2) else "2" * 64
     fp4 = FP4_FIXED if FP4_FIXED not in (fp1, fp2, fp3) else "3" * 64
     fp5 = FP5_FIXED if FP5_FIXED not in (fp1, fp2, fp3, fp4) else "4" * 64
-    print(f"[PASS] (setup) fp1 minted: {fp1}")
+    print(f"[PASS] (setup) fp1 minted: {fp1}", flush=True)
 
     # ---- Build the scratch repo and its BASE commit: fp1 (real) + fp2
     # (a byte-identical copy under a distinct key). ----
@@ -244,7 +287,23 @@ def main() -> int:
         shutil.copyfile(emit_out / name, contract.entry_dir(repo, contract.LIVE_DIR, fp1) / name)
     copy_entry(repo, fp1, fp2)
     base_sha = commit_all(repo, args.git, "base: two well-formed live entries")
-    print(f"[PASS] (setup) base commit with fp1+fp2: {base_sha}")
+    print(f"[PASS] (setup) base commit with fp1+fp2: {base_sha}", flush=True)
+
+    return BaseRepo(repo, args.git, repo_root, base_sha, fp1, fp2, fp3, fp4, fp5)
+
+
+def main() -> int:
+    p = argparse.ArgumentParser()
+    add_shared_args(p)
+    args = p.parse_args()
+
+    try:
+        base = build_base_repo(args)
+    except RuntimeError as ex:
+        print(f"[FAIL] {ex}")
+        return 1
+    repo, git, repo_root = base.repo, base.git, base.repo_root
+    base_sha, fp1, fp2, fp3, fp4, fp5 = base.base_sha, base.fp1, base.fp2, base.fp3, base.fp4, base.fp5
 
     failures: List[str] = []
 
