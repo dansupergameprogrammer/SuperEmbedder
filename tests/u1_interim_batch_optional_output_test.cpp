@@ -13,6 +13,16 @@
 //     here as the documented no-op it is today: the forward still runs for
 //     every document, the call returns kSembInterimOk having written
 //     nothing, every status-shaped output stays at its "no failure" value.
+//   * BARE CELL 4 (sec 7 item 4; TE-161 M-2) -- doc_count == 0 with a
+//     non-null out_seam_stream and out_seam_stream_len: the header's own
+//     contract (encoder_interim_abi.h:206-211) states "on success
+//     *out_seam_stream_len holds the exact length written", but the
+//     empty-corpus early return (engine_adapter_interim.cpp:719) returns
+//     before the seam-capacity block that would write it, so a caller's
+//     own preloaded sentinel survives. This cell asserts the documented
+//     contract; if the product still leaves the sentinel, it is RED BY
+//     NAME and stays red -- the fix is src/**, outside this seat's
+//     writable scope, owed to the builder's next round (D-SLM6434).
 //
 // Opens the mechanism synthetic model directly through the INTERIM path
 // (semb_interim_encoder_open), never the public semb_encoder_open -- the
@@ -27,10 +37,14 @@
 //
 // RED-FIRST: before this file existed, no test anywhere in tests/ called
 // semb_interim_encode_batch_ps_n with both out_vectors and out_seam_stream
-// null (confirmed by `git grep -n semb_interim_encode_batch_ps_n tests/` at
-// this branch's own base 3e93430: only src/superembedder/encoder.cpp's own
+// null, or with doc_count == 0 and a non-null out_seam_stream_len
+// (confirmed by `git grep -n semb_interim_encode_batch_ps_n tests/` at this
+// branch's own base 3e93430: only src/superembedder/encoder.cpp's own
 // ComposeBatch calls it, always with out_vectors non-null when out_seam_stream
-// is null and vice versa or both non-null -- never null/null).
+// is null and vice versa or both non-null -- never null/null, and never
+// with doc_count == 0 reachable from either caller, since the public
+// verb's own step 3 refuses SEMB_CORPUS_EMPTY before ComposeBatch is ever
+// entered).
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -116,6 +130,36 @@ int main() {
                 " (expected " + std::to_string(expected_required) + ") failed_index=" + std::to_string(failed_index) +
                 " dequantize_status=" + std::to_string(static_cast<int>(dequantize_status)) +
                 " engine_status=" + (out_engine_status ? out_engine_status : "<NULL>"));
+  }
+
+  // ---- Bare cell 4 (M-2): doc_count == 0 with a non-null out_seam_stream ----------
+  {
+    std::vector<uint8_t> seam_buf(64, 0xA5);
+    size_t seam_len = 0xBAD5EED;      // the caller-supplied sentinel the header says success overwrites
+    size_t required_bytes = 0xBAD5EED;
+    size_t failed_index = 0xBAD5EED;
+    SembWaPoolStatus dequantize_status = static_cast<SembWaPoolStatus>(0xBAD5EED);
+    const char* out_engine_status = nullptr;
+
+    const SembInterimStatus s = semb_interim_encode_batch_ps_n(
+        enc, /*docs_content_ids=*/nullptr, /*docs_n_content=*/nullptr, /*doc_count=*/0,
+        /*chunk_budget=*/0, /*out_vectors=*/nullptr, /*out_capacity_bytes=*/0, &required_bytes,
+        &failed_index, &dequantize_status, &out_engine_status, seam_buf.data(), seam_buf.size(), &seam_len);
+
+    // *out_required_bytes IS documented and IS written on every return
+    // (encoder_interim_abi.h:187-189), including this one -- checked
+    // alongside the seam length so a reader sees the contrast directly:
+    // one output the empty-corpus return already honours, one it does not.
+    const bool required_bytes_ok = s == kSembInterimOk && required_bytes == 0;
+    const bool seam_len_written = s == kSembInterimOk && seam_len == 0;
+    Verdict(required_bytes_ok && seam_len_written,
+            "bare-cell-4 doc_count==0 with a non-null out_seam_stream/out_seam_stream_len -> kSembInterimOk, "
+            "*out_required_bytes == 0 (already honoured) AND *out_seam_stream_len == 0 (encoder_interim_abi.h:210-211's "
+            "own documented contract; RED BY NAME if the sentinel survives -- TE-161 M-2, D-SLM6434 item 1, "
+            "the fix is src/** and owed to the builder's next round, never weakened or touched here)",
+            "status=" + std::to_string(static_cast<int>(s)) + " required_bytes=" + std::to_string(required_bytes) +
+                " seam_len=" + std::to_string(seam_len) + " (0xBAD5EED sentinel = " +
+                std::to_string(static_cast<size_t>(0xBAD5EED)) + ")");
   }
 
   semb_interim_encoder_close(enc);
