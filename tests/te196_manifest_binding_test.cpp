@@ -33,6 +33,7 @@
 #include "json_lite.h"
 #include "superembedder/manifest_labels_abi.h"
 #include "semb_public_abi_contract.h"
+#include "semb_batch_abi_contract.h"
 #include "semb_bake_abi_contract.h"
 #include "semb_bank_abi_contract.h"
 
