@@ -30,32 +30,57 @@
 //      corpus order (sec 4.4b's own corpus-level formula, the same one
 //      tests/w_b_corpus_witness_test.cpp already computes independently
 //      for W-B).
-//   4. semb_ps_n_dequantize(codes at the LAST position, m[last], e[last],
-//      hidden, out) -- PS-N's own single-position dequantize
-//      (tests/semb_ps_n_pool_abi_contract.h; ALREADY BUILT,
-//      src/superembedder/ps_n_pool.cpp per this slice's own ground truth,
-//      sec 2) -- an INDEPENDENT recomputation of the pooled float32
-//      vector that takes no input from the store and no input from
-//      whatever encode path a founder used to mint it. This is
-//      row-digest.tsv's own psn_vector_sha256 column's source, and
-//      vectors.f32's own row bytes, for every document this tool is
-//      given.
+//   4. THE PRODUCT'S OWN COMPOSED SELECTION (D-SLM6389/D-SLM6395 -- this
+//      step replaces a prior construction that dequantized the witness
+//      call's PRE-final-norm codes directly, proved by execution to be a
+//      DIFFERENT quantity from what the product emits): step 2's own
+//      per-position `{codes, m, e}` at the LAST position, position
+//      `n - 1`, is passed through `semb_interim_ps_n_select` -- the
+//      engine's real final-norm site (encoder_interim_abi.h's own "THE
+//      PRODUCT'S COMPOSED PATH" comment: seam -> select -> dequantize) --
+//      to get the post-final-norm `{codes, m, e}` triple PS-N actually
+//      pools from, then `semb_ps_n_dequantize` on THAT triple. A second,
+//      throwaway `SembInterimEncoder` handle (`interim_enc`, opened once
+//      per invocation on the same --model path) supplies the call: select
+//      reads the engine's own final-norm gain and site constant from
+//      whichever handle it is given, and those are a property of the
+//      artifact FILE, not of which entry point opened it, so this does
+//      not repeat step 2's forward pass -- step 2's own codes are reused
+//      unchanged. This is row-digest.tsv's own psn_vector_sha256 column's
+//      source, and vectors.f32's own row bytes, for every document that
+//      has no committed text (the synthetic leg).
+//
+//      WHY semb_encode(text) and this composition are the SAME quantity,
+//      when step 5 below has text to compare against: semb_encode's own
+//      raw path composes seam -> semb_interim_ps_n_select (post-final-
+//      norm) -> dequantize -- textually the identical three-step
+//      composition this step now performs, over the identical
+//      `semb::Encode(..., kSembForwardLegChunkBatched, ...)` primitive and
+//      the identical composed token sequence (content ids then the one
+//      resolved terminator). Two constructions computing the same steps
+//      over the same inputs are one quantity under two names; D-SLM6389
+//      confirmed this by execution (all three of semb_encode's raw path,
+//      this composition, and tools/epoch-store/mint.cpp's own independent
+//      real-leg construction agreeing byte-for-byte on a real-artifact
+//      probe) before this file was corrected to compute it this way.
 //   5. WHEN --corpus-jsonl is given (the real-artifact leg only, per the
 //      dispatch's own cell 4: "for the real artifact"): additionally
 //      calls semb_encode() on the document's own committed TEXT (not its
 //      token ids) -- the raw public path, "what a user receives" -- and
 //      ALWAYS WRITES THE RAW-PATH BYTES to vectors.f32 rather than step
-//      4's dequantized ones ("the store's bytes are what a user receives,
-//      not a second derivation," the dispatch's own cell 4 language,
-//      verbatim). A PASS/INFO-MISMATCH line compares the two for
-//      diagnostic value only and never changes what is written or this
-//      tool's exit code: FINDING, executed this round -- on a
-//      five-document real-artifact probe, step 4's dequantize(last
-//      position) disagreed with semb_encode(text) on every document
-//      (5/5), after the terminator-id fix below ruled out a stale
-//      manifest value as the cause. Root cause unresolved this round
-//      (product internals beyond a test author's writable scope);
-//      ROUTED to the builder in this round's own handoff.
+//      4's selected-and-dequantized ones ("the store's bytes are what a
+//      user receives, not a second derivation," the dispatch's own cell 4
+//      language, verbatim). The two are ASSERTED EQUAL, bit for bit, as a
+//      FAILING check (TE-168 item 1 -- the prior INFO-MISMATCH softening,
+//      informational only and never load-bearing, is retired): they are
+//      the same quantity by construction (see step 4's own "WHY" above),
+//      so a mismatch here means THIS FILE's own construction has drifted
+//      from the product's, not a benign, expected disagreement -- exactly
+//      the failure mode TE-168's mutation proof exists to catch (a scratch
+//      copy that reverts step 4 to dequantizing the pre-final-norm codes
+//      directly must fail this assertion on the real leg, and must fail
+//      cell 1(b)'s synthetic-leg byte comparison against the committed
+//      entry).
 //   6. The artifact's own current fingerprint: opens a THIRD encoder
 //      handle (or reuses step 5's, when --corpus-jsonl was given) and
 //      calls semb_encode() once on a fixed throwaway string purely to
@@ -85,8 +110,15 @@
 
 #include "semb_public_abi_contract.h"
 #include "semb_seam_abi_contract.h"
-#include "semb_ps_n_pool_abi_contract.h"
 #include "semb_epoch_store_contract.h"
+
+// semb_interim_ps_n_select, SembWaPoolStatus, and semb_ps_n_dequantize's own
+// declaration all come from here (D-SLM6389/TE-168) -- tests/
+// semb_ps_n_pool_abi_contract.h is a hand-kept mirror of this SAME header's
+// own semb_ps_n_dequantize declaration (its own header comment says so) and
+// including both in one TU redefines SembWaPoolStatus; this file already
+// needs the real header for select, so it is the one declaration used here.
+#include "superembedder/encoder_interim_abi.h"
 
 #include "superslm/artifact.h"
 #include "superslm/sha256.h"
@@ -343,6 +375,26 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // ---- A second, throwaway interim handle, opened once per invocation on
+  // the identical --model path, solely so semb_interim_ps_n_select (step 4
+  // of this file's own header comment) has a handle to read the engine's
+  // final-norm gain and site constant from. It runs no forward of its own
+  // -- every document's own codes still come from the witness call below,
+  // and select is applied to those, never to a second seam this handle
+  // would produce. ----
+  const char* interim_open_engine_status = nullptr;
+  SembInterimEncoder* interim_enc = nullptr;
+  const SembInterimStatus interim_open_status =
+      semb_interim_encoder_open(a.model.c_str(), static_cast<int32_t>(terminator_id), &interim_enc,
+                                 &interim_open_engine_status);
+  if (interim_open_status != kSembInterimOk || !interim_enc) {
+    std::fprintf(stderr, "epoch_store_emit: semb_interim_encoder_open refused (status %d, engine %s)\n",
+                 static_cast<int>(interim_open_status),
+                 interim_open_engine_status ? interim_open_engine_status : "?");
+    semb_encoder_close(enc);
+    return 1;
+  }
+
   // Fingerprint: one throwaway semb_encode call.
   {
     std::vector<float> throwaway(static_cast<size_t>(a.dims), 0.0f);
@@ -354,6 +406,7 @@ int main(int argc, char** argv) {
                                         throwaway.size() * sizeof(float), &required, &fp);
     if (es != SEMB_OK) {
       std::fprintf(stderr, "epoch_store_emit: fingerprint probe semb_encode refused: %s\n", semb_status_name(es));
+      semb_interim_encoder_close(interim_enc);
       semb_encoder_close(enc);
       return 1;
     }
@@ -368,7 +421,12 @@ int main(int argc, char** argv) {
   std::vector<uint8_t> lineage_all_stream;
   PutU64LE(&lineage_all_stream, static_cast<uint64_t>(docs.size()));
 
-  int raw_path_mismatches = 0;
+  int raw_path_checked = 0;
+
+  auto close_all = [&]() {
+    semb_interim_encoder_close(interim_enc);
+    semb_encoder_close(enc);
+  };
 
   for (const DocTokens& d : docs) {
     std::vector<int8_t> codes(d.ids.size() * kSembWitnessMaxHidden);
@@ -379,24 +437,27 @@ int main(int argc, char** argv) {
     if (est != kSembEncodeOk) {
       std::fprintf(stderr, "epoch_store_emit: semb_encode_document_for_witness refused for '%s' (status %d)\n",
                    d.id.c_str(), static_cast<int>(est));
-      semb_encoder_close(enc);
+      close_all();
       return 1;
     }
     if (hidden != a.dims) {
       std::fprintf(stderr, "epoch_store_emit: '%s' hidden_size=%zu != --dims %u\n", d.id.c_str(), hidden, a.dims);
-      semb_encoder_close(enc);
+      close_all();
       return 1;
     }
 
     // Lineage: serialise EVERY position (sec 4.4b's own per-document
-    // formula), SHA-256 the stream.
+    // formula), SHA-256 the stream. Unchanged by this round's fix -- the
+    // witness call's own PRE-final-norm codes are exactly what lineage.tsv
+    // is defined over (the W-B seam, "the forward's own output BEFORE any
+    // pooling," tests/c12b_row_digest_check.py's own docstring).
     std::vector<uint8_t> doc_buf(16 + d.ids.size() * (hidden + 16));
     size_t doc_len = 0;
     const SembSerializeStatus sst = semb_seam_serialize_document(codes.data(), m.data(), e.data(), d.ids.size(),
                                                                     hidden, doc_buf.data(), doc_buf.size(), &doc_len);
     if (sst != kSembSerializeOk) {
       std::fprintf(stderr, "epoch_store_emit: semb_seam_serialize_document refused for '%s'\n", d.id.c_str());
-      semb_encoder_close(enc);
+      close_all();
       return 1;
     }
     uint8_t seam_digest[32];
@@ -404,22 +465,50 @@ int main(int argc, char** argv) {
     lineage_rows.push_back({d.id, Hex(seam_digest)});
     lineage_all_stream.insert(lineage_all_stream.end(), doc_buf.begin(), doc_buf.begin() + doc_len);
 
-    // PS-N vector: dequantize the LAST position (PS-N's own selection
-    // rule, sec 3.2 item 4) -- independent of the store, independent of
-    // whatever entry point minted it.
+    // PS-N vector: select the LAST position (PS-N's own selection rule,
+    // sec 3.2 item 4) through the engine's REAL final-norm site
+    // (semb_interim_ps_n_select), then dequantize the selected,
+    // post-final-norm triple -- the product's own composed path
+    // (encoder_interim_abi.h's "THE PRODUCT'S COMPOSED PATH" comment),
+    // never the seam's raw pre-final-norm codes directly (D-SLM6389's own
+    // construction fix, this file's own header comment step 4). Reuses
+    // the witness call's own codes above -- both entry points compose the
+    // identical semb::Encode(..., kSembForwardLegChunkBatched, ...)
+    // primitive over the identical token sequence, so this needs no
+    // second forward pass; `interim_enc` supplies only the final-norm
+    // gain and site constant select reads, a property of the artifact
+    // file rather than of which handle produced these codes.
+    const size_t last = d.ids.size() - 1;
+    std::vector<int8_t> selected(hidden);
+    int64_t sel_m = 0, sel_e = 0;
+    const char* select_engine_status = nullptr;
+    const SembInterimStatus sel_st =
+        semb_interim_ps_n_select(interim_enc, codes.data(), m.data(), e.data(), d.ids.size(), last,
+                                  selected.data(), &sel_m, &sel_e, &select_engine_status);
+    if (sel_st != kSembInterimOk) {
+      std::fprintf(stderr, "epoch_store_emit: semb_interim_ps_n_select refused for '%s' (status %d, engine %s)\n",
+                   d.id.c_str(), static_cast<int>(sel_st), select_engine_status ? select_engine_status : "?");
+      close_all();
+      return 1;
+    }
     std::vector<float> dequantized(hidden);
-    const SembWaPoolStatus dq = semb_ps_n_dequantize(
-        codes.data() + (d.ids.size() - 1) * hidden, m[d.ids.size() - 1], e[d.ids.size() - 1], hidden, dequantized.data());
+    const SembWaPoolStatus dq = semb_ps_n_dequantize(selected.data(), sel_m, sel_e, hidden, dequantized.data());
     if (dq != kSembOk) {
       std::fprintf(stderr, "epoch_store_emit: semb_ps_n_dequantize refused for '%s' (status %d)\n", d.id.c_str(),
                    static_cast<int>(dq));
-      semb_encoder_close(enc);
+      close_all();
       return 1;
     }
 
     std::vector<float> row_vector = dequantized;
 
-    // Real-artifact leg: cross-check and prefer the raw public path.
+    // Real-artifact leg: semb_encode(text) and the selected-and-dequantized
+    // composition above are asserted the SAME quantity, bit for bit, as a
+    // FAILING check (TE-168 item 1 -- the prior INFO-MISMATCH softening is
+    // retired). They are the same quantity by construction (this file's
+    // own header comment, step 4's "WHY"): a mismatch here is THIS FILE's
+    // own construction drifting from the product's, not an expected,
+    // informational disagreement.
     if (const std::string* text = find_text(d.id)) {
       std::vector<float> raw(hidden);
       size_t required = 0;
@@ -430,28 +519,23 @@ int main(int argc, char** argv) {
       if (es != SEMB_OK) {
         std::fprintf(stderr, "epoch_store_emit: raw-path semb_encode refused for '%s': %s\n", d.id.c_str(),
                      semb_status_name(es));
-        semb_encoder_close(enc);
+        close_all();
         return 1;
       }
-      // FINDING, executed rather than assumed, this round: on a
-      // five-document real-artifact probe, semb_ps_n_dequantize(last
-      // position) disagreed with semb_encode(text) on every document
-      // (5/5) even after the terminator-id/live-tokenizer fix above ruled
-      // out a stale manifest value. The root cause is not resolved this
-      // round (it would require tracing semb_interim_encode_ps_n's exact
-      // composition against semb_encode_document_for_witness's, product
-      // internals beyond a grep-level check) -- ROUTED to the builder.
-      // INFORMATIONAL ONLY: never fails this tool's exit code, and never
-      // changes what is written -- the raw path is preferred for
-      // row_vector regardless ("the store's bytes are what a user
-      // receives, not a second derivation"), so this finding does not
-      // threaten vectors.f32's own correctness, only this tool's own
-      // extra cross-check.
       const bool match = std::memcmp(raw.data(), dequantized.data(), hidden * sizeof(float)) == 0;
-      std::printf("[%s] (raw-path cross-check, informational) '%s' semb_encode(text) == "
-                  "semb_ps_n_dequantize(last position)\n",
-                  match ? "PASS" : "INFO-MISMATCH", d.id.c_str());
-      if (!match) ++raw_path_mismatches;
+      if (!match) {
+        std::fprintf(stderr,
+                     "epoch_store_emit: FAIL '%s': semb_encode(text) != semb_interim_ps_n_select(last position) + "
+                     "semb_ps_n_dequantize -- these are the SAME quantity by construction (D-SLM6389); a mismatch "
+                     "is this oracle's own defect, not the product's\n",
+                     d.id.c_str());
+        close_all();
+        return 1;
+      }
+      std::printf("[PASS] '%s' semb_encode(text) == semb_interim_ps_n_select(last position) + "
+                  "semb_ps_n_dequantize\n",
+                  d.id.c_str());
+      ++raw_path_checked;
       row_vector = raw;  // "the store's bytes are what a user receives" -- prefer the raw path always when available.
     }
 
@@ -462,7 +546,7 @@ int main(int argc, char** argv) {
     superslm::Sha256Hash(row_bytes, row_len, row_digest);
     row_digest_rows.push_back({d.id, Hex(row_digest)});
   }
-  semb_encoder_close(enc);
+  close_all();
 
   uint8_t vectors_all_digest[32];
   superslm::Sha256Hash(vectors_blob.data(), vectors_blob.size(), vectors_all_digest);
@@ -495,7 +579,8 @@ int main(int argc, char** argv) {
 
   std::printf("vectors_all_sha256=%s\n", Hex(vectors_all_digest).c_str());
   std::printf("lineage_all_sha256=%s\n", Hex(lineage_all_digest).c_str());
-  std::printf("raw_path_mismatches=%d (informational; see this file's own header comment -- routed, not "
-              "load-bearing)\n", raw_path_mismatches);
+  std::printf("raw_path_asserted_equal=%d (of %zu real-artifact documents; see this file's own header comment "
+              "step 5 -- a mismatch fails this tool's exit code, TE-168)\n",
+              raw_path_checked, docs.size());
   return 0;
 }
