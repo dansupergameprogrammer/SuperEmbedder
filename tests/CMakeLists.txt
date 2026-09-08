@@ -301,12 +301,15 @@ endif()
 # and Claude/Curie/te168-slice3-oracle-fix-2026-09-07.md sec 3 both report
 # as an executed, one-off probe. Independent of both epoch_store_emit's own
 # construction and of C2's own oracle (tests/c2_lineage_equality_test.cpp).
-# The fingerprint is the founding real entry TE-164 committed
-# (epoch-store/live/53454d4250.../, corpus-239, dims 1024) -- pinned
-# literally, matching this suite's own convention of pinning known values
-# (e.g. --terminator-id 151643 a few lines above) rather than discovering
-# it at test time. real_artifact only: needs the built instrument and the
-# real model, exactly like c12b_row_digest_check above.
+# TE-190 item 5 (D-SLM6466 ruling 2, closing O2): the graded live entry is
+# no longer a pinned fingerprint literal -- c12b_epoch_store_cross_check.py
+# now SELECTS the epoch-store/live/<fingerprint>/ entry whose committed
+# row-digest.tsv document count matches --corpus's own (239), refusing by
+# name when none or more than one live entry matches, so a legitimate
+# epoch rotation (a second live entry committed alongside this one) does
+# not turn this cell red for a reason unrelated to the claim it grades.
+# real_artifact only: needs the built instrument and the real model,
+# exactly like c12b_row_digest_check above.
 if(TARGET semb_c12b_row_digest AND NOT SEMB_C12B_MODEL STREQUAL "")
 	add_test(
 		NAME c12b_epoch_store_cross_check
@@ -316,7 +319,6 @@ if(TARGET semb_c12b_row_digest AND NOT SEMB_C12B_MODEL STREQUAL "")
 			--corpus "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/corpus-239.tokens.tsv"
 			--append-token-id 151643
 			--store-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
-			--fingerprint 53454d42503030313faed4bd97878f3327567d1d1c89164a4557c5d4f825e821
 			--build-dir "${CMAKE_BINARY_DIR}"
 		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 	)

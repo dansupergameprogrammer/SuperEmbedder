@@ -65,12 +65,25 @@ one).
 USAGE
   c12b_epoch_store_cross_check.py --instrument <semb_c12b_row_digest exe>
     --model <.sslm> --corpus <tokens.tsv> --append-token-id <n>
-    --store-root <dir> --fingerprint <hex> --build-dir <scratch dir>
+    --store-root <dir> --build-dir <scratch dir>
+
+THE LIVE ENTRY GRADED (TE-190 item 5, D-SLM6466 ruling 2, closing O2): NOT
+a caller-pinned fingerprint literal. `--corpus`'s own document count is
+read first (cheap: no subprocess), then
+`epoch_store_contract.select_live_fingerprint_by_document_count` picks the
+single `epoch-store/live/<fingerprint>/` entry whose committed
+row-digest.tsv carries that many documents, refusing by name -- before the
+instrument is ever run -- when zero or more than one live entry matches.
+A literal fingerprint false-reds this cell on a legitimate epoch rotation
+(a second live entry committed alongside the graded one) for a reason
+unrelated to the claim this cell grades; selecting by the corpus's own
+shape does not.
 
 Exit codes: 0 every document's row-digest.tsv AND lineage.tsv digest
 matches c12b's own psn_vector_sha256/seam_sha256 columns for that
 document; 1 any mismatch (named), any document present on one side only
-(a named FAIL, never silently skipped), or the instrument absent
+(a named FAIL, never silently skipped), the live entry to grade could not
+be selected (named, per the paragraph above), or the instrument absent
 (red-unimplemented, printed by name -- never a silent MISSING
 PREREQUISITE standing in for a comparison that did not run).
 """
@@ -127,14 +140,29 @@ def main() -> int:
     p.add_argument("--append-token-id", type=int, required=True)
     p.add_argument("--store-root", required=True,
                     help="the repository root whose epoch-store/live/<fingerprint>/ subtree holds the committed "
-                         "entry (epoch_store_contract.LIVE_DIR already carries the 'epoch-store/live' prefix)")
-    p.add_argument("--fingerprint", required=True, help="the committed live entry's own fingerprint directory name")
+                         "entry (epoch_store_contract.LIVE_DIR already carries the 'epoch-store/live' prefix); "
+                         "the entry graded is SELECTED by document count against --corpus, never pinned")
     p.add_argument("--build-dir", required=True)
     args = p.parse_args()
 
     if not args.instrument or not Path(args.instrument).exists():
         print("c12b_epoch_store_cross_check: RED -- the instrument (semb_c12b_row_digest) is not built. "
               "This is red-unimplemented, not a verified pass.")
+        return 1
+
+    store_root = Path(args.store_root)
+
+    # TE-190 item 5: select the live entry to grade BEFORE the (expensive)
+    # instrument run -- cheap (no subprocess), and lets a refusal report by
+    # name without paying for a real leg that was never going to be graded
+    # against anything.
+    corpus_docs = contract.read_tokens_tsv(Path(args.corpus))
+    expected_document_count = len(corpus_docs)
+    try:
+        fingerprint = contract.select_live_fingerprint_by_document_count(store_root, expected_document_count)
+    except ValueError as ex:
+        print(f"[FAIL] (setup) selecting the live entry to grade against --corpus's {expected_document_count} "
+              f"document(s): {ex}")
         return 1
 
     scratch = Path(args.build_dir) / "_c12b_epoch_store_cross_check"
@@ -147,8 +175,7 @@ def main() -> int:
         print(f"[FAIL] (setup) semb_c12b_row_digest: {ex}")
         return 1
 
-    store_root = Path(args.store_root)
-    entry_dir = contract.entry_dir(store_root, contract.LIVE_DIR, args.fingerprint)
+    entry_dir = contract.entry_dir(store_root, contract.LIVE_DIR, fingerprint)
     row_digest_path = entry_dir / contract.ROW_DIGEST_FILE_NAME
     lineage_path = entry_dir / contract.LINEAGE_FILE_NAME
     try:

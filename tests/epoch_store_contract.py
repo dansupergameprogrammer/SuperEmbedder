@@ -87,6 +87,60 @@ def list_archive_fingerprints(repo_root: Path) -> List[str]:
     return sorted(p.name for p in archive.iterdir() if p.is_dir() and is_fingerprint_dir_name(p.name))
 
 
+def select_live_fingerprint_by_document_count(store_root: Path, expected_document_count: int) -> str:
+    """TE-190 item 5 (D-SLM6466 ruling 2, O2): selects the single
+    `epoch-store/live/<fingerprint>/` entry whose committed row-digest.tsv
+    carries exactly `expected_document_count` documents, rather than a
+    caller-pinned fingerprint literal -- a literal false-reds the caller on
+    a legitimate epoch rotation (a second live entry added alongside the
+    graded one) for a reason unrelated to the claim being graded.
+
+    A candidate's own vectors.f32 length must also divide evenly by its
+    document_count -- dims*4 bytes per row, corpus order, per this module's
+    own contract (matching tests/epoch_store_check.py's own `row_bytes =
+    len(vectors) // document_count` derivation) -- checked as a self-
+    consistency guard on each candidate, so this doubles as the "dims" half
+    of the selection: a candidate whose vectors.f32 fails that division is
+    reported malformed rather than silently accepted or silently dropped.
+
+    Raises ValueError, naming every fingerprint considered and why, when
+    zero or more than one live entry's document_count matches -- this
+    function never guesses among candidates, and a caller reading the
+    exception text does not need to re-derive which entries were seen."""
+    matched: List[Tuple[str, int]] = []  # (fingerprint, dims)
+    problems: List[str] = []
+    for fp in list_live_fingerprints(store_root):
+        entry = entry_dir(store_root, LIVE_DIR, fp)
+        row_digest_path = entry / ROW_DIGEST_FILE_NAME
+        vectors_path = entry / VECTORS_FILE_NAME
+        try:
+            row_digest_per_doc, _all_value = parse_row_digest_tsv(row_digest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as ex:
+            problems.append(f"{fp}: cannot read {ROW_DIGEST_FILE_NAME} ({ex})")
+            continue
+        document_count = len(row_digest_per_doc)
+        if document_count != expected_document_count:
+            continue
+        try:
+            vectors_len = vectors_path.stat().st_size
+        except OSError as ex:
+            problems.append(f"{fp}: cannot stat {VECTORS_FILE_NAME} ({ex})")
+            continue
+        if document_count == 0 or vectors_len % document_count != 0:
+            problems.append(f"{fp}: {VECTORS_FILE_NAME} length {vectors_len} does not divide evenly "
+                             f"by document_count {document_count}")
+            continue
+        matched.append((fp, (vectors_len // document_count) // 4))
+    if len(matched) == 1:
+        return matched[0][0]
+    names = ", ".join(f"{fp} (dims={dims})" for fp, dims in matched) if matched else "(none)"
+    detail = (f"expected exactly one live entry under {store_root / LIVE_DIR} with document_count="
+              f"{expected_document_count}, found {len(matched)}: {names}")
+    if problems:
+        detail += f"; skipped as malformed: {'; '.join(problems)}"
+    raise ValueError(detail)
+
+
 def parse_row_digest_tsv(text: str) -> Tuple[Dict[str, str], str]:
     """Returns (per-doc id -> psn_vector_sha256, the "all" line's own
     value). Raises ValueError on a line that does not carry exactly two
