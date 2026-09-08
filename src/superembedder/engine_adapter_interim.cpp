@@ -78,6 +78,39 @@ static void OnAcquired() {
   state_changed.wait(lock, [generation] { return release_generation != generation; });
   --parked;
 }
+
+// TE-184 (D-SLM6434 item 2, TE-161 N-5, TE-149 sec 7 bare cell 2): a
+// SECOND, independent park point at per-DOCUMENT granularity, distinct
+// from OnAcquired's once-per-CALL park above. The batch verb
+// (semb_interim_encode_batch_ps_n, below) acquires one workspace slot
+// once for the whole call and holds it across every row; OnAcquired fires
+// exactly once, at that acquisition, so no existing construction can
+// observe the slot BETWEEN two rows of the SAME call -- only between two
+// separate calls. This hook, called once per document inside that
+// function's own per-row loop, lets a test park the calling thread
+// mid-call, still holding that one slot, so a contender's own attempt to
+// acquire a DIFFERENT slot at that finer granularity is observable: a
+// defect that released and reacquired mid-row would be invisible to
+// OnAcquired's own once-per-call crossing alone. Shares state_mutex/
+// state_changed with OnAcquired above (one lock protects both counters);
+// its own budget/counter/generation are independent so arming one hook
+// never arms the other.
+static uint32_t row_park_budget = 0;
+static uint32_t row_parked = 0;
+static uint64_t row_release_generation = 0;
+static std::atomic<uint64_t> row_acquisitions{0};
+
+static void OnRowAcquired() {
+  row_acquisitions.fetch_add(1);
+  std::unique_lock<std::mutex> lock(state_mutex);
+  if (row_park_budget == 0) return;
+  --row_park_budget;
+  ++row_parked;
+  const uint64_t generation = row_release_generation;
+  state_changed.notify_all();
+  state_changed.wait(lock, [generation] { return row_release_generation != generation; });
+  --row_parked;
+}
 }  // namespace semb::test_seam
 
 extern "C" int32_t semb_test_seam_arm_park(uint32_t count) {
@@ -117,6 +150,52 @@ extern "C" int32_t semb_test_seam_reset(void) {
   semb::test_seam::park_budget = 0;
   semb::test_seam::acquisitions.store(0);
   ++semb::test_seam::release_generation;
+  return 1;
+}
+
+// TE-184 (D-SLM6434 item 2): the per-document park point's own surface, in
+// the identical shape as the once-per-call surface above -- arm/parked/
+// wait_parked/release/acquisitions/reset -- but naming the "row" hook
+// (OnRowAcquired) each function reaches, so a test that wants call
+// granularity and one that wants row granularity can arm each
+// independently without one silently arming the other.
+extern "C" int32_t semb_test_seam_row_arm_park(uint32_t count) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  if (semb::test_seam::row_parked != 0) return 0;
+  semb::test_seam::row_park_budget = count;
+  return 1;
+}
+
+extern "C" uint32_t semb_test_seam_row_parked(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  return semb::test_seam::row_parked;
+}
+
+extern "C" int32_t semb_test_seam_row_wait_parked(uint32_t n, uint32_t timeout_ms) {
+  std::unique_lock<std::mutex> lock(semb::test_seam::state_mutex);
+  return semb::test_seam::state_changed.wait_for(
+      lock, std::chrono::milliseconds(timeout_ms),
+      [n] { return semb::test_seam::row_parked >= n; }) ? 1 : 0;
+}
+
+extern "C" void semb_test_seam_row_release(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  ++semb::test_seam::row_release_generation;
+  semb::test_seam::row_park_budget = 0;
+  semb::test_seam::state_changed.notify_all();
+}
+
+extern "C" uint64_t semb_test_seam_row_acquisitions(void) {
+  return semb::test_seam::row_acquisitions.load();
+}
+
+extern "C" int32_t semb_test_seam_row_reset(void) {
+  // The caller joins every worker/helper before resetting the counter epoch.
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  if (semb::test_seam::row_parked != 0) return 0;
+  semb::test_seam::row_park_budget = 0;
+  semb::test_seam::row_acquisitions.store(0);
+  ++semb::test_seam::row_release_generation;
   return 1;
 }
 #endif
@@ -755,6 +834,15 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
 
   size_t seam_offset = 0;
   for (size_t doc = 0; doc < doc_count; ++doc) {
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+    // TE-184 (D-SLM6434 item 2): the per-document park point, fired once
+    // per document while the ONE workspace slot acquired above is still
+    // held -- distinct from OnAcquired's once-per-call park at the
+    // acquisition itself. A no-op (one counter increment) when unarmed, so
+    // the product's own output is unchanged whether this hook exists or
+    // not; see this round's build record for the digest proof.
+    semb::test_seam::OnRowAcquired();
+#endif
     const size_t n_content = docs_n_content[doc];
     const size_t n = n_content + 1;  // the appended end token
     std::vector<int32_t> tokens(n);
