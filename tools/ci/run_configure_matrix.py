@@ -1063,8 +1063,12 @@ def c34_leg_g_preprocess_failure_raises():
     # places -- one substitution into that set's own closing line now
     # extends BOTH lists at once, where the two-anchor form this replaced
     # needed a second, separate add_library() text replace.
-    old_sources_block = '\tsrc/superembedder/engine_adapter_interim.cpp\n)'
-    new_sources_block = '\tsrc/superembedder/engine_adapter_interim.cpp\n\tsrc/uses_gen.cpp\n)'
+    # TE-166: the anchor is the block's own LAST source line before the
+    # closing paren, which SEMB_LIBRARY_SOURCES's own append-only growth
+    # (semb_source_hash.py's own covered-set discipline) keeps moving --
+    # bank.cpp (json_lite.cpp/bank.cpp appended, U1 slice 4) is current.
+    old_sources_block = '\tsrc/superembedder/bank.cpp\n)'
+    new_sources_block = '\tsrc/superembedder/bank.cpp\n\tsrc/uses_gen.cpp\n)'
     assert text.count(old_sources_block) == 1, (
         f"anchor not found or not unique: {text.count(old_sources_block)}"
     )
@@ -1136,9 +1140,11 @@ def c34_leg_i_build_dir_placement_invariant():
     # TE-63: see c34_leg_g_preprocess_failure_raises's own comment -- one
     # substitution into the shared set(SEMB_LIBRARY_SOURCES ...) now
     # extends both semb_compute_source_provenance's SOURCES and
-    # add_library's source list at once.
-    old_sources_block = '\tsrc/superembedder/engine_adapter_interim.cpp\n)'
-    new_sources_block = '\tsrc/superembedder/engine_adapter_interim.cpp\n\tsrc/uses_gen.cpp\n)'
+    # add_library's source list at once. TE-166: anchor moved to
+    # bank.cpp, the block's current last line (see the sibling leg's own
+    # comment for why).
+    old_sources_block = '\tsrc/superembedder/bank.cpp\n)'
+    new_sources_block = '\tsrc/superembedder/bank.cpp\n\tsrc/uses_gen.cpp\n)'
     assert text.count(old_sources_block) == 1, (
         f"anchor not found or not unique: {text.count(old_sources_block)}"
     )
