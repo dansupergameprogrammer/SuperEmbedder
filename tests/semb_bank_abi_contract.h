@@ -52,8 +52,11 @@
 //   unknown .wvbank.json schemaVersion                      -> SEMB_MANIFEST_SCHEMA_UNSUPPORTED
 //   .wvbank.bin length disagreeing with the header's
 //     count * dims * 4                                      -> SEMB_BANK_SIZE_MISMATCH
-//   the manifest's own artifact SHA(s) disagreeing with a
-//     recomputation over the pair's own bytes                -> SEMB_ARTIFACT_SHA_MISMATCH
+//   the manifest's own artifact SHA disagreeing with a
+//     recomputation over the manifest's own model_sha and
+//     tokenizer_sha fields (open takes no encoder argument;
+//     the pair's own bytes are never read for this check)
+//                                                          -> SEMB_ARTIFACT_SHA_MISMATCH
 //   the manifest's encoder_fingerprint disagreeing with the
 //     SHA-256 of its own five components in clear (sec 3.3's
 //     composition; cell 3, this round's own resolved reading) -> SEMB_FINGERPRINT_MISMATCH
