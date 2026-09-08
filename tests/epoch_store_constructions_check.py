@@ -382,12 +382,15 @@ def main() -> int:
     # that has nothing archived yet (MISSING PREREQUISITE, not a FAIL), so
     # the old oracle would say True on a tool that never archived anything.
     # The fix asserts the archive tool's OWN documented postcondition
-    # directly, from the same three per-member SHA-256 values it prints:
-    # live/<fp4>/ is gone, archive/<fp4>/ holds all three members, and
-    # every one is byte-identical to what lived under live/<fp4>/ before
-    # the tool ran -- captured here independently of the tool's own
-    # printed digests, so a tool that also miscomputes what it prints
-    # cannot pass by agreeing with itself. ----
+    # directly, from raw bytes read off the filesystem before and after the
+    # tool runs, never from the tool's own printed output: live/<fp4>/ is
+    # gone, archive/<fp4>/ holds all three members, and every one is
+    # byte-identical to what lived under live/<fp4>/ before the tool ran --
+    # captured here independently of the tool's own printed digests, so a
+    # tool that also miscomputes what it prints cannot pass by agreeing
+    # with itself (M13, TE-176: the prior wording of this comment claimed
+    # the assertion reads the tool's OWN printed SHA-256 values, which the
+    # code below never does). ----
     checkout_new_branch(repo, args.git, "construction-10", base_sha)
     copy_entry(repo, fp1, fp4)
     c10_base_sha = commit_all(repo, args.git, "construction 10 commit 1: append fp4 (to be archived by the real tool)")
@@ -416,7 +419,9 @@ def main() -> int:
             for name in contract.MEMBER_FILE_NAMES)
         expect(archive_members_ok, "construction-10-archive-entry-byte-identical",
                f"archive/{fp4}/ must hold all three members, each byte-identical to live/{fp4}/'s own bytes "
-               "before the move -- a copy-only tool that leaves live/ in place must fail this, S9", failures)
+               "before the move -- a move that corrupts or drops a member's bytes in transit must fail this, "
+               "S9 (M12, TE-176: a copy-only tool that leaves live/ in place fails the sibling assertion "
+               "above, construction-10-live-entry-removed, not this one)", failures)
         # The checker's own read is still worth confirming (a real move it
         # cannot see would be its own defect), but per S9 it is no longer
         # the sole oracle -- the two assertions above are what a copy-only
