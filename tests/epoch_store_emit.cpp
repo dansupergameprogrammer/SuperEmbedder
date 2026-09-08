@@ -80,7 +80,12 @@
 //      copy that reverts step 4 to dequantizing the pre-final-norm codes
 //      directly must fail this assertion on the real leg, and must fail
 //      cell 1(b)'s synthetic-leg byte comparison against the committed
-//      entry).
+//      entry). COVERAGE IS ALL-OR-NOTHING (S2, TE-170): when --corpus-jsonl
+//      is given, EVERY document named in --tokens must be present in it --
+//      a document absent from the jsonl is a NAMED refusal (nonzero exit),
+//      never a silent fall-through to step 4's composed-derivation bytes
+//      for that one document alone. `raw_path_checked` is asserted equal to
+//      the document count before this tool's own success path is taken.
 //   6. The artifact's own current fingerprint: opens a THIRD encoder
 //      handle (or reuses step 5's, when --corpus-jsonl was given) and
 //      calls semb_encode() once on a fixed throwaway string purely to
@@ -509,7 +514,26 @@ int main(int argc, char** argv) {
     // own header comment, step 4's "WHY"): a mismatch here is THIS FILE's
     // own construction drifting from the product's, not an expected,
     // informational disagreement.
-    if (const std::string* text = find_text(d.id)) {
+    //
+    // WHEN --corpus-jsonl IS GIVEN, coverage is ALL-OR-NOTHING (S2, TE-170):
+    // a document absent from it is a NAMED refusal, never a row silently
+    // written from the composed derivation instead. The prior version
+    // treated a missing id as "nothing to compare" and fell through to the
+    // composed-derivation branch below for that one document only, so a
+    // corpus.jsonl that happened to be short of --tokens produced a store
+    // whose rows were a MIX of raw-path and composed-derivation bytes with
+    // no signal anywhere that the mix had happened.
+    const std::string* text = find_text(d.id);
+    if (!a.corpus_jsonl.empty() && !text) {
+      std::fprintf(stderr,
+                   "epoch_store_emit: FAIL '%s': --corpus-jsonl was given but this document is absent from it -- "
+                   "its row would silently become the composed derivation instead of the raw path (S2, TE-170); "
+                   "every id in --tokens must appear in --corpus-jsonl\n",
+                   d.id.c_str());
+      close_all();
+      return 1;
+    }
+    if (text) {
       std::vector<float> raw(hidden);
       size_t required = 0;
       semb_fingerprint fp{};
@@ -547,6 +571,20 @@ int main(int argc, char** argv) {
     row_digest_rows.push_back({d.id, Hex(row_digest)});
   }
   close_all();
+
+  // S2, TE-170: with --corpus-jsonl given, coverage is asserted complete --
+  // every document must have been checked through the raw path, never a
+  // silent subset. Belt-and-suspenders against the per-document refusal
+  // above: that refusal already makes this unreachable today, and this
+  // assertion is what turns "unreachable today" into "cannot regress
+  // silently" if the per-document check is ever refactored around.
+  if (!a.corpus_jsonl.empty() && raw_path_checked != static_cast<int>(docs.size())) {
+    std::fprintf(stderr,
+                 "epoch_store_emit: raw_path_checked=%d != document_count=%zu with --corpus-jsonl given -- "
+                 "coverage must be complete, never partial (S2, TE-170)\n",
+                 raw_path_checked, docs.size());
+    return 1;
+  }
 
   uint8_t vectors_all_digest[32];
   superslm::Sha256Hash(vectors_blob.data(), vectors_blob.size(), vectors_all_digest);
