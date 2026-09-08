@@ -17,6 +17,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(EngineGuards)   # find_package(superslm), the two version guards, provenance (C33)
 include(BuildFlags)     # the precise-FP flag (directory-wide) + semb_assert_precise_fp() (C14)
 include(SourceProvenance)  # semb_source_sha (C34)
+include(ToolchainPin)   # the certified {compiler id, version} pairs (N-4, D-SLM6386)
 
 # C38's pin-bump-only construction needs to place one compile definition on
 # exactly one downstream target. The pinned SuperSLM tag is never modified:

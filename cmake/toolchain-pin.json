@@ -1,0 +1,8 @@
+{
+  "_comment": "TE-165 (N-4, D-SLM6386; D-SLM6390 item 5). Read by cmake/ToolchainPin.cmake at configure time. Each entry is a certified {compiler id, version[, frontend]} pair this project's own clean-room rebuilds and CI records have actually verified -- never a floor or a range. 'id' is CMAKE_CXX_COMPILER_ID exactly; 'version' is CMAKE_CXX_COMPILER_VERSION exactly; 'frontend', when present, must equal CMAKE_CXX_COMPILER_FRONTEND_VARIANT (distinguishes clang-cl from plain clang at the identical reported version -- S-1/D-SLM6349's own finding was a bare clang-cl.exe line resolving to the wrong installed compiler at a DIFFERENT version, but the frontend field closes the adjacent case: the same version number under the wrong frontend is not the certified pair either).",
+  "certified": [
+    { "id": "MSVC", "version": "19.33.31631.0" },
+    { "id": "Clang", "version": "18.1.8", "frontend": "MSVC" },
+    { "id": "GNU", "version": "13.4.0" }
+  ]
+}

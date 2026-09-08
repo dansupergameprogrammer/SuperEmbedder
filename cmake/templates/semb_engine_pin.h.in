@@ -12,3 +12,9 @@
 // generated header, target, or manifest. It now reaches this one, the
 // same generated artifact the other three pin fields already reach.
 #define SEMB_ENGINE_PATH_SHA "@SEMB_ENGINE_PATH_SHA@"
+
+// TE-165 (N-4, D-SLM6386; D-SLM6390 item 5): empty when the configured
+// compiler matched a certified pair in cmake/toolchain-pin.json; otherwise
+// the uncertified {id, version, frontend} SEMB_TOOLCHAIN_UNPINNED=ON
+// recorded rather than refused (cmake/ToolchainPin.cmake).
+#define SEMB_TOOLCHAIN_PIN_OVERRIDE "@SEMB_TOOLCHAIN_PIN_OVERRIDE_STRING@"

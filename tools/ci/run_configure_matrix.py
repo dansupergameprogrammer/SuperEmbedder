@@ -1201,6 +1201,97 @@ def c34_leg_i_build_dir_placement_invariant():
 
 
 # ---------------------------------------------------------------------------
+# TE-165 (N-4, D-SLM6386; D-SLM6390 item 5): the toolchain pin
+# (cmake/ToolchainPin.cmake, cmake/toolchain-pin.json). Legs named for the
+# pin rather than folded into the C34 family's own "C34(x)" letters -- the
+# pin is a real construction of its own, not one of C34's own
+# SuperEmbedder-side source-provenance legs, and giving it a fabricated
+# C-number would claim a plan row that does not name it. Placed here,
+# immediately after the C34 family, per the same "negative-configure legs
+# live in this file" shape.
+#
+# Legs (a) and (c) mutate the FILE the guard reads (a scratch copy's own
+# cmake/toolchain-pin.json, every certified version bumped to "0.0.0" so
+# no real compiler on any host can match it) rather than attempting to
+# fake CMAKE_CXX_COMPILER_ID/VERSION themselves -- those are genuinely
+# probed from the real compiler by CMake's own detection machinery, not a
+# cache value this driver can safely override, and EngineGuards.cmake's
+# own C33(d) legs (edit_config_version) already use the identical shape
+# against superslm_VERSION for the same reason.
+# ---------------------------------------------------------------------------
+
+def _toolchain_pin_mismatch_copy(dest_name: str) -> Path:
+    """A scratch repo copy whose own cmake/toolchain-pin.json certifies no
+    pair any real, installed compiler can match."""
+    src = copy_repo(SCRATCH / dest_name)
+    pin_path = src / "cmake" / "toolchain-pin.json"
+    pin = json.loads(pin_path.read_text(encoding="utf-8"))
+    for entry in pin["certified"]:
+        entry["version"] = "0.0.0"
+    pin_path.write_text(json.dumps(pin), encoding="utf-8")
+    return src
+
+
+def toolchain_pin_leg_a_mismatch_refused():
+    src = _toolchain_pin_mismatch_copy("tcpin_a_src")
+    rc, out = run_cmake_configure(src, SCRATCH / "tcpin_a_build", ENGINE_PREFIX)
+    record("TOOLCHAIN_PIN(a) uncertified compiler refused", "SEMB_TOOLCHAIN_PIN_MISMATCH", rc, out)
+
+
+def toolchain_pin_leg_b_certified_passes():
+    """The unmodified, committed pin against whatever real compiler this
+    host resolves -- passes, and the generated provenance header carries
+    no override (D-SLM6390 item 5: "the absolute-path 18.1.8 configure
+    passes")."""
+    src = copy_repo(SCRATCH / "tcpin_b_src")
+    build = SCRATCH / "tcpin_b_build"
+    rc, out = run_cmake_configure(src, build, ENGINE_PREFIX)
+    header = build / "generated" / "semb_engine_pin.h"
+    override_empty = False
+    if rc == 0 and header.exists():
+        text = header.read_text(encoding="utf-8")
+        override_empty = 'SEMB_TOOLCHAIN_PIN_OVERRIDE ""' in text
+    passed = rc == 0 and override_empty
+    RESULTS.append({
+        "leg": "TOOLCHAIN_PIN(b) certified compiler configure passes, no override recorded",
+        "expected": 'SEMB_TOOLCHAIN_PIN_OVERRIDE ""',
+        "returncode": rc,
+        "want_fail": False,
+        "found_expected_string": override_empty,
+        "passed": passed,
+        "output_tail": "\n".join(out.splitlines()[-15:]),
+    })
+
+
+def toolchain_pin_leg_c_override_recorded():
+    """SEMB_TOOLCHAIN_UNPINNED=ON against the SAME uncertified-pin scratch
+    shape leg (a) constructs: configure passes, and the generated
+    provenance header carries the override string (D-SLM6390 item 5: "the
+    override is written into the generated provenance header so every
+    later artifact carries it")."""
+    src = _toolchain_pin_mismatch_copy("tcpin_c_src")
+    build = SCRATCH / "tcpin_c_build"
+    rc, out = run_cmake_configure(src, build, ENGINE_PREFIX,
+                                   extra_defines={"SEMB_TOOLCHAIN_UNPINNED": "ON"})
+    header = build / "generated" / "semb_engine_pin.h"
+    override_present = False
+    if rc == 0 and header.exists():
+        text = header.read_text(encoding="utf-8")
+        m = re.search(r'SEMB_TOOLCHAIN_PIN_OVERRIDE "([^"]*)"', text)
+        override_present = bool(m and "UNPINNED" in m.group(1))
+    passed = rc == 0 and override_present
+    RESULTS.append({
+        "leg": "TOOLCHAIN_PIN(c) SEMB_TOOLCHAIN_UNPINNED overrides, header carries the override",
+        "expected": 'SEMB_TOOLCHAIN_PIN_OVERRIDE "UNPINNED: ..."',
+        "returncode": rc,
+        "want_fail": False,
+        "found_expected_string": override_present,
+        "passed": passed,
+        "output_tail": "\n".join(out.splitlines()[-15:]),
+    })
+
+
+# ---------------------------------------------------------------------------
 # TE-73: the structural cell. Not a cmake configure at all -- a static
 # check of the pin tool's own source code, walking its AST to assert that
 # exactly one function (_remove_owned) is permitted to call a real
@@ -1542,6 +1633,10 @@ def main() -> int:
     _run_leg(c34_leg_g_preprocess_failure_raises)
     _run_leg(c34_leg_j_empty_resolver_refused)
     _run_leg(c34_leg_i_build_dir_placement_invariant)
+
+    _run_leg(toolchain_pin_leg_a_mismatch_refused)
+    _run_leg(toolchain_pin_leg_b_certified_passes)
+    _run_leg(toolchain_pin_leg_c_override_recorded)
 
     _run_leg(pin_tool_deletion_primitive_enforced)
 
