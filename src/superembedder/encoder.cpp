@@ -1283,15 +1283,18 @@ extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* 
       return SEMB_PS_VERSION_LABEL_MISMATCH;
     }
 
-    // Per-row token counts: each document's own content-id count under
-    // `h`'s own tokenizer (PS-N's document frame is empty, D-SLM4726, so
-    // this is exactly what the composition semb_encode_batch just ran
-    // tokenized -- a second, read-only tokenize pass for metadata, not a
-    // second forward).
+    // Per-row token counts: recomputed through ComposeDocumentInput -- the
+    // ONE composition point semb_encode_batch itself tokenized (D-SLM6390
+    // item 1: no second, independent statement of the composition exists
+    // anywhere in this file). TE-193 P-2: the previous raw-text tokenize
+    // agreed only while kDocumentFrame was empty (D-SLM4726), so a future
+    // PS-1 frame would have silently under-reported every row here. A
+    // second, read-only tokenize pass for metadata, not a second forward.
     std::vector<int64_t> per_row_token_counts(n);
     for (size_t i = 0; i < n; ++i) {
       per_row_token_counts[i] = static_cast<int64_t>(
-          h->tokenizer.Encode(std::string_view(docs[i].utf8, docs[i].utf8_len)).size());
+          h->tokenizer.Encode(ComposeDocumentInput(std::string_view(docs[i].utf8, docs[i].utf8_len)))
+              .size());
     }
 
     // Row digest: SHA-256 over the .wvbank.bin payload bytes just written.
