@@ -455,10 +455,17 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
         label_engine_path_id_v->as_string != semb_adapter_self_id()) {
       return SEMB_ADAPTER_ID_MISMATCH;
     }
+    // TE-193 P-5: accept exactly what the bake writes. semb_bake_to_path
+    // compares against semb_ps_n_version_label() alone (encoder.cpp), so
+    // "PS-1" is a label this build never emits -- the either/or accept was
+    // a spelling check rather than the honesty check sec 3.4's label table
+    // exists for ("a stale label misleads a human during exactly the
+    // bisect this plan specifies for itself"). The shape is the sibling
+    // engine_path_id check immediately above: pinned to the one value this
+    // build's own bake path writes.
     const js::Value* label_ps_version_v = manifest.Find("label:ps_version");
     if (!label_ps_version_v || !label_ps_version_v->IsString() ||
-        (label_ps_version_v->as_string != semb_ps_n_version_label() &&
-         label_ps_version_v->as_string != semb_ps1_version_label())) {
+        label_ps_version_v->as_string != semb_ps_n_version_label()) {
       return SEMB_PS_VERSION_LABEL_MISMATCH;
     }
 

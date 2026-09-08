@@ -25,6 +25,7 @@
 
 #include "json_mini.h"
 #include "json_lite.h"
+#include "superembedder/manifest_labels_abi.h"
 #include "semb_public_abi_contract.h"
 #include "semb_bake_abi_contract.h"
 #include "semb_bank_abi_contract.h"
@@ -274,6 +275,42 @@ int main(int argc, char** argv) {
                       stem, st_metric_dtype, "SEMB_BANK_METRIC_DTYPE_UNSUPPORTED");
       }
     }
+  }
+
+  // =========================================================================
+  // TE-193 P-5 -- label:ps_version accepts exactly what the bake writes
+  // (semb_ps_n_version_label(); the bake path compares against it alone), the
+  // shape of the sibling label:engine_path_id check. PS-1 is a label no bake
+  // of this build can emit, so it must refuse; PS-Z must still refuse.
+  // =========================================================================
+  {
+    const semb_status st_ps_mismatch = ResolveStatus("SEMB_PS_VERSION_LABEL_MISMATCH");
+    const std::string ps_n = semb_ps_n_version_label();
+    {
+      const fs::path stem = scratch / (a.stem + "_t_ps1");
+      if (CopyTriple(good_stem, stem, label + "/P5 manifest label:ps_version PS-N -> PS-1",
+                     [ps_n](std::string manifest) {
+                       return ReplaceOnce(manifest, "\"label:ps_version\": \"" + ps_n + "\"",
+                                                           "\"label:ps_version\": \"PS-1\"");
+                     })) {
+        TryOpenExpect(label + "/P5 manifest label:ps_version PS-N -> PS-1 (a label this build's bake never writes) "
+                             "-> SEMB_PS_VERSION_LABEL_MISMATCH",
+                      stem, st_ps_mismatch, "SEMB_PS_VERSION_LABEL_MISMATCH");
+      }
+    }
+    {
+      const fs::path stem = scratch / (a.stem + "_t_psz");
+      if (CopyTriple(good_stem, stem, label + "/P5 manifest label:ps_version PS-N -> PS-Z",
+                     [ps_n](std::string manifest) {
+                       return ReplaceOnce(manifest, "\"label:ps_version\": \"" + ps_n + "\"",
+                                                           "\"label:ps_version\": \"PS-Z\"");
+                     })) {
+        TryOpenExpect(label + "/P5 manifest label:ps_version PS-N -> PS-Z still refuses -> SEMB_PS_VERSION_LABEL_MISMATCH",
+                      stem, st_ps_mismatch, "SEMB_PS_VERSION_LABEL_MISMATCH");
+      }
+    }
+    // Control: the untouched good triple above already proves the PS-N the
+    // bake writes opens; no additional control is needed here.
   }
 
   std::printf("\nte196_manifest_binding_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
