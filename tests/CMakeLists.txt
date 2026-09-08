@@ -724,6 +724,91 @@ if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
 	set_tests_properties(c2_lineage_equality_test_real_artifact PROPERTIES LABELS "real_artifact")
 endif()
 
+# TE-180 item 2 (D-SLM6428 bare cell A): an empty or unreadable
+# --corpus-jsonl is a registered red-by-name cell. c2_lineage_equality_test.cpp's
+# own S7 block (:444-455) reads --corpus-jsonl and reports the named FAIL
+# BEFORE anything opens an encoder or reads the live entry -- confirmed by
+# reading the source -- so the SYNTHETIC leg's own args (--regen-synthetic-
+# pair, no real artifact) are enough to reach it; no real_artifact leg
+# needed. Two constructions (an empty file; a path that does not exist),
+# both producing the SAME S7 message suffix by design (c2_lineage_equality_test.cpp's
+# own ternary: "carries no readable document (empty corpus)" for the first,
+# "cannot open <path>" for the second, then the shared "-- an empty or
+# unreadable corpus is a FAIL, not MISSING PREREQUISITE (S7, TE-174)").
+#
+# CTEST PROPERTY FINDING, verified by execution this round rather than
+# assumed: WILL_FAIL and PASS_REGULAR_EXPRESSION do NOT conjoin when set on
+# the same ctest test. Once PASS_REGULAR_EXPRESSION is present, ctest's own
+# pass/fail is driven ENTIRELY by whether the regex is found in the
+# process's output -- the exit code is ignored outright -- and WILL_FAIL
+# then inverts THAT regex-driven verdict, never the exit code. A four-cell
+# probe (exit0/exit1 crossed with regex-present/absent, both properties
+# set together) confirmed this: exit1+regex-present read ctest-FAILED
+# ("Required regular expression found"), the opposite of what treating the
+# two properties as an AND would predict; exit0+regex-absent read
+# ctest-PASSED, likewise inverted from an AND reading. So "asserting
+# non-zero exit AND the S7 FAIL row" (the brief's own phrasing) is realized
+# below as TWO separate, single-purpose registrations per construction --
+# one WILL_FAIL-only (the exit-code fact) and one PASS_REGULAR_EXPRESSION-
+# only (the message fact) -- never as one registration combining both
+# properties, which the probe showed does not assert their conjunction.
+file(WRITE "${CMAKE_BINARY_DIR}/_epoch_store_cell_a/empty_corpus.jsonl" "")
+set(_c2_s7_message_regex "an empty or unreadable corpus is a FAIL, not MISSING PREREQUISITE")
+
+add_test(
+	NAME c2_lineage_equality_test_synthetic_empty_corpus_jsonl_exits_nonzero
+	COMMAND c2_lineage_equality_test
+		--regen-synthetic-pair
+		--dims 32
+		--tokens "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/synthetic-corpus.tokens.tsv"
+		--terminator-id 262
+		--store-root "${CMAKE_CURRENT_SOURCE_DIR}/../epoch-store"
+		--corpus-jsonl "${CMAKE_BINARY_DIR}/_epoch_store_cell_a/empty_corpus.jsonl"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+set_tests_properties(c2_lineage_equality_test_synthetic_empty_corpus_jsonl_exits_nonzero PROPERTIES WILL_FAIL TRUE)
+
+add_test(
+	NAME c2_lineage_equality_test_synthetic_empty_corpus_jsonl_fails_named
+	COMMAND c2_lineage_equality_test
+		--regen-synthetic-pair
+		--dims 32
+		--tokens "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/synthetic-corpus.tokens.tsv"
+		--terminator-id 262
+		--store-root "${CMAKE_CURRENT_SOURCE_DIR}/../epoch-store"
+		--corpus-jsonl "${CMAKE_BINARY_DIR}/_epoch_store_cell_a/empty_corpus.jsonl"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+set_tests_properties(c2_lineage_equality_test_synthetic_empty_corpus_jsonl_fails_named PROPERTIES
+	PASS_REGULAR_EXPRESSION "${_c2_s7_message_regex}")
+
+add_test(
+	NAME c2_lineage_equality_test_synthetic_missing_corpus_jsonl_exits_nonzero
+	COMMAND c2_lineage_equality_test
+		--regen-synthetic-pair
+		--dims 32
+		--tokens "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/synthetic-corpus.tokens.tsv"
+		--terminator-id 262
+		--store-root "${CMAKE_CURRENT_SOURCE_DIR}/../epoch-store"
+		--corpus-jsonl "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/__te180_cell_a_missing_corpus.jsonl"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+set_tests_properties(c2_lineage_equality_test_synthetic_missing_corpus_jsonl_exits_nonzero PROPERTIES WILL_FAIL TRUE)
+
+add_test(
+	NAME c2_lineage_equality_test_synthetic_missing_corpus_jsonl_fails_named
+	COMMAND c2_lineage_equality_test
+		--regen-synthetic-pair
+		--dims 32
+		--tokens "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/synthetic-corpus.tokens.tsv"
+		--terminator-id 262
+		--store-root "${CMAKE_CURRENT_SOURCE_DIR}/../epoch-store"
+		--corpus-jsonl "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/__te180_cell_a_missing_corpus.jsonl"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+set_tests_properties(c2_lineage_equality_test_synthetic_missing_corpus_jsonl_fails_named PROPERTIES
+	PASS_REGULAR_EXPRESSION "${_c2_s7_message_regex}")
+
 # The Python-side support tool cell 1 and cell 2 both shell out to, to
 # materialise an independently-derived store entry (tests/
 # epoch_store_emit.cpp's own header comment states the full computation).
