@@ -235,6 +235,10 @@ def main(argv) -> int:
                 f"H-5b the enum carries the contract's {n_statuses} names with EXPLICIT ordinals 0-{n_statuses - 1} in the contract's order (P-5)",
                 f"shape={shape}; header={pairs}" if pairs != contract_list else f"shape={shape}; {n_statuses} of {n_statuses} agree")
         # The sentinel is the last enumerator and carries no explicit value.
+        # This is read from the enum body's own literal token text, which is
+        # correct FOR THIS CHECK ONLY: SEMB_STATUS_NEXT_FREE is written
+        # literally in the body outside any macro, whichever shape (direct
+        # enumerators or an X-macro call) the status names themselves take.
         idents = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", body)
         macro_names = set(re.findall(r"#define\s+([A-Za-z_][A-Za-z0-9_]*)", htext))
         semb_idents = [i for i in idents if i.startswith("SEMB_") and i not in macro_names and i != "X"]
@@ -243,7 +247,17 @@ def main(argv) -> int:
         verdict(last_semb == SENTINEL and not sentinel_explicit,
                 f"H-5b' SEMB_STATUS_NEXT_FREE is the last enumerator and carries no explicit value (auto-valued {n_statuses})",
                 f"last={last_semb} explicit_value={sentinel_explicit}")
-        extras = sorted(set(semb_idents) - set(contract_names) - {SENTINEL})
+        # H-5c (D-SLM6410): under the X-macro shape the enum body's own
+        # literal text is just the macro CALL (e.g. SEMB_STATUS_ENUM_LIST(X)),
+        # never the expanded per-name tokens -- semb_idents above is blind to
+        # every appended name by construction and could never once report an
+        # extra. `pairs` (H-5b, just above) is already the EXPANSION: the same
+        # X-macro-parsed or direct-enumerator list, whichever shape the header
+        # uses. Reading extras from that expansion, rather than from the raw
+        # body text, is what makes this check able to see a name H-5b's own
+        # comparison did not expect.
+        header_names = [n for n, _ in pairs]
+        extras = sorted(set(header_names) - set(contract_names) - {SENTINEL})
         verdict(not extras, "H-5c the enum carries no enumerator outside the contract's list (P-5: append when a verb lands, never ahead of it)",
                 "extra: " + (", ".join(extras) if extras else "none"))
     retired_present = [n for n in RETIRED if re.search(r"\b" + n + r"\b", htext)]
