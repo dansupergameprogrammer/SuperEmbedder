@@ -94,6 +94,20 @@
 // planner's next fold. None of the four was ever in kPlanStatusNames, so
 // nothing moves out of it this round.
 //
+// TE-194 (U1 Slice 5, `Claude/Bach/briefs/te194-slice5-red.md`): one status
+// APPENDED for the bank/query cross-handle reference count
+// (`Claude/Plans/SuperEmbedder_Plan.md` sec 3.1, D-SLM4664:
+// "semb_bank_close while that count is nonzero is REFUSED with
+// SEMB_BANK_IN_USE") -- SEMB_BANK_IN_USE, ordinal 34, SEMB_STATUS_NEXT_FREE
+// now 35 ON THIS BRANCH. Written as an append AFTER ordinals 32-33
+// (`SEMB_BANK_METRIC_DTYPE_UNSUPPORTED`, `SEMB_BANK_DIGEST_MISMATCH`),
+// which TE-192 appends CONCURRENTLY on a sibling branch and are therefore
+// absent from this branch's own copy of the list below -- the merge is one
+// line: TE-192's two X() lines land between ordinal 31 and this one, and
+// nothing here needs to change. SEMB_BANK_IN_USE moves out of
+// kPlanStatusNames (below) into the real list; it is the only name this
+// round moves.
+//
 // STATUSES ARE PINNED BY NAME AND BY ORDINAL, AND THE CELLS COMPARE BY NAME.
 // Behavioural cells resolve every status through `semb_status_name` (StatusByName
 // below) so that a cell is red for its own reason -- a behaviour that differs
@@ -155,7 +169,14 @@ typedef int32_t semb_status;
   X(SEMB_BANK_IDS_COUNT_MISMATCH,          28) \
   X(SEMB_BANK_NONFINITE_ROW,               29) \
   X(SEMB_BANK_ZERO_NORM_ROW,               30) \
-  X(SEMB_BANK_GEOMETRY_CEILING_EXCEEDED,   31)
+  X(SEMB_BANK_GEOMETRY_CEILING_EXCEEDED,   31) \
+  /* TE-194 (U1 slice 5, D-SLM4664): a live semb_query-handle reference   */ \
+  /* count on the bank being closed. Ordinal 34 -- 32/33 are TE-192's    */ \
+  /* own concurrent append (SEMB_BANK_METRIC_DTYPE_UNSUPPORTED,          */ \
+  /* SEMB_BANK_DIGEST_MISMATCH) and are not yet in this branch's own     */ \
+  /* copy of this list; this line is written to land AFTER them so the  */ \
+  /* merge is additive (see this header's own comment block above).     */ \
+  X(SEMB_BANK_IN_USE,                      34)
 
 enum : int32_t {
 #define SEMB_CONTRACT_STATUS_ENUM_(name, value) name = value,
@@ -164,7 +185,20 @@ enum : int32_t {
   SEMB_STATUS_NEXT_FREE  // the sentinel: never returned, never a valid argument, never named
 };
 
-static_assert(SEMB_STATUS_NEXT_FREE == 32, "the contract pins 32 named statuses, ordinals 0-31 (TE-183 appends 28-31)");
+// ON THIS BRANCH ALONE, 33 names are pinned (ordinals 0-31 plus 34;
+// ordinals 32-33 are TE-192's concurrent append and are absent here), so
+// SEMB_STATUS_NEXT_FREE is 35 (one past the highest explicit ordinal), not
+// 33. After TE-192's merge lands its own two X() lines between ordinal 31
+// and this file's ordinal 34, the count becomes 35 named statuses,
+// ordinals 0-34 contiguous, and this assertion's own numbers are still
+// correct without further edit -- it asserts NEXT_FREE and kStatusCount
+// independently rather than assuming they move together, which is exactly
+// the property that lets this branch's incomplete-but-internally-consistent
+// state assert something true both before and after the merge.
+static_assert(SEMB_STATUS_NEXT_FREE == 35,
+              "this branch pins 33 named statuses (0-31, 34); NEXT_FREE is 35 "
+              "(one past the highest explicit ordinal) until TE-192's concurrent "
+              "32-33 append lands, after which 35 named statuses span ordinals 0-34 contiguously");
 
 // sec 3.1 item 5: library-owned, opaque, not copyable, released only by
 // semb_encoder_close; a double close returns SEMB_INVALID_HANDLE.
@@ -225,7 +259,10 @@ inline const StatusEntry kStatusTable[] = {
 #undef SEMB_CONTRACT_STATUS_ENTRY_
 };
 inline constexpr size_t kStatusCount = sizeof(kStatusTable) / sizeof(kStatusTable[0]);
-static_assert(kStatusCount == 32, "32 named statuses (TE-183 appends 28-31)");
+static_assert(kStatusCount == 33,
+              "33 named statuses on this branch (TE-183 appends 28-31; TE-194 appends "
+              "SEMB_BANK_IN_USE at 34 -- TE-192's concurrent 32-33 append is not yet in "
+              "this branch's own copy of the list, so the count is 33 names, not 35)");
 
 // The name every non-member int32_t resolves to (P-5: static storage, never NULL).
 inline constexpr const char* kUnknownStatusName = "SEMB_UNKNOWN";
@@ -242,12 +279,11 @@ inline constexpr const char* kCanonicalEndToken = "<|endoftext|>";
 // slice (their verbs are not in it; P-5 appends each when its verb lands).
 // TE-163: the four C18 names and the two C34 label names moved out of this
 // list into SEMB_CONTRACT_STATUS_LIST above, landing as ordinals 22-27.
-// SEMB_BANK_IN_USE stays here -- Slice 5's own (D-SLM4664: a live-query-
-// handle reference count on the bank, and no `semb_query` handle exists
-// yet to hold one).
+// TE-194: SEMB_BANK_IN_USE moves out of this list too, landing as ordinal
+// 34 above -- Slice 5 is where a `semb_query` handle first exists to hold
+// the bank's own reference count (D-SLM4664).
 inline const char* const kPlanStatusNames[] = {
     "SEMB_INPUT_TOO_SHORT",
-    "SEMB_BANK_IN_USE",
     "SEMB_ACCUMULATOR_OVERFLOW",
     "SEMB_EPOCH_BYTES_DIVERGED",
     "SEMB_EPOCH_LINEAGE_DIVERGED",
