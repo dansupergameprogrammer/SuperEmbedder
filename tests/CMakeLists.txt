@@ -672,3 +672,96 @@ endfunction()
 if(DEFINED SEMB_LIBRARY_SOURCES)
   cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_workspace_tests)
 endif()
+
+# ---------------------------------------------------------------------------
+# TE-162 (U1 slice 3): the epoch store's four able-to-fail constructions and
+# C2 (`Claude/Plans/te140-u1-remainder-sequencing.md` sec 4.3;
+# `Claude/Plans/SuperEmbedder_Plan.md` sec 8, C32/C2). Five registrations,
+# one per cell the dispatch's own brief enumerates:
+#   cell 1 -> epoch_store_check              (the store check itself)
+#   cell 2 -> epoch_store_constructions_check (the six constructions)
+#   cell 3 -> c2_lineage_equality_test_synthetic / _real_artifact (C2)
+#   cell 4 -> folded into c2_lineage_equality_test_real_artifact
+#   cell 5 -> epoch_store_gitattributes_check
+# `epoch-store/` does not exist anywhere in this tree at this branch's own
+# base (confirmed this round, matching `Claude/Mendeleev/
+# te142-te140-subplan-coverage-audit-2026-09-06.md` sec 1's own absent-
+# surface grep): the builder's round is what makes cells 1/2/3/4 stop
+# reporting their own named red state.
+
+# The C++ gate cell (C2 + cell 4), linked against the product library
+# directly (semb_encode_document_for_witness, semb_seam_serialize_document
+# and semb_encode are all already built at Slice 0's own baseline).
+add_executable(c2_lineage_equality_test "${CMAKE_CURRENT_SOURCE_DIR}/c2_lineage_equality_test.cpp")
+target_link_libraries(c2_lineage_equality_test PRIVATE superembedder superslm::superslm)
+target_include_directories(c2_lineage_equality_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+set_target_properties(c2_lineage_equality_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+
+add_test(
+	NAME c2_lineage_equality_test_synthetic
+	COMMAND c2_lineage_equality_test
+		--regen-synthetic-pair
+		--dims 32
+		--tokens "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/synthetic-corpus.tokens.tsv"
+		--terminator-id 262
+		--store-root "${CMAKE_CURRENT_SOURCE_DIR}/../epoch-store"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+	add_test(
+		NAME c2_lineage_equality_test_real_artifact
+		COMMAND c2_lineage_equality_test
+			--model "${SEMB_C12B_MODEL}"
+			--tokenizer "${SEMB_U1_TOKENIZER}"
+			--dims 1024
+			--tokens "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/corpus-239.tokens.tsv"
+			--terminator-id 151643
+			--store-root "${CMAKE_CURRENT_SOURCE_DIR}/../epoch-store"
+			--corpus-jsonl "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/corpus-239.jsonl"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+	set_tests_properties(c2_lineage_equality_test_real_artifact PROPERTIES LABELS "real_artifact")
+endif()
+
+# The Python-side support tool cell 1 and cell 2 both shell out to, to
+# materialise an independently-derived store entry (tests/
+# epoch_store_emit.cpp's own header comment states the full computation).
+add_executable(epoch_store_emit "${CMAKE_CURRENT_SOURCE_DIR}/epoch_store_emit.cpp")
+target_link_libraries(epoch_store_emit PRIVATE superembedder superslm::superslm)
+target_include_directories(epoch_store_emit PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+set_target_properties(epoch_store_emit PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+
+# Cell 1: the store check itself.
+add_test(
+	NAME epoch_store_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/epoch_store_check.py"
+		--repo-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+		--emit-binary "$<TARGET_FILE:epoch_store_emit>"
+		--scratch-dir "${CMAKE_BINARY_DIR}/_epoch_store_check"
+		--real-model "${SEMB_C12B_MODEL}"
+		--real-tokenizer "${SEMB_U1_TOKENIZER}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+if(NOT SEMB_C12B_MODEL STREQUAL "")
+	set_tests_properties(epoch_store_check PROPERTIES LABELS "real_artifact")
+endif()
+
+# Cell 2: the six able-to-fail constructions, in a scratch git repository.
+add_test(
+	NAME epoch_store_constructions_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/epoch_store_constructions_check.py"
+		--repo-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+		--emit-binary "$<TARGET_FILE:epoch_store_emit>"
+		--scratch-dir "${CMAKE_BINARY_DIR}/_epoch_store_constructions"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# Cell 5: the .gitattributes pin.
+add_test(
+	NAME epoch_store_gitattributes_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/epoch_store_gitattributes_check.py"
+		--repo-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+		--scratch-dir "${CMAKE_BINARY_DIR}/_epoch_store_gitattributes"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
