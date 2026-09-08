@@ -34,17 +34,35 @@
 //
 // USAGE: --model <.sslm> --tokenizer <.sslm> --dims <n> [--context-cap <n>]
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <new>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "semb_public_abi_contract.h"
 #include "semb_batch_abi_contract.h"
+
+// TE-182 bare cell 1 (D-SLM6375's own remedy, D-SLM6434 item 1): step 11's
+// over-cap document is now sized by TOKENIZED length, through the SAME
+// tokenizer artifact the handle itself opened, never by character count
+// (the real tokenizer's merging compresses a character-counted document well
+// under context_cap -- D-SLM6375's own measurement, a 2h3m legal forward
+// where a refusal was expected). `superslm::TokenizerView` is the identical
+// technique `tests/w_b_corpus_witness_test.cpp`'s own
+// `CutWbDocumentTextForTest` already uses to find a real cut boundary
+// through the real tokenizer; this file needs the opposite boundary (the
+// shortest prefix whose tokenized length EXCEEDS the cap, not the longest
+// that stays under it), so it is a small, separate function below rather
+// than a reused one.
+#include "superslm/artifact.h"
+#include "superslm/tokenizer.h"
 
 // ---------------------------------------------------------------------------
 // The allocation-failure hook, identical shape to
@@ -127,15 +145,6 @@ struct Args {
   std::string model, tokenizer;
   unsigned dims = 0;
   size_t context_cap = 0;
-  // TE-155 item 3: step11's own construction is a single document whose
-  // tokenized length approaches context_cap (the K-12a shape) -- against
-  // the real candidate (context_cap 32768) this is a genuine, expensive
-  // O(n^2)-in-position-count forward, observed to run 6h41m when TE-120
-  // executed the identical construction in the raw-text suite (D-SLM6326,
-  // credited). --skip-step11 excludes ONLY this one cell so the rest of
-  // the real leg can run to completion in this round; the excluded cell is
-  // owed to a detached run the conductor schedules separately.
-  bool skip_step11 = false;
 };
 
 Args ParseArgs(int argc, char** argv) {
@@ -147,9 +156,71 @@ Args ParseArgs(int argc, char** argv) {
     else if (k == "--tokenizer") next(&a.tokenizer);
     else if (k == "--dims") { std::string v; next(&v); a.dims = static_cast<unsigned>(std::atoi(v.c_str())); }
     else if (k == "--context-cap") { std::string v; next(&v); a.context_cap = static_cast<size_t>(std::atoll(v.c_str())); }
-    else if (k == "--skip-step11") a.skip_step11 = true;
   }
   return a;
+}
+
+// TE-182 bare cell 1: builds a document whose TOKENIZED length exceeds
+// `max_content_ids`, using the real tokenizer artifact at `tokenizer_path`
+// (the same file `--tokenizer` names, so this is the handle's own
+// tokenizer). ASCII-only seed text (every byte offset is a UTF-8 boundary,
+// so no multi-byte width handling is needed) grows exponentially until its
+// own full tokenization exceeds the cap at all, then a binary search over
+// byte offsets finds the SHORTEST such prefix -- O(log n) tokenize calls
+// rather than one per byte or one per character, which is what keeps this
+// construction to milliseconds against the real candidate's context_cap
+// (32768) instead of D-SLM6375's own 2h3m character-counted forward.
+bool BuildOverCapText(const std::string& tokenizer_path, size_t max_content_ids, std::string* out_text,
+                      std::vector<int32_t>* out_ids, std::string* why) {
+  std::ifstream f(tokenizer_path, std::ios::binary | std::ios::ate);
+  if (!f) { *why = "cannot open tokenizer artifact " + tokenizer_path; return false; }
+  const std::streamoff end = f.tellg();
+  if (end < 0) { *why = "cannot size tokenizer artifact " + tokenizer_path; return false; }
+  std::vector<uint8_t> bytes(static_cast<size_t>(end));
+  f.seekg(0, std::ios::beg);
+  if (!bytes.empty() && !f.read(reinterpret_cast<char*>(bytes.data()), end)) {
+    *why = "cannot read tokenizer artifact " + tokenizer_path;
+    return false;
+  }
+  superslm::SslmArtifact artifact;
+  superslm::SslmError artifact_error;
+  if (superslm::SslmArtifact::OpenFromMemory(bytes.data(), bytes.size(), artifact, &artifact_error) !=
+      superslm::SslmStatus::Ok) {
+    *why = "tokenizer artifact open refused: " + tokenizer_path;
+    return false;
+  }
+  superslm::TokenizerView tokenizer;
+  std::string tok_err;
+  if (!superslm::TokenizerView::Open(artifact, tokenizer, &tok_err)) {
+    *why = "TokenizerView::Open refused: " + tok_err;
+    return false;
+  }
+
+  // Varied words, not one repeated character: a byte-level BPE vocabulary
+  // that merges a single repeated character aggressively (D-SLM6375's own
+  // finding, against the alternating a/b construction this replaces) is far
+  // less likely to fold a whole sentence of distinct words into one token.
+  static const std::string kSeed =
+      "the quick brown fox jumps over the lazy dog while zebras quietly "
+      "watch xylophones and violins play jazz under moonlit skies ";
+  std::string candidate = kSeed;
+  int guard = 0;
+  while (tokenizer.Encode(candidate).size() <= max_content_ids) {
+    candidate += candidate;
+    if (++guard > 32) {
+      *why = "candidate text did not exceed the cap after 32 doublings";
+      return false;
+    }
+  }
+  size_t lo = 0, hi = candidate.size();
+  while (hi - lo > 1) {
+    const size_t mid = lo + (hi - lo) / 2;
+    if (tokenizer.Encode(std::string_view(candidate).substr(0, mid)).size() > max_content_ids) hi = mid;
+    else lo = mid;
+  }
+  *out_text = candidate.substr(0, hi);
+  *out_ids = tokenizer.Encode(*out_text);
+  return true;
 }
 
 semb_encoder Open(const Args& a) {
@@ -529,25 +600,32 @@ int main(int argc, char** argv) {
   }
 
   // ---- Step 11: tokenize EVERY document before any forward -----------------
-  if (a.skip_step11) {
-    Missing("step11 a later document over context_cap -> SEMB_CONTEXT_CAP_EXCEEDED, NO row written for the "
-            "earlier good document either (all rows tokenized before any forward -- TE-96 sec 4.2's own "
-            "'a late bad row never exposes a partial matrix')",
-            "excluded by --skip-step11 (TE-155 item 3): this construction's own tokenized length approaches "
-            "context_cap against the real candidate, observed to run 6h41m (D-SLM6326, credited) -- owed to "
-            "a detached run the conductor schedules separately, not run in this round");
-  } else if (a.context_cap > 0) {
+  // TE-182 bare cell 1 (D-SLM6375's own remedy): the over-cap document is
+  // now sized by TOKENIZED length through the real tokenizer, so this cell
+  // is a FEATURE oracle on the real artifact (the real refusal fires, in
+  // milliseconds), never a forward -- `--skip-step11` is retired.
+  if (a.context_cap > 0) {
+    const auto t0 = std::chrono::steady_clock::now();
+    std::string why;
     std::string over_cap;
-    for (size_t i = 0; i < a.context_cap; ++i) over_cap += (i % 2 == 0 ? 'a' : 'b');  // context_cap positions of content -> content+1 > cap
-    std::vector<semb_document> docs = {docs_arena.Add("ok", "fine"), docs_arena.Add("bad", over_cap)};
-    RowBuffer buf(2 * required1);
-    size_t req = 0xBAD5EED;
-    const semb_status s = semb_encode_batch(enc, docs.data(), docs.size(), buf.data(), buf.capacity_bytes(), &req);
-    Verdict(s == st.context_cap_exceeded && buf.Untouched(),
-            "step11 a later document over context_cap -> SEMB_CONTEXT_CAP_EXCEEDED, NO row written for the "
-            "earlier good document either (all rows tokenized before any forward -- TE-96 sec 4.2's own "
-            "'a late bad row never exposes a partial matrix')",
-            Name(s));
+    std::vector<int32_t> over_ids;
+    if (!BuildOverCapText(a.tokenizer, a.context_cap - 1, &over_cap, &over_ids, &why)) {
+      Verdict(false, "step11 (setup) build an over-cap document through the handle's own tokenizer", why);
+    } else {
+      std::vector<semb_document> docs = {docs_arena.Add("ok", "fine"), docs_arena.Add("bad", over_cap)};
+      RowBuffer buf(2 * required1);
+      size_t req = 0xBAD5EED;
+      const semb_status s = semb_encode_batch(enc, docs.data(), docs.size(), buf.data(), buf.capacity_bytes(), &req);
+      const double elapsed_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      Verdict(s == st.context_cap_exceeded && buf.Untouched(),
+              "step11 a later document over context_cap -> SEMB_CONTEXT_CAP_EXCEEDED, NO row written for the "
+              "earlier good document either (all rows tokenized before any forward -- TE-96 sec 4.2's own "
+              "'a late bad row never exposes a partial matrix'); over-cap document built by tokenizing "
+              "incrementally through the handle's own tokenizer (" + std::to_string(over_ids.size()) +
+              " content ids, cap " + std::to_string(a.context_cap) + "), a real refusal in " +
+              std::to_string(elapsed_s) + "s, never a forward",
+              Name(s));
+    }
   } else {
     Missing("step11 context_cap refusal", "no --context-cap given");
   }
