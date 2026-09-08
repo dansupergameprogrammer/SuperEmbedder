@@ -7,8 +7,11 @@ with construction 7 (C1: an archived entry deleted outright), construction
 8 (M7: an archived twin whose bytes diverge), construction 9 (S5: an
 unresolvable parent ref), and constructions 10-11 (M6: the builder's real
 `tools/epoch-store/archive.py` driven as a subprocess, green, paired with
-a raw deletion that bypasses it, red). Eleven constructions, each executed
-against `epoch_store_check.py`'s own parent-commit logic (cell 1(c)) in a
+a raw deletion that bypasses it, red), further extended by TE-180's own
+bare-cell round (D-SLM6428 cell B) with construction 12 (M11: every live
+entry archived, not the store's first append). Twelve constructions, each
+executed against `epoch_store_check.py`'s own parent-commit logic (cell
+1(c)) in a
 SCRATCH git repository this script builds under the build directory --
 never the product repository, never a hand-fabricated byte blob standing
 in for a commit.
@@ -73,6 +76,15 @@ script controls completely.
   11. (M6, TE-170) fp5 deleted directly, bypassing archive.py entirely (no
       archive/ twin) -> SEMB_EPOCH_ENTRY_MODIFIED against commit 1 as the
       parent -- the red pairing for construction 10's green.
+  12. (M11, TE-174; bare cell B, TE-180, D-SLM6428) every live entry
+      archived: commit 1 archives BOTH fp1 and fp2 (by move, together, from
+      the base commit) so the parent's own live/ tree is absent because
+      everything was archived, never because the store has not seen a
+      first append; commit 2 is an unrelated ordinary append (fp3) -> the
+      (1c) message, read against commit 1 as the parent, must name "every
+      live entry has been archived (2 fingerprint(s) under archive/); this
+      is not the store's first append," distinct by string from the
+      genuinely-first-append message, and zero FAIL rows.
 
 RED-FIRST: run before the product's own store exists and before
 epoch_store_check.py's own check_parent_commit is exercised against a real
@@ -230,7 +242,7 @@ def build_base_repo(args) -> BaseRepo:
     prove append-only/archive-by-move/the three divergence statuses,
     without needing a second real artifact).
 
-    Shared by this script's own main() (the eleven-construction population)
+    Shared by this script's own main() (the twelve-construction population)
     and by tests/epoch_store_commission_leg.py (the must-accept/must-reject
     pair TE-162-epoch-store-check's own registration needs as two literal,
     independently-exit-coded commands, D-SLM6427/D-SLM6433) -- ONE base-repo
@@ -515,7 +527,62 @@ def main() -> int:
            "deleting a live entry directly, without running archive.py, must be reported "
            "SEMB_EPOCH_ENTRY_MODIFIED -- M6's own red pairing for construction 10's green", failures)
 
-    print(f"\nepoch_store_constructions_check: 11 construction(s), {len(failures)} failure(s): {failures}")
+    # ---- Construction 12 (M11, TE-174; bare cell B, TE-180, D-SLM6428): the
+    # parent commit's own live/ tree is ABSENT because every live entry has
+    # been archived, not because the store has never seen a first append --
+    # (1c)'s own message must distinguish the two, by string. Commit 1
+    # archives BOTH fp1 and fp2 (by move, in ONE commit, from the base
+    # commit) -- unlike constructions 5/7/8, which each archive fp2 alone
+    # and always leave fp1 live, so the parent commit's own live/ tree is
+    # never empty in any of constructions 1-11 (TE-177's own audit finding,
+    # item 2). Commit 2 is an ordinary, unrelated append (fp3, copied from
+    # fp1's own now-archived bytes -- fp1's live/ copy is gone after commit
+    # 1, so fp3 is minted from the snapshot taken before the move) -- new
+    # appends since the parent commit are informational and must not
+    # disturb the message this construction exists to pin. The check then
+    # runs with commit 1 (the fully-archived state) as --parent-ref, never
+    # commit 2 -- exactly the shape M11's own fix reads (a parent commit
+    # whose live/ tree is absent, diffed against a later HEAD). ----
+    checkout_new_branch(repo, args.git, "construction-12", base_sha)
+    fp1_live_dir = contract.entry_dir(repo, contract.LIVE_DIR, fp1)
+    fp1_bytes = {name: (fp1_live_dir / name).read_bytes() for name in contract.MEMBER_FILE_NAMES}
+    fp1_archive_dir = contract.entry_dir(repo, contract.ARCHIVE_DIR, fp1)
+    fp1_archive_dir.mkdir(parents=True, exist_ok=True)
+    for name in contract.MEMBER_FILE_NAMES:
+        shutil.copyfile(fp1_live_dir / name, fp1_archive_dir / name)
+    shutil.rmtree(fp1_live_dir)
+    fp2_live_dir = contract.entry_dir(repo, contract.LIVE_DIR, fp2)
+    fp2_archive_dir = contract.entry_dir(repo, contract.ARCHIVE_DIR, fp2)
+    fp2_archive_dir.mkdir(parents=True, exist_ok=True)
+    for name in contract.MEMBER_FILE_NAMES:
+        shutil.copyfile(fp2_live_dir / name, fp2_archive_dir / name)
+    shutil.rmtree(fp2_live_dir)
+    c12_archived_all_sha = commit_all(repo, args.git, "construction 12 commit 1: archive-by-move every live entry (fp1 and fp2)")
+    out_archived_all = captured_check_parent_commit(repo, base_sha)
+    expect("FAIL" not in out_archived_all and fp1 in out_archived_all and fp2 in out_archived_all,
+           "construction-12-archive-both-still-accepted",
+           "commit 1 (archive-by-move both fp1 and fp2 against the base commit as parent) must still be accepted, "
+           "matching construction 5 applied twice", failures)
+    fp3_live_dir = contract.entry_dir(repo, contract.LIVE_DIR, fp3)
+    fp3_live_dir.mkdir(parents=True, exist_ok=True)
+    for name in contract.MEMBER_FILE_NAMES:
+        (fp3_live_dir / name).write_bytes(fp1_bytes[name])
+    commit_all(repo, args.git, "construction 12 commit 2: append fp3 (an ordinary, unrelated append)")
+    out = captured_check_parent_commit(repo, c12_archived_all_sha)
+    expect("FAIL" not in out, "construction-12-no-fail-rows",
+           "diffing the fp3-append commit against the fully-archived parent must produce zero FAIL rows "
+           "(the archive/ half is unchanged between the two commits; fp3 is a new, informational append)", failures)
+    expect("every live entry has been archived (2 fingerprint(s) under archive/)" in out and
+           "this is not the store's first append" in out,
+           "construction-12-archived-everything-message",
+           "the (1c) parent-live-tree-absent message must read 'every live entry has been archived "
+           "(2 fingerprint(s) under archive/); this is not the store's first append' -- distinct, by string, "
+           "from the genuinely-first-append message (M11, TE-174)", failures)
+    expect("store's own first append has not landed yet" not in out, "construction-12-not-conflated-with-first-append",
+           "must not ALSO/instead report the genuinely-first-append message", failures)
+
+    total_constructions = 12
+    print(f"\nepoch_store_constructions_check: {total_constructions} construction(s), {len(failures)} failure(s): {failures}")
     return 1 if failures else 0
 
 

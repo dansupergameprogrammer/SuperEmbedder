@@ -66,7 +66,7 @@
 //
 // THE PARTITION THIS CONTRACT FIXES between the three statuses, so the
 // check (tests/epoch_store_check.py) and the constructions population
-// (tests/epoch_store_constructions_check.py, eleven as of TE-170/TE-174)
+// (tests/epoch_store_constructions_check.py, twelve as of TE-170/TE-174/TE-180)
 // agree on which status a given mutation produces, and so the builder's
 // own product code, once it
 // exists, is graded against a fixed rather than an improvised meaning:
