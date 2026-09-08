@@ -11,6 +11,12 @@ extern "C" {
 
 typedef struct semb_encoder_s* semb_encoder;
 
+// sec 3.1 item 5: library-owned, opaque, not copyable, released only by
+// semb_bank_close; a double close returns SEMB_INVALID_HANDLE. A distinct
+// opaque tag from semb_encoder/semb_query -- the three handle kinds are
+// never interchangeable (tests/semb_bank_abi_contract.h, TE-163/TE-166).
+typedef struct semb_bank_opaque* semb_bank;
+
 // Closed and append-only: existing names and ordinals never move.
 #define SEMB_STATUS_ENUM_LIST(X) \
   X(SEMB_OK,                        0) \
@@ -34,7 +40,17 @@ typedef struct semb_encoder_s* semb_encoder;
   X(SEMB_CORPUS_EMPTY,             18) \
   X(SEMB_DOCUMENT_ID_INVALID,      19) \
   X(SEMB_DOCUMENT_ID_DUPLICATE,    20) \
-  X(SEMB_CORPUS_TOO_LARGE,         21)
+  X(SEMB_CORPUS_TOO_LARGE,         21) \
+  X(SEMB_FINGERPRINT_MISMATCH,             22) \
+  X(SEMB_MANIFEST_SCHEMA_UNSUPPORTED,      23) \
+  X(SEMB_BANK_SIZE_MISMATCH,               24) \
+  X(SEMB_ARTIFACT_SHA_MISMATCH,            25) \
+  X(SEMB_ADAPTER_ID_MISMATCH,              26) \
+  X(SEMB_PS_VERSION_LABEL_MISMATCH,        27) \
+  X(SEMB_BANK_IDS_COUNT_MISMATCH,          28) \
+  X(SEMB_BANK_NONFINITE_ROW,               29) \
+  X(SEMB_BANK_ZERO_NORM_ROW,               30) \
+  X(SEMB_BANK_GEOMETRY_CEILING_EXCEEDED,   31)
 
 typedef enum semb_status {
 #define SEMB_STATUS_ENUM_VALUE_(name, value) name = value,
@@ -97,6 +113,16 @@ semb_status semb_encode(semb_encoder enc, const char* utf8, size_t utf8_len,
 semb_status semb_encode_batch(semb_encoder enc, const semb_document* docs, size_t n,
                               float* out_rows, size_t out_capacity_bytes,
                               size_t* out_required_bytes);
+// Opens and validates a `.wvbank`/`.semb.json` triple named by the shared
+// stem `path` (sized UTF-8 span, `path_len` bytes, never NUL-terminated);
+// owns the bank's own expected fingerprint, read from the manifest. `*out`
+// is set to a live handle only on SEMB_OK; every refusal leaves
+// `*out == NULL` (when `out` is non-NULL) (`Claude/Plans/SuperEmbedder_Plan.md`
+// sec 3.1; `tests/semb_bank_abi_contract.h`).
+semb_status semb_bank_open(const char* path, size_t path_len, semb_bank* out);
+// Releases the handle. `SEMB_BANK_IN_USE` (a live query-handle reference
+// count) is Slice 5's own and is not tracked by this slice.
+semb_status semb_bank_close(semb_bank bank);
 const char* semb_status_name(semb_status s);
 
 #ifdef __cplusplus
