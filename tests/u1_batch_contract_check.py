@@ -56,9 +56,15 @@ MECH_CONTEXT_CAP = 64
 # real forward at every open (D-SLM6352: ~19.8 s/open) measured the leg at
 # 1,250 s (TE-148 review F-2). The cap below is that measurement plus
 # margin -- not a population this round shrinks to fit an unchanged cap.
+# TE-183 (D-SLM6435): the 2000 s workspace figure above was itself too small
+# -- direct, untimed execution on a shared host measured the real leg
+# (65 cells, 0 failures) at approximately 2,760 s. Raised to 3600 s, margin
+# over that measurement, per this comment's own instruction (raise the
+# figure when the leg's real cost has grown, never shrink a cell's
+# population to fit an unchanged cap).
 LEG_TIMEOUT_S = {
     "contract": 900,
-    "workspace": 2000,
+    "workspace": 3600,
     "wb-witness": 900,
 }
 DEFAULT_LEG_TIMEOUT_S = 900
