@@ -135,7 +135,8 @@ bool FileExists(const fs::path& p) { return fs::exists(p); }
 struct Statuses {
   int32_t ok, null_argument, invalid_handle, corpus_empty, document_id_duplicate,
       fingerprint_mismatch, manifest_schema_unsupported, bank_size_mismatch,
-      artifact_sha_mismatch, adapter_id_mismatch, ps_version_label_mismatch;
+      artifact_sha_mismatch, adapter_id_mismatch, ps_version_label_mismatch,
+      context_cap_exceeded;
 };
 Statuses ResolveStatuses() {
   using semb_contract::StatusByName;
@@ -151,6 +152,7 @@ Statuses ResolveStatuses() {
   s.artifact_sha_mismatch = StatusByName("SEMB_ARTIFACT_SHA_MISMATCH");
   s.adapter_id_mismatch = StatusByName("SEMB_ADAPTER_ID_MISMATCH");
   s.ps_version_label_mismatch = StatusByName("SEMB_PS_VERSION_LABEL_MISMATCH");
+  s.context_cap_exceeded = StatusByName("SEMB_CONTEXT_CAP_EXCEEDED");
   return s;
 }
 
@@ -293,22 +295,38 @@ std::string RecomputeFingerprintFromManifest(const json_mini::Value& m) {
 }
 
 // Copies the three-file triple at `src_stem` to `dst_stem`, applying `edit`
-// to the manifest JSON text before writing the copy -- the "editing a copy
-// of a good triple" construction cell 2's own dispatch text names for every
-// tamper leg.
-void CopyTriple(const fs::path& src_stem, const fs::path& dst_stem,
+// to the manifest/header/bin bytes before writing each copy -- the "editing
+// a copy of a good triple" construction cell 2's own dispatch text names for
+// every tamper leg. Returns true iff every edit ran without throwing and the
+// copy completed. D-SLM6411 item (a): a `ReplaceOnce` (or any edit) that
+// cannot find what it names is a defect IN THAT CONSTRUCTION -- not a reason
+// to kill the whole process before its later cells run. An exception thrown
+// out of `edit` is caught here and reported as a NAMED FAIL for `cell_name`,
+// never left to propagate past this function.
+bool CopyTriple(const fs::path& src_stem, const fs::path& dst_stem, const std::string& cell_name,
                  const std::function<std::string(std::string)>& edit_manifest = nullptr,
                  const std::function<std::string(std::string)>& edit_header = nullptr,
                  const std::function<std::string(std::string)>& edit_bin = nullptr) {
+  bool ok = true;
   auto copy_one = [&](const char* suffix, const std::function<std::string(std::string)>& edit) {
+    if (!ok) return;  // an earlier suffix's own edit already failed this construction
     std::string bytes = ReadFileBytes(fs::path(src_stem.string() + suffix));
-    if (edit) bytes = edit(std::move(bytes));
+    if (edit) {
+      try {
+        bytes = edit(std::move(bytes));
+      } catch (const std::exception& e) {
+        Verdict(false, cell_name + " (setup) the construction's own edit", std::string("threw: ") + e.what());
+        ok = false;
+        return;
+      }
+    }
     std::ofstream out(fs::path(dst_stem.string() + suffix), std::ios::binary);
     out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
   };
   copy_one(".wvbank.json", edit_header);
   copy_one(".wvbank.bin", edit_bin);
   copy_one(".semb.json", edit_manifest);
+  return ok;
 }
 
 std::string ReplaceOnce(std::string s, const std::string& from, const std::string& to) {
@@ -360,7 +378,19 @@ int main(int argc, char** argv) {
     semb_encoder_dims(enc, &enc_dims);
     const std::string stem_str = wb_stem.string();
     const semb_status bs = semb_bake_to_path(enc, wb_docs.data(), wb_docs.size(), stem_str.c_str(), stem_str.size());
-    Verdict(bs == st.ok, label + "/cell1 bake the WB fixture -> SEMB_OK", Name(bs));
+    // D-SLM6411 item (c): the mechanism pair's own tiny context_cap (64) is
+    // legitimately exceeded by at least one WB document's raw (uncut) token
+    // count, and semb_bake_to_path applies NO document cutting (cutting is
+    // ComputeWbDigest's own open-time-only accommodation, never exposed to a
+    // caller's own bake per its own contract) -- so the mechanism leg
+    // correctly REFUSES this bake with SEMB_CONTEXT_CAP_EXCEEDED. The
+    // product leg's real candidate has a context_cap far above every WB
+    // document's token count and bakes to SEMB_OK. The original assertion
+    // expected SEMB_OK unconditionally, which does not construct what it
+    // named on the mechanism leg.
+    const int32_t expected_bake = a.real ? st.ok : st.context_cap_exceeded;
+    const std::string expected_bake_name = a.real ? "SEMB_OK" : "SEMB_CONTEXT_CAP_EXCEEDED";
+    Verdict(bs == expected_bake, label + "/cell1 bake the WB fixture -> " + expected_bake_name, Name(bs));
 
     if (bs == st.ok) {
       const std::string header_text = ReadFileBytes(fs::path(stem_str + ".wvbank.json"));
@@ -414,6 +444,10 @@ int main(int argc, char** argv) {
       bool tok_counts_ok = manifest.as_object.count("per_row_token_counts") &&
                             manifest["per_row_token_counts"].arr().size() == wb_docs.size();
       Verdict(tok_counts_ok, label + "/cell1 per_row_token_counts has one entry per row, row order", "");
+    } else if (!a.real) {
+      Missing(label + "/cell1 header/payload/manifest pins, payload identity, SuperFAISS must-accept",
+              "the mechanism pair's own tiny context_cap (64) legitimately refuses this bake (D-SLM6411 item c); "
+              "this coverage is carried by the product leg's own --real bake instead");
     }
 
     semb_encoder_close(enc);
@@ -506,112 +540,136 @@ int main(int argc, char** argv) {
       if (bank) semb_bank_close(bank);  // never reached on a correct refusal; drains defensively if it is
     };
 
-    // Unknown schemaVersion -> SEMB_MANIFEST_SCHEMA_UNSUPPORTED.
+    // Unknown schemaVersion -> SEMB_MANIFEST_SCHEMA_UNSUPPORTED. D-SLM6411
+    // item (a): `schemaVersion` is a HEADER (.wvbank.json) field per
+    // FORMAT.md sec 1, never a manifest field -- the edit belongs on
+    // CopyTriple's edit_header parameter, not edit_manifest (the original
+    // defect: passing it as edit_manifest made ReplaceOnce throw, uncaught,
+    // killing the whole process before cells 3, 5, 6 or the --real leg ran).
     {
       fs::path stem = scratch / (a.stem + "_t_schema");
-      CopyTriple(good_stem, stem, [](std::string t) { return ReplaceOnce(t, "\"schemaVersion\": 1", "\"schemaVersion\": 999"); });
-      try_open_expect("unknown schemaVersion", stem, st.manifest_schema_unsupported, "SEMB_MANIFEST_SCHEMA_UNSUPPORTED");
+      if (CopyTriple(good_stem, stem, label + "/cell2 unknown schemaVersion", nullptr,
+                     [](std::string t) { return ReplaceOnce(t, "\"schemaVersion\": 1", "\"schemaVersion\": 999"); })) {
+        try_open_expect("unknown schemaVersion", stem, st.manifest_schema_unsupported, "SEMB_MANIFEST_SCHEMA_UNSUPPORTED");
+      }
     }
     // .bin length off by one ROW.
     {
       fs::path stem = scratch / (a.stem + "_t_size_row");
-      CopyTriple(good_stem, stem, nullptr, nullptr,
-                 [](std::string bin) { bin.resize(bin.size() + 32 * 4, '\0'); return bin; });
-      try_open_expect(".bin length off by one row -> SEMB_BANK_SIZE_MISMATCH", stem, st.bank_size_mismatch, "SEMB_BANK_SIZE_MISMATCH");
+      if (CopyTriple(good_stem, stem, label + "/cell2 .bin length off by one row", nullptr, nullptr,
+                     [dims = a.dims](std::string bin) { bin.resize(bin.size() + static_cast<size_t>(dims) * 4, '\0'); return bin; })) {
+        try_open_expect(".bin length off by one row -> SEMB_BANK_SIZE_MISMATCH", stem, st.bank_size_mismatch, "SEMB_BANK_SIZE_MISMATCH");
+      }
     }
     // .bin length off by one BYTE.
     {
       fs::path stem = scratch / (a.stem + "_t_size_byte");
-      CopyTriple(good_stem, stem, nullptr, nullptr, [](std::string bin) { bin.push_back('\0'); return bin; });
-      try_open_expect(".bin length off by one byte -> SEMB_BANK_SIZE_MISMATCH", stem, st.bank_size_mismatch, "SEMB_BANK_SIZE_MISMATCH");
+      if (CopyTriple(good_stem, stem, label + "/cell2 .bin length off by one byte", nullptr, nullptr,
+                     [](std::string bin) { bin.push_back('\0'); return bin; })) {
+        try_open_expect(".bin length off by one byte -> SEMB_BANK_SIZE_MISMATCH", stem, st.bank_size_mismatch, "SEMB_BANK_SIZE_MISMATCH");
+      }
     }
     // The manifest's own artifact SHA edited (a provenance field, not the
     // fingerprint components) -> SEMB_ARTIFACT_SHA_MISMATCH.
     {
       fs::path stem = scratch / (a.stem + "_t_artifact_sha");
-      CopyTriple(good_stem, stem, [](std::string m) {
-        json_mini::Parser p(m);
-        json_mini::Value v = p.Parse();
-        const std::string real = v["model_sha"].s();
-        std::string tampered = real;
-        tampered[0] = (tampered[0] == '0') ? '1' : '0';
-        return ReplaceOnce(m, "\"model_sha\": \"" + real + "\"", "\"model_sha\": \"" + tampered + "\"");
-      });
-      try_open_expect("manifest's own model_sha edited -> SEMB_ARTIFACT_SHA_MISMATCH", stem, st.artifact_sha_mismatch,
-                       "SEMB_ARTIFACT_SHA_MISMATCH");
+      if (CopyTriple(good_stem, stem, label + "/cell2 manifest's own model_sha edited", [](std::string m) {
+            json_mini::Parser p(m);
+            json_mini::Value v = p.Parse();
+            const std::string real = v["model_sha"].s();
+            std::string tampered = real;
+            tampered[0] = (tampered[0] == '0') ? '1' : '0';
+            return ReplaceOnce(m, "\"model_sha\": \"" + real + "\"", "\"model_sha\": \"" + tampered + "\"");
+          })) {
+        try_open_expect("manifest's own model_sha edited -> SEMB_ARTIFACT_SHA_MISMATCH", stem, st.artifact_sha_mismatch,
+                         "SEMB_ARTIFACT_SHA_MISMATCH");
+      }
     }
     // ids array: missing (absent key entirely).
     {
       fs::path stem = scratch / (a.stem + "_t_ids_missing");
-      CopyTriple(good_stem, stem, nullptr, [](std::string header) {
-        json_mini::Parser p(header);
-        json_mini::Value v = p.Parse();
-        const auto& ids = v["ids"];
-        std::string quoted = "\"ids\": [";
-        for (size_t i = 0; i < ids.arr().size(); ++i) quoted += (i ? ", " : "") + ("\"" + ids.arr()[i].s() + "\"");
-        quoted += "]";
-        return ReplaceOnce(header, quoted, "");
-      });
-      try_open_expect("ids array missing entirely -- asserted a refusal, no status this round names it "
-                       "(routed as a finding)", stem, -1, "");
+      if (CopyTriple(good_stem, stem, label + "/cell2 ids array missing entirely", nullptr, [](std::string header) {
+            json_mini::Parser p(header);
+            json_mini::Value v = p.Parse();
+            const auto& ids = v["ids"];
+            std::string quoted = "\"ids\": [";
+            for (size_t i = 0; i < ids.arr().size(); ++i) quoted += (i ? ", " : "") + ("\"" + ids.arr()[i].s() + "\"");
+            quoted += "]";
+            return ReplaceOnce(header, quoted, "");
+          })) {
+        try_open_expect("ids array missing entirely -- asserted a refusal, no status this round names it "
+                         "(routed as a finding)", stem, -1, "");
+      }
     }
     // ids array: short (one fewer entry than count).
     {
       fs::path stem = scratch / (a.stem + "_t_ids_short");
-      CopyTriple(good_stem, stem, nullptr,
-                 [](std::string header) { return ReplaceOnce(header, "\"g1\"", ""); });
-      try_open_expect("ids array short by one -- asserted a refusal, no status this round names it "
-                       "(routed as a finding)", stem, -1, "");
+      if (CopyTriple(good_stem, stem, label + "/cell2 ids array short by one", nullptr,
+                     [](std::string header) { return ReplaceOnce(header, "\"g1\"", ""); })) {
+        try_open_expect("ids array short by one -- asserted a refusal, no status this round names it "
+                         "(routed as a finding)", stem, -1, "");
+      }
     }
     // ids array: duplicated (both entries the same id).
     {
       fs::path stem = scratch / (a.stem + "_t_ids_dup");
-      CopyTriple(good_stem, stem, nullptr,
-                 [](std::string header) { return ReplaceOnce(header, "\"g1\"", "\"g0\""); });
-      try_open_expect("ids array carries a duplicate -> SEMB_DOCUMENT_ID_DUPLICATE (reused: the identical "
-                       "semantic C18/C4 already name)",
-                       stem, st.document_id_duplicate, "SEMB_DOCUMENT_ID_DUPLICATE");
+      if (CopyTriple(good_stem, stem, label + "/cell2 ids array carries a duplicate", nullptr,
+                     [](std::string header) { return ReplaceOnce(header, "\"g1\"", "\"g0\""); })) {
+        try_open_expect("ids array carries a duplicate -> SEMB_DOCUMENT_ID_DUPLICATE (reused: the identical "
+                         "semantic C18/C4 already name)",
+                         stem, st.document_id_duplicate, "SEMB_DOCUMENT_ID_DUPLICATE");
+      }
     }
     // A non-finite row value.
     {
       fs::path stem = scratch / (a.stem + "_t_nonfinite");
-      CopyTriple(good_stem, stem, nullptr, nullptr, [](std::string bin) {
-        if (bin.size() >= 4) {
-          uint32_t nan_bits = 0x7FC00000u;  // a quiet NaN, little-endian float32
-          std::memcpy(bin.data(), &nan_bits, 4);
-        }
-        return bin;
-      });
-      try_open_expect("a non-finite row value -- asserted a refusal, no status this round names it "
-                       "(routed as a finding)", stem, -1, "");
+      if (CopyTriple(good_stem, stem, label + "/cell2 a non-finite row value", nullptr, nullptr, [](std::string bin) {
+            if (bin.size() >= 4) {
+              uint32_t nan_bits = 0x7FC00000u;  // a quiet NaN, little-endian float32
+              std::memcpy(bin.data(), &nan_bits, 4);
+            }
+            return bin;
+          })) {
+        try_open_expect("a non-finite row value -- asserted a refusal, no status this round names it "
+                         "(routed as a finding)", stem, -1, "");
+      }
     }
-    // A zero-norm row (metric cosine).
+    // A zero-norm row (metric cosine). D-SLM6411 item (b): the construction
+    // must zero exactly one row's worth of bytes AT THE PAIR'S OWN dims --
+    // the original hardcoded 32*4 (the mechanism pair's own dims), so under
+    // --real (dims 1024) it zeroed only 32 of 1024 elements and the row was
+    // NOT actually zero-norm. `dims = a.dims` scales the construction to
+    // whichever pair is running, mechanism or product.
     {
       fs::path stem = scratch / (a.stem + "_t_zeronorm");
-      CopyTriple(good_stem, stem, nullptr, nullptr, [](std::string bin) {
-        std::fill(bin.begin(), bin.begin() + std::min<size_t>(bin.size(), 32 * 4), '\0');
-        return bin;
-      });
-      try_open_expect("a zero-norm row under cosine -- asserted a refusal, no status this round names it "
-                       "(routed as a finding)", stem, -1, "");
+      if (CopyTriple(good_stem, stem, label + "/cell2 a zero-norm row under cosine", nullptr, nullptr,
+                     [dims = a.dims](std::string bin) {
+                       std::fill(bin.begin(), bin.begin() + std::min<size_t>(bin.size(), static_cast<size_t>(dims) * 4), '\0');
+                       return bin;
+                     })) {
+        try_open_expect("a zero-norm row under cosine (zeroed at the pair's own dims) -- asserted a refusal, "
+                         "no status this round names it (routed as a finding)", stem, -1, "");
+      }
     }
     // Header geometry over the ceilings -- dims over 131,072, on the header
     // alone (FORMAT.md sec 1: rejected before any size arithmetic).
     {
       fs::path stem = scratch / (a.stem + "_t_dims_ceiling");
-      CopyTriple(good_stem, stem, nullptr,
-                 [&](std::string header) { return ReplaceOnce(header, "\"dims\": " + std::to_string(a.dims),
-                                                                "\"dims\": 999999999"); });
-      try_open_expect("dims over 131,072 refused on the header alone -- asserted a refusal, no status this "
-                       "round names it (routed as a finding)", stem, -1, "");
+      if (CopyTriple(good_stem, stem, label + "/cell2 dims over 131,072", nullptr,
+                     [&](std::string header) { return ReplaceOnce(header, "\"dims\": " + std::to_string(a.dims),
+                                                                    "\"dims\": 999999999"); })) {
+        try_open_expect("dims over 131,072 refused on the header alone -- asserted a refusal, no status this "
+                         "round names it (routed as a finding)", stem, -1, "");
+      }
     }
     // count over 2^28, on the header alone.
     {
       fs::path stem = scratch / (a.stem + "_t_count_ceiling");
-      CopyTriple(good_stem, stem, nullptr,
-                 [](std::string header) { return ReplaceOnce(header, "\"count\": 2", "\"count\": 999999999"); });
-      try_open_expect("count over 2^28 refused on the header alone -- asserted a refusal, no status this "
-                       "round names it (routed as a finding)", stem, -1, "");
+      if (CopyTriple(good_stem, stem, label + "/cell2 count over 2^28", nullptr,
+                     [](std::string header) { return ReplaceOnce(header, "\"count\": 2", "\"count\": 999999999"); })) {
+        try_open_expect("count over 2^28 refused on the header alone -- asserted a refusal, no status this "
+                         "round names it (routed as a finding)", stem, -1, "");
+      }
     }
   }
 
@@ -655,23 +713,24 @@ int main(int argc, char** argv) {
             "manifest=" + real_fp.substr(0, 16) + "... recomputed=" + recomputed.substr(0, 16) + "...");
 
     fs::path stem = scratch / (a.stem + "_t_fp");
-    CopyTriple(good_stem, stem, [&](std::string m) {
-      std::string tampered_fp = real_fp;
-      tampered_fp[0] = (tampered_fp[0] == '0') ? '1' : '0';
-      return ReplaceOnce(m, "\"encoder_fingerprint\": \"" + real_fp + "\"",
-                          "\"encoder_fingerprint\": \"" + tampered_fp + "\"");
-    });
-    const std::string stem_str = stem.string();
-    semb_bank bank = nullptr;
-    const semb_status s = semb_bank_open(stem_str.c_str(), stem_str.size(), &bank);
-    Verdict(s == st.fingerprint_mismatch,
-            label + "/cell3 encoder_fingerprint disagreeing with its own five clear-text components "
-                    "-> SEMB_FINGERPRINT_MISMATCH (reading (a): bank_open checks manifest self-consistency, "
-                    "not a comparison to any encoder -- semb_bank_open takes no encoder argument)",
-            Name(s));
-    Verdict(bank == nullptr, label + "/cell3 leaves *out == NULL on the fingerprint-mismatch refusal",
-            bank == nullptr ? "confirmed" : "NOT NULL");
-    if (bank) semb_bank_close(bank);
+    if (CopyTriple(good_stem, stem, label + "/cell3 tampered encoder_fingerprint", [&](std::string m) {
+          std::string tampered_fp = real_fp;
+          tampered_fp[0] = (tampered_fp[0] == '0') ? '1' : '0';
+          return ReplaceOnce(m, "\"encoder_fingerprint\": \"" + real_fp + "\"",
+                              "\"encoder_fingerprint\": \"" + tampered_fp + "\"");
+        })) {
+      const std::string stem_str = stem.string();
+      semb_bank bank = nullptr;
+      const semb_status s = semb_bank_open(stem_str.c_str(), stem_str.size(), &bank);
+      Verdict(s == st.fingerprint_mismatch,
+              label + "/cell3 encoder_fingerprint disagreeing with its own five clear-text components "
+                      "-> SEMB_FINGERPRINT_MISMATCH (reading (a): bank_open checks manifest self-consistency, "
+                      "not a comparison to any encoder -- semb_bank_open takes no encoder argument)",
+              Name(s));
+      Verdict(bank == nullptr, label + "/cell3 leaves *out == NULL on the fingerprint-mismatch refusal",
+              bank == nullptr ? "confirmed" : "NOT NULL");
+      if (bank) semb_bank_close(bank);
+    }
   }
 
   // =========================================================================
