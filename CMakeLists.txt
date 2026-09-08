@@ -249,6 +249,13 @@ enable_testing()
 # superslm::superslm already exist in this scope by this point.
 add_subdirectory(tests)
 
+# TE-164 (U1 slice 3 build): the epoch store's own minting tool (sec 8,
+# C32). Added here, after add_subdirectory(tests) so the superembedder
+# target already exists, and before semb_assert_precise_fp() below so this
+# target is swept into C14's directory-wide precise-FP audit like every
+# other target this file declares.
+add_subdirectory(tools/epoch-store)
+
 # TE-79 F-4 (Significant, TE-76 review): semb_assert_precise_fp() moved
 # HERE, after every add_subdirectory() this file calls -- it used to run
 # BEFORE add_subdirectory(tests), so its own recursive BUILDSYSTEM_TARGETS

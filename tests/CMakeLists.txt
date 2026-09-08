@@ -293,6 +293,38 @@ add_test(
 if(NOT SEMB_C12B_MODEL STREQUAL "")
 	set_tests_properties(c12b_row_digest_check PROPERTIES LABELS "real_artifact")
 endif()
+
+# TE-180 item 4 (D-SLM6430 bare cell C): the store's committed real entry
+# against tests/c12b_row_digest_check.py's own instrument (semb_c12b_
+# row_digest), for every one of the 239 real documents -- mechanizing the
+# manual cross-check Claude/Brunel/te164-slice3-build-2026-09-07.md sec 3
+# and Claude/Curie/te168-slice3-oracle-fix-2026-09-07.md sec 3 both report
+# as an executed, one-off probe. Independent of both epoch_store_emit's own
+# construction and of C2's own oracle (tests/c2_lineage_equality_test.cpp).
+# TE-190 item 5 (D-SLM6466 ruling 2, closing O2): the graded live entry is
+# no longer a pinned fingerprint literal -- c12b_epoch_store_cross_check.py
+# now SELECTS the epoch-store/live/<fingerprint>/ entry whose committed
+# row-digest.tsv document count matches --corpus's own (239), refusing by
+# name when none or more than one live entry matches, so a legitimate
+# epoch rotation (a second live entry committed alongside this one) does
+# not turn this cell red for a reason unrelated to the claim it grades.
+# real_artifact only: needs the built instrument and the real model,
+# exactly like c12b_row_digest_check above.
+if(TARGET semb_c12b_row_digest AND NOT SEMB_C12B_MODEL STREQUAL "")
+	add_test(
+		NAME c12b_epoch_store_cross_check
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c12b_epoch_store_cross_check.py"
+			--instrument "${_semb_c12b_instrument}"
+			--model "${SEMB_C12B_MODEL}"
+			--corpus "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/corpus-239.tokens.tsv"
+			--append-token-id 151643
+			--store-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+			--build-dir "${CMAKE_BINARY_DIR}"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+	set_tests_properties(c12b_epoch_store_cross_check PROPERTIES LABELS "real_artifact")
+endif()
+
 add_test(
 	NAME ps_n_reference_oracle_selftest
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/ps_n_reference.py" --selftest
@@ -672,3 +704,204 @@ endfunction()
 if(DEFINED SEMB_LIBRARY_SOURCES)
   cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_workspace_tests)
 endif()
+
+# ---------------------------------------------------------------------------
+# TE-162 (U1 slice 3): the epoch store's four able-to-fail constructions and
+# C2 (`Claude/Plans/te140-u1-remainder-sequencing.md` sec 4.3;
+# `Claude/Plans/SuperEmbedder_Plan.md` sec 8, C32/C2). Five registrations,
+# one per cell the dispatch's own brief enumerates:
+#   cell 1 -> epoch_store_check              (the store check itself)
+#   cell 2 -> epoch_store_constructions_check (the constructions population, twelve as of TE-170/TE-180)
+#   cell 3 -> c2_lineage_equality_test_synthetic / _real_artifact (C2)
+#   cell 4 -> folded into c2_lineage_equality_test_real_artifact
+#   cell 5 -> epoch_store_gitattributes_check
+# `epoch-store/` does not exist anywhere in this tree at this branch's own
+# base (confirmed this round, matching `Claude/Mendeleev/
+# te142-te140-subplan-coverage-audit-2026-09-06.md` sec 1's own absent-
+# surface grep): the builder's round is what makes cells 1/2/3/4 stop
+# reporting their own named red state.
+
+# The C++ gate cell (C2 + cell 4), linked against the product library
+# directly (semb_encode_document_for_witness, semb_seam_serialize_document
+# and semb_encode are all already built at Slice 0's own baseline).
+add_executable(c2_lineage_equality_test "${CMAKE_CURRENT_SOURCE_DIR}/c2_lineage_equality_test.cpp")
+target_link_libraries(c2_lineage_equality_test PRIVATE superembedder superslm::superslm)
+target_include_directories(c2_lineage_equality_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+set_target_properties(c2_lineage_equality_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+
+add_test(
+	NAME c2_lineage_equality_test_synthetic
+	COMMAND c2_lineage_equality_test
+		--regen-synthetic-pair
+		--dims 32
+		--tokens "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/synthetic-corpus.tokens.tsv"
+		--terminator-id 262
+		--store-root "${CMAKE_CURRENT_SOURCE_DIR}/../epoch-store"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+	add_test(
+		NAME c2_lineage_equality_test_real_artifact
+		COMMAND c2_lineage_equality_test
+			--model "${SEMB_C12B_MODEL}"
+			--tokenizer "${SEMB_U1_TOKENIZER}"
+			--dims 1024
+			--tokens "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/corpus-239.tokens.tsv"
+			--terminator-id 151643
+			--store-root "${CMAKE_CURRENT_SOURCE_DIR}/../epoch-store"
+			--corpus-jsonl "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/corpus-239.jsonl"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+	set_tests_properties(c2_lineage_equality_test_real_artifact PROPERTIES LABELS "real_artifact")
+endif()
+
+# TE-180 item 2 (D-SLM6428 bare cell A): an empty or unreadable
+# --corpus-jsonl is a registered red-by-name cell. c2_lineage_equality_test.cpp's
+# own S7 block (:444-455) is the LAST thing main() runs -- AFTER the
+# synthetic pair regeneration, the mutation-proof block's two
+# ComputeSeamDigest calls (:345-361), the live-fingerprint read via Open()
+# and semb_encode (:366-385), the lineage.tsv read (:392-404) and the
+# whole per-document C2 loop (:408-434) -- confirmed by reading the source
+# AND by execution (TE-190 M1): the run prints "C2 summary: 8 of 8
+# documents checked, 0 mismatch(es)" before the S7 FAIL row. It is reached
+# by the SYNTHETIC leg's own args (--regen-synthetic-pair, no real
+# artifact) because --corpus-jsonl is the only gate S7 checks, not because
+# S7 runs early; no real_artifact leg is needed. Each of the four
+# registrations below therefore re-runs the entire synthetic C2 loop to
+# reach S7 -- the ~1s-per-cell cost these four cells carry is C2's own, not
+# S7's, and none of the four can distinguish S7 firing from any other cell
+# in the same TU failing (M1, TE-190). Two constructions (an empty file; a
+# path that does not exist),
+# both reaching the same S7 branch, whose message is c2_lineage_equality_test.cpp's
+# own ternary: "carries no readable document (empty corpus)" for the empty
+# file, "cannot open <path>" for the missing path, then the shared "-- an
+# empty or unreadable corpus is a FAIL, not MISSING PREREQUISITE (S7,
+# TE-174)" tail. TE-190 M3: asserting only the shared tail (as a single
+# regex both _fails_named cells shared) cannot tell the two branches apart
+# -- if the configure-time empty file is absent when ctest runs, the
+# "empty" registration's own command hits the SAME "cannot open <path>"
+# branch the missing-path registration exercises, and the shared-tail
+# regex still matches, so all four cells stay green while only the
+# cannot-open branch is exercised. Each construction below is therefore
+# asserted against its OWN discriminating regex (the empty file's "no
+# readable document"; the missing path's "cannot open"), never the shared
+# tail alone.
+#
+# CTEST PROPERTY FINDING, verified by execution this round rather than
+# assumed: WILL_FAIL and PASS_REGULAR_EXPRESSION do NOT conjoin when set on
+# the same ctest test. Once PASS_REGULAR_EXPRESSION is present, ctest's own
+# pass/fail is driven ENTIRELY by whether the regex is found in the
+# process's output -- the exit code is ignored outright -- and WILL_FAIL
+# then inverts THAT regex-driven verdict, never the exit code. A four-cell
+# probe (exit0/exit1 crossed with regex-present/absent, both properties
+# set together) confirmed this: exit1+regex-present read ctest-FAILED
+# ("Required regular expression found"), the opposite of what treating the
+# two properties as an AND would predict; exit0+regex-absent read
+# ctest-PASSED, likewise inverted from an AND reading. So "asserting
+# non-zero exit AND the S7 FAIL row" (the brief's own phrasing) is realized
+# below as TWO separate, single-purpose registrations per construction --
+# one WILL_FAIL-only (the exit-code fact) and one PASS_REGULAR_EXPRESSION-
+# only (the message fact) -- never as one registration combining both
+# properties, which the probe showed does not assert their conjunction.
+file(WRITE "${CMAKE_BINARY_DIR}/_epoch_store_cell_a/empty_corpus.jsonl" "")
+# TE-190 M3: each construction's own discriminating half of the ternary,
+# never the shared tail alone -- see the comment above this block.
+set(_c2_s7_empty_message_regex "no readable document")
+set(_c2_s7_missing_message_regex "cannot open")
+
+add_test(
+	NAME c2_lineage_equality_test_synthetic_empty_corpus_jsonl_exits_nonzero
+	COMMAND c2_lineage_equality_test
+		--regen-synthetic-pair
+		--dims 32
+		--tokens "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/synthetic-corpus.tokens.tsv"
+		--terminator-id 262
+		--store-root "${CMAKE_CURRENT_SOURCE_DIR}/../epoch-store"
+		--corpus-jsonl "${CMAKE_BINARY_DIR}/_epoch_store_cell_a/empty_corpus.jsonl"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+set_tests_properties(c2_lineage_equality_test_synthetic_empty_corpus_jsonl_exits_nonzero PROPERTIES WILL_FAIL TRUE)
+
+add_test(
+	NAME c2_lineage_equality_test_synthetic_empty_corpus_jsonl_fails_named
+	COMMAND c2_lineage_equality_test
+		--regen-synthetic-pair
+		--dims 32
+		--tokens "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/synthetic-corpus.tokens.tsv"
+		--terminator-id 262
+		--store-root "${CMAKE_CURRENT_SOURCE_DIR}/../epoch-store"
+		--corpus-jsonl "${CMAKE_BINARY_DIR}/_epoch_store_cell_a/empty_corpus.jsonl"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+set_tests_properties(c2_lineage_equality_test_synthetic_empty_corpus_jsonl_fails_named PROPERTIES
+	PASS_REGULAR_EXPRESSION "${_c2_s7_empty_message_regex}")
+
+add_test(
+	NAME c2_lineage_equality_test_synthetic_missing_corpus_jsonl_exits_nonzero
+	COMMAND c2_lineage_equality_test
+		--regen-synthetic-pair
+		--dims 32
+		--tokens "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/synthetic-corpus.tokens.tsv"
+		--terminator-id 262
+		--store-root "${CMAKE_CURRENT_SOURCE_DIR}/../epoch-store"
+		--corpus-jsonl "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/__te180_cell_a_missing_corpus.jsonl"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+set_tests_properties(c2_lineage_equality_test_synthetic_missing_corpus_jsonl_exits_nonzero PROPERTIES WILL_FAIL TRUE)
+
+add_test(
+	NAME c2_lineage_equality_test_synthetic_missing_corpus_jsonl_fails_named
+	COMMAND c2_lineage_equality_test
+		--regen-synthetic-pair
+		--dims 32
+		--tokens "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/synthetic-corpus.tokens.tsv"
+		--terminator-id 262
+		--store-root "${CMAKE_CURRENT_SOURCE_DIR}/../epoch-store"
+		--corpus-jsonl "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/__te180_cell_a_missing_corpus.jsonl"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+set_tests_properties(c2_lineage_equality_test_synthetic_missing_corpus_jsonl_fails_named PROPERTIES
+	PASS_REGULAR_EXPRESSION "${_c2_s7_missing_message_regex}")
+
+# The Python-side support tool cell 1 and cell 2 both shell out to, to
+# materialise an independently-derived store entry (tests/
+# epoch_store_emit.cpp's own header comment states the full computation).
+add_executable(epoch_store_emit "${CMAKE_CURRENT_SOURCE_DIR}/epoch_store_emit.cpp")
+target_link_libraries(epoch_store_emit PRIVATE superembedder superslm::superslm)
+target_include_directories(epoch_store_emit PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+set_target_properties(epoch_store_emit PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+
+# Cell 1: the store check itself.
+add_test(
+	NAME epoch_store_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/epoch_store_check.py"
+		--repo-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+		--emit-binary "$<TARGET_FILE:epoch_store_emit>"
+		--scratch-dir "${CMAKE_BINARY_DIR}/_epoch_store_check"
+		--real-model "${SEMB_C12B_MODEL}"
+		--real-tokenizer "${SEMB_U1_TOKENIZER}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+if(NOT SEMB_C12B_MODEL STREQUAL "")
+	set_tests_properties(epoch_store_check PROPERTIES LABELS "real_artifact")
+endif()
+
+# Cell 2: the constructions population (twelve as of TE-170/TE-180), in a scratch git repository.
+add_test(
+	NAME epoch_store_constructions_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/epoch_store_constructions_check.py"
+		--repo-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+		--emit-binary "$<TARGET_FILE:epoch_store_emit>"
+		--scratch-dir "${CMAKE_BINARY_DIR}/_epoch_store_constructions"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# Cell 5: the .gitattributes pin.
+add_test(
+	NAME epoch_store_gitattributes_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/epoch_store_gitattributes_check.py"
+		--repo-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+		--scratch-dir "${CMAKE_BINARY_DIR}/_epoch_store_gitattributes"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
