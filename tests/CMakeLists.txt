@@ -130,6 +130,16 @@ semb_add_cxx_test(c41_environment_invariance_test c41_environment_invariance_tes
 target_include_directories(c41_environment_invariance_test PRIVATE "${CMAKE_BINARY_DIR}/generated")
 target_link_libraries(c41_environment_invariance_test PRIVATE Threads::Threads)
 
+# TE-182 (U1 slice 2's fourth test-author round, D-SLM6434 item 1): the
+# interim ABI's own two bare cells over semb_interim_encode_batch_ps_n's
+# optional-output contract (TE-149 coverage audit sec 7 items 3-4; TE-161
+# review M-1, M-2) -- see the test file's own header comment. Plain,
+# always-on, no product gating: it opens the mechanism synthetic pair
+# directly through the interim path (content ids, not text), the identical
+# hardcoded-path convention c41_environment_invariance_test above already
+# uses.
+semb_add_cxx_test(u1_interim_batch_optional_output_test u1_interim_batch_optional_output_test.cpp)
+
 # ---------------------------------------------------------------------------
 # Python-driven cells, matching tools/ci/run_configure_matrix.py's own
 # convention (a script that runs real checks and reports a leg table),
