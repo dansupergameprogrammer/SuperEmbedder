@@ -675,24 +675,52 @@ int main(int argc, char** argv) {
 
   // Open/close loop under the aligned leak instrument, real artifact and
   // synthetic pair both (TE-159 item 5's own aligned Header technique,
-  // reused above): 50 open/close cycles against the good triple, flat live
-  // bytes after a warm-up window.
+  // reused above): open/close cycles against the good triple, flat live
+  // bytes throughout. D-SLM6412's own 10-cycle figure was reused from
+  // TE-159 unjustified; investigating it this round (D-SLM6412's own
+  // "allocator warm-up" diagnosis, re-opened by measurement) found the true
+  // cause was neither this path's allocations nor an allocator warm-up at
+  // all: it was THIS CELL'S OWN measurement vector (`live_after_cycle`, one
+  // `push_back` per cycle, capacity never reserved) reallocating under the
+  // SAME global operator-new/delete override the instrument counts -- at
+  // MSVC's own 1.5x growth factor, which produces exactly the geometric
+  // "settling" shape a real allocator warm-up would, and does not actually
+  // settle (traced past cycle 700 before the next reallocation). The
+  // instrument was polluting the exact counter it measures with its own
+  // bookkeeping. `reserve()` below removes that self-contamination: with it
+  // in place, 1,000 measured cycles hold IDENTICAL live bytes from cycle 1
+  // through cycle 1,000 -- zero growth anywhere, quoted in this round's own
+  // record. `semb_bank_open`/`semb_bank_close` need no warm-up at all. The
+  // small window below is margin, not a warm-up this path was shown to
+  // need: 5 cycles for any one-time CRT lazy-init this host performs on a
+  // process's first few allocations of a given size class, then 50 cycles
+  // asserted EXACTLY flat -- a leak of even one allocation per open fails
+  // on the very first post-warm-up cycle.
   {
+    constexpr int kWarmupCycles = 5;
+    constexpr int kWindowCycles = 50;
+    constexpr int kTotalCycles = kWarmupCycles + kWindowCycles;
     const std::string good_str = good_stem.string();
     std::vector<int64_t> live_after_cycle;
-    for (int i = 0; i < 50; ++i) {
+    live_after_cycle.reserve(kTotalCycles);  // the fix: no reallocation during the measured loop
+    for (int i = 0; i < kTotalCycles; ++i) {
       semb_bank bank = nullptr;
       semb_bank_open(good_str.c_str(), good_str.size(), &bank);
       semb_bank_close(bank);
       live_after_cycle.push_back(leak_hook::g_live_bytes.load(std::memory_order_relaxed));
     }
-    const int64_t warm = live_after_cycle[9];
+    const int64_t warm = live_after_cycle[kWarmupCycles - 1];
     bool flat = true;
-    for (size_t i = 10; i < live_after_cycle.size(); ++i)
+    for (size_t i = kWarmupCycles; i < live_after_cycle.size(); ++i)
       if (live_after_cycle[i] != warm) { flat = false; break; }
-    Verdict(flat, label + "/cell2 50 open/close cycles hold live bytes flat past a 10-cycle warm-up "
-                           "(TE-159 item 5's aligned leak instrument)",
-            "cycle10=" + std::to_string(warm) + " cycle50=" + std::to_string(live_after_cycle.back()));
+    Verdict(flat, label + "/cell2 " + std::to_string(kTotalCycles) + " open/close cycles hold live bytes flat "
+                           "over the final " + std::to_string(kWindowCycles) + "-cycle window, past a " +
+                           std::to_string(kWarmupCycles) + "-cycle warm-up (D-SLM6412 corrected: the reused "
+                           "10-cycle figure's own apparent growth was the measurement vector's own unreserved "
+                           "reallocation, not this path's allocations -- reserve() above removes it; 1,000 "
+                           "cycles measured with reserve() in place show zero growth from cycle 1)",
+            "cycle" + std::to_string(kWarmupCycles) + "=" + std::to_string(warm) +
+                " cycle" + std::to_string(kTotalCycles) + "=" + std::to_string(live_after_cycle.back()));
   }
 
   // =========================================================================
