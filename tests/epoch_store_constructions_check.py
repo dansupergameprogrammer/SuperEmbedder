@@ -195,9 +195,13 @@ def expect(condition: bool, name: str, detail: str, failures: List[str]) -> None
 
 def add_shared_args(p: argparse.ArgumentParser) -> None:
     """The base-repo setup's own flags, shared verbatim by this script's
-    --leg-less `main()` and by tests/epoch_store_commission_leg.py (TE-180
-    item 1, D-SLM6433 ruling 1) -- one definition, so the two scripts cannot
-    drift on a default."""
+    --leg-less `main()` and by the independent commissioning-leg script
+    that imports build_base_repo() for the must-accept/must-reject pair
+    TE-162-epoch-store-check's own registration needs (D-SLM6427/D-SLM6433
+    ruling 1; D-SLM6466 ruling 1 moves that script to
+    `Claude/Mendeleev/te189-probes/`, outside tests/, authored independently
+    of this module's own builder) -- one definition, so the two scripts
+    cannot drift on a default."""
     p.add_argument("--emit-binary", required=True)
     p.add_argument("--repo-root", required=True)
     p.add_argument("--synthetic-model", default="", help="empty = regenerate tests/fixtures/regenerate_tokenizer_pair_fixture.py's own pair")
@@ -243,16 +247,18 @@ def build_base_repo(args) -> BaseRepo:
     without needing a second real artifact).
 
     Shared by this script's own main() (the twelve-construction population)
-    and by tests/epoch_store_commission_leg.py (the must-accept/must-reject
-    pair TE-162-epoch-store-check's own registration needs as two literal,
-    independently-exit-coded commands, D-SLM6427/D-SLM6433) -- ONE base-repo
-    setup, so the population both scripts build on top of cannot drift.
+    and by the independent commissioning-leg script under
+    `Claude/Mendeleev/te189-probes/` (D-SLM6466 ruling 1) that imports this
+    function for the must-accept/must-reject pair TE-162-epoch-store-check's
+    own registration needs as two literal, independently-exit-coded commands
+    (D-SLM6427/D-SLM6433) -- ONE base-repo setup, so the population both
+    scripts build on top of cannot drift.
 
     Raises RuntimeError, with the same [FAIL] (setup) ... text main() used
     to print inline, on any setup failure -- the caller decides what that
     means for its own exit code (main() below returns 1; the commission-leg
     script's own accept/reject exit mapping, D-SLM6433 ruling 1, differs by
-    leg and is the leg script's own to apply)."""
+    leg and is that script's own to apply)."""
     scratch = Path(args.scratch_dir)
     if scratch.exists():
         shutil.rmtree(scratch, ignore_errors=True)
