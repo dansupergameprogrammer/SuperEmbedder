@@ -323,6 +323,30 @@ std::array<uint8_t, 32> ComputeTemplateDigest() {
   return out;
 }
 
+// TE-184 (N-8, D-SLM6406): the document frame -- the empty byte string
+// under PS-N (D-SLM4726), the concatenation point a future PS-1 frame
+// lands at without changing ComposeBatch's own shape (its comment, below)
+// -- named here as ONE constant and concatenated through ONE function, so
+// every caller that needs to know what ComposeBatch will tokenize for a
+// document (ComposeBatch itself, and CutWbDocumentText's own budget below)
+// reads the SAME frame rather than a second, independently-stated one.
+constexpr std::string_view kDocumentFrame = "";
+
+// The exact byte sequence ComposeBatch tokenizes for one document: the
+// document frame, then the document's own text -- no second concatenation
+// point exists anywhere else in this file (D-SLM6390 item 1's "no
+// tokenize-or-cut code exists on the W-B path outside this function",
+// extended to the frame's own length: a budget computed without calling
+// this function is a second, independent statement of the composition,
+// which is exactly N-8's own defect).
+std::string ComposeDocumentInput(std::string_view text) {
+  std::string out;
+  out.reserve(kDocumentFrame.size() + text.size());
+  out.append(kDocumentFrame);
+  out.append(text);
+  return out;
+}
+
 // TE-165 (D-SLM6390, the conductor's ruling re-opening D-SLM6354 on
 // TE-161's own measurement, N-3/D-SLM6385): ONE internal batch
 // composition -- everything semb_encode_batch does after validating the
@@ -345,20 +369,21 @@ semb_status ComposeBatch(semb_encoder_s* h, const std::string_view* texts, size_
                          float* out_vectors, size_t out_capacity_bytes,
                          size_t* out_required_bytes, uint8_t* out_seam_stream,
                          size_t out_seam_stream_capacity, size_t* out_seam_stream_len) {
-  // Per-document tokenization, with the document frame applied (the empty
-  // byte string under PS-N, D-SLM4726 -- the concatenation point a future
-  // PS-1 frame lands at without changing this function's own shape) and
-  // the >= context_cap refusal (TE-96 sec 4.2 step 11), stopping at the
-  // first document that fails: identical to semb_encode_batch's own prior
-  // step 11, now the ONE place either caller reaches it. This check is
-  // also the guard M-3 named removed: D-SLM6390 item 2 makes it reachable
-  // in principle (a bug in CutWbDocumentText's own prefix search could
-  // hand this function text that still tokenizes over budget), and this
-  // check -- shared with the public verb -- refuses it here rather than
-  // overrunning the K/V workspace sec 3.1 sizes from context_cap.
+  // Per-document tokenization, with the document frame applied through
+  // ComposeDocumentInput (TE-184, N-8, D-SLM6406 -- the empty byte string
+  // under PS-N, D-SLM4726, concatenated at the ONE point named above, so a
+  // future PS-1 frame lands here without changing this function's own
+  // shape) and the >= context_cap refusal (TE-96 sec 4.2 step 11), stopping
+  // at the first document that fails: identical to semb_encode_batch's own
+  // prior step 11, now the ONE place either caller reaches it. This check
+  // is also the guard M-3 named removed: D-SLM6390 item 2 makes it
+  // reachable in principle (a bug in CutWbDocumentText's own prefix search
+  // could hand this function text that still tokenizes over budget), and
+  // this check -- shared with the public verb -- refuses it here rather
+  // than overrunning the K/V workspace sec 3.1 sizes from context_cap.
   std::vector<std::vector<int32_t>> content_ids(n);
   for (size_t i = 0; i < n; ++i) {
-    content_ids[i] = h->tokenizer.Encode(texts[i]);
+    content_ids[i] = h->tokenizer.Encode(ComposeDocumentInput(texts[i]));
     // Defensive, matching the raw path's own equivalent check: zero
     // content ids is unreachable for byte-level BPE over a non-empty
     // span. W-B's own texts are never empty (CutWbDocumentText never
@@ -389,20 +414,30 @@ semb_status ComposeBatch(semb_encoder_s* h, const std::string_view* texts, size_
   return MapInterimStatus(status, dequantize);
 }
 
-// TE-165 (D-SLM6390 item 2): prepares one W-B document as TEXT -- the
-// longest UTF-8-boundary byte prefix whose tokenized length under `enc`'s
-// OWN tokenizer is at most context_cap - 1 -- so ComposeBatch, above,
-// never has to cut internally on the W-B path. D-SLM6341's original rule
-// ("cut at context_cap - 1 at open") is kept, restated as an INPUT
-// preparation rather than a second tokenize-and-cut inside the
-// composition: exactly what a real caller with an oversized document
-// would have to do for itself before calling semb_encode_batch, since the
-// composition refuses rather than cuts. Against the real candidate this
+// TE-165 (D-SLM6390 item 2), corrected TE-184 (N-8, D-SLM6406): prepares
+// one W-B document as TEXT -- the longest UTF-8-boundary byte prefix such
+// that ComposeDocumentInput(prefix)'s tokenized length under `enc`'s OWN
+// tokenizer is at most context_cap - 1 -- so ComposeBatch, above, never
+// has to cut internally on the W-B path. D-SLM6341's original rule ("cut
+// at context_cap - 1 at open") is kept, restated as an INPUT preparation
+// rather than a second tokenize-and-cut inside the composition: exactly
+// what a real caller with an oversized document would have to do for
+// itself before calling semb_encode_batch, since the composition refuses
+// rather than cuts. The budget below is checked against the SAME composed
+// sequence -- frame then text, via ComposeDocumentInput, the identical
+// function ComposeBatch calls -- so a future PS-1 frame's own tokenized
+// length is included automatically, with no second, independent
+// tokenize-or-cut path stating the frame's length differently (N-8's own
+// defect: the budget was checked against the bare text while ComposeBatch
+// tokenized frame+text, so a non-empty frame could push the composed
+// length over context_cap after this function had already returned the
+// whole document as "under budget"). Against the real candidate this
 // never cuts (every committed document is short prose, well under any
-// realistic context_cap); against the mechanism pair every document is
-// cut, deterministically, to the same leading byte prefix on every call
-// (tokenization is deterministic and the search below is a pure function
-// of context_cap and the document's own bytes).
+// realistic context_cap, and the frame is empty); against the mechanism
+// pair every document is cut, deterministically, to the same leading byte
+// prefix on every call (tokenization is deterministic and the search
+// below is a pure function of context_cap, the frame and the document's
+// own bytes).
 std::string_view CutWbDocumentText(const superslm::TokenizerView& tokenizer,
                                    std::string_view text, uint32_t context_cap) {
   // D-SLM6341: the largest content-id count that leaves room for the
@@ -411,15 +446,17 @@ std::string_view CutWbDocumentText(const superslm::TokenizerView& tokenizer,
   // leaves room for no content at all.
   const size_t max_content_ids =
       context_cap > 0 ? static_cast<size_t>(context_cap) - 1 : 0;
-  if (tokenizer.Encode(text).size() <= max_content_ids) return text;
+  if (tokenizer.Encode(ComposeDocumentInput(text)).size() <= max_content_ids) return text;
 
   // Walk UTF-8 character boundaries forward, tokenizing each candidate
-  // prefix through the SAME tokenizer the composition will use, stopping
-  // at the first boundary whose own tokenized length exceeds the budget.
-  // Exact by construction (every candidate is checked by a real Encode
-  // call, never inferred from byte length), and cheap: only exercised
-  // against the mechanism pair's own tiny context_cap, over sixteen short
-  // committed documents, once per open.
+  // prefix's OWN composed input (frame + prefix, ComposeDocumentInput)
+  // through the SAME tokenizer the composition will use, stopping at the
+  // first boundary whose own composed tokenized length exceeds the
+  // budget. Exact by construction (every candidate is checked by a real
+  // Encode call over the actual composed bytes, never inferred from byte
+  // length or from the frame's length added separately), and cheap: only
+  // exercised against the mechanism pair's own tiny context_cap, over
+  // sixteen short committed documents, once per open.
   size_t best = 0;  // the empty prefix always tokenizes to 0 ids.
   size_t i = 0;
   while (i < text.size()) {
@@ -429,7 +466,7 @@ std::string_view CutWbDocumentText(const superslm::TokenizerView& tokenizer,
     else if ((lead & 0xF0) == 0xE0) width = 3;
     else if ((lead & 0xF8) == 0xF0) width = 4;
     const size_t next = (i + width < text.size()) ? i + width : text.size();
-    if (tokenizer.Encode(text.substr(0, next)).size() > max_content_ids) break;
+    if (tokenizer.Encode(ComposeDocumentInput(text.substr(0, next))).size() > max_content_ids) break;
     best = next;
     i = next;
   }
