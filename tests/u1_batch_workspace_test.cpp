@@ -189,6 +189,202 @@ void ResetSeam(std::chrono::steady_clock::time_point deadline) {
           "(setup) reset establishes empty epoch", "");
 }
 
+// ---------------------------------------------------------------------------
+// TE-160/S-6: step 12's SEMB_CONCURRENCY_EXCEEDED and TE-96 sec 4.7's
+// cross-entry occupancy crossings (batch/raw, raw/batch, batch/batch). Both
+// call kinds -- a raw semb_encode and a singleton semb_encode_batch --
+// occupy and release the SAME per-handle workspace pool through the
+// identical seam instrumentation, so an occupant of one kind and a
+// contender of the other exercise the crossing rather than two same-kind
+// exhaustion runs standing in for it (TE-96 sec 4.7: "No raw-only
+// exhaustion run substitutes for any batch/raw, raw/batch or batch/batch
+// crossing").
+// ---------------------------------------------------------------------------
+struct RawOut {
+  std::vector<uint8_t> storage;
+  size_t required = 0xBAD5EED;
+  semb_fingerprint fingerprint{};
+  semb_status status = -1000;
+  explicit RawOut(unsigned dims) : storage(static_cast<size_t>(dims) * sizeof(float) + 32, 0xA5) {
+    fingerprint.struct_size = sizeof(fingerprint);
+    std::memset(fingerprint.digest, 0xC3, sizeof(fingerprint.digest));
+  }
+  float* data() {
+    auto p = reinterpret_cast<uintptr_t>(storage.data());
+    return reinterpret_cast<float*>((p + 15) & ~uintptr_t(15));
+  }
+  std::vector<uint8_t> bytes(unsigned dims) {
+    auto p = reinterpret_cast<uint8_t*>(data());
+    return {p, p + static_cast<size_t>(dims) * sizeof(float)};
+  }
+  bool untouched() {
+    for (auto b : storage)
+      if (b != 0xA5) return false;
+    for (auto b : fingerprint.digest)
+      if (b != 0xC3) return false;
+    return required == 0xBAD5EED;
+  }
+};
+struct BatchOut {
+  std::vector<uint8_t> storage;
+  size_t required = 0xBAD5EED;
+  semb_status status = -1000;
+  explicit BatchOut(unsigned dims) : storage(static_cast<size_t>(dims) * sizeof(float) + 32, 0xA5) {}
+  float* data() {
+    auto p = reinterpret_cast<uintptr_t>(storage.data());
+    return reinterpret_cast<float*>((p + 15) & ~uintptr_t(15));
+  }
+  std::vector<uint8_t> bytes(unsigned dims) {
+    auto p = reinterpret_cast<uint8_t*>(data());
+    return {p, p + static_cast<size_t>(dims) * sizeof(float)};
+  }
+  bool untouched() {
+    for (auto b : storage)
+      if (b != 0xA5) return false;
+    return required == 0xBAD5EED;
+  }
+};
+void RawCall(semb_encoder enc, const std::string& text, RawOut* out, unsigned dims) {
+  out->status = semb_encode(enc, text.data(), text.size(), out->data(), static_cast<size_t>(dims) * sizeof(float),
+                             &out->required, &out->fingerprint);
+}
+void BatchCall(semb_encoder enc, const std::string& id, const std::string& text, BatchOut* out, unsigned dims) {
+  semb_document d = MakeDoc(id, text);
+  out->status = semb_encode_batch(enc, &d, 1, out->data(), static_cast<size_t>(dims) * sizeof(float), &out->required);
+}
+enum class CallKind { kRaw, kBatch };
+
+// Occupies `n` slots with `occupant_kind` calls, parked at their own
+// acquisition; issues one extra `contender_kind` call and asserts
+// SEMB_CONCURRENCY_EXCEEDED with output (and, for raw, the fingerprint)
+// canaries untouched and no additional acquisition; releases and drains
+// the occupants; retries the contender and asserts it now succeeds,
+// serial-identical to a reference taken on a SEPARATE fresh handle before
+// the contended handle opened (real workspace memory never includes both
+// pools simultaneously, matching tests/u1_workspace_seam_test.cpp's own
+// established convention). `close_check`, when true, additionally asserts
+// semb_encoder_close refuses while the occupants hold their leases and
+// succeeds only after every join -- folded into one crossing rather than
+// duplicated across all three, per this round's own dispatch.
+void Crossing(const Args& a, unsigned n, CallKind occupant_kind, CallKind contender_kind, const std::string& label,
+              bool close_check) {
+  const unsigned dims = a.dims;
+  const std::string extra_id = "extra";
+  const std::string extra_text = "the extra call issued once the pool is exhausted";
+
+  std::vector<uint8_t> reference;
+  {
+    semb_encoder serial = Open(a, 1);
+    if (!serial) { Verdict(false, label + " (setup) serial reference handle", ""); return; }
+    if (contender_kind == CallKind::kRaw) {
+      RawOut ref(dims);
+      RawCall(serial, extra_text, &ref, dims);
+      Verdict(Is(ref.status, "SEMB_OK"), label + " (setup) serial raw reference", Name(ref.status));
+      reference = ref.bytes(dims);
+    } else {
+      BatchOut ref(dims);
+      BatchCall(serial, extra_id, extra_text, &ref, dims);
+      Verdict(Is(ref.status, "SEMB_OK"), label + " (setup) serial batch reference", Name(ref.status));
+      reference = ref.bytes(dims);
+    }
+    semb_encoder_close(serial);
+  }
+
+  semb_encoder enc = Open(a, n);
+  if (!enc) { Verdict(false, label + " (setup) contended handle open", ""); return; }
+  ResetSeam(std::chrono::steady_clock::now() + 30s);
+  Verdict(semb_test_seam_arm_park(n) == 1, label + " (setup) arm " + std::to_string(n) + " park(s)", "");
+
+  std::vector<std::unique_ptr<RawOut>> raw_occupants;
+  std::vector<std::unique_ptr<BatchOut>> batch_occupants;
+  std::vector<std::future<void>> jobs;
+  std::vector<std::string> occ_ids, occ_texts;
+  for (unsigned i = 0; i < n; ++i) {
+    occ_ids.push_back("occ" + std::to_string(i));
+    occ_texts.push_back("occupant document number " + std::to_string(i));
+  }
+  if (occupant_kind == CallKind::kRaw) {
+    for (unsigned i = 0; i < n; ++i) raw_occupants.push_back(std::make_unique<RawOut>(dims));
+    for (unsigned i = 0; i < n; ++i) {
+      jobs.push_back(
+          std::async(std::launch::async, [&, i] { RawCall(enc, occ_texts[i], raw_occupants[i].get(), dims); }));
+    }
+  } else {
+    for (unsigned i = 0; i < n; ++i) batch_occupants.push_back(std::make_unique<BatchOut>(dims));
+    for (unsigned i = 0; i < n; ++i) {
+      jobs.push_back(std::async(std::launch::async,
+                                 [&, i] { BatchCall(enc, occ_ids[i], occ_texts[i], batch_occupants[i].get(), dims); }));
+    }
+  }
+
+  const bool occupied = semb_test_seam_wait_parked(n, 10000) == 1 && semb_test_seam_parked() == n;
+  Verdict(occupied, label + " all " + std::to_string(n) + " slot(s) acquired and parked by the occupant", "");
+  if (occupied) {
+    const uint64_t before = semb_test_seam_acquisitions();
+    Verdict(before == n, label + " exactly n acquisitions while occupied", std::to_string(before));
+
+    if (contender_kind == CallKind::kRaw) {
+      RawOut extra(dims);
+      RawCall(enc, extra_text, &extra, dims);
+      Verdict(Is(extra.status, "SEMB_CONCURRENCY_EXCEEDED") && extra.untouched() &&
+                  semb_test_seam_acquisitions() == before,
+              label + " extra RAW call refused with output/fingerprint canaries untouched and no additional "
+                      "acquisition",
+              Name(extra.status));
+    } else {
+      BatchOut extra(dims);
+      BatchCall(enc, extra_id, extra_text, &extra, dims);
+      Verdict(Is(extra.status, "SEMB_CONCURRENCY_EXCEEDED") && extra.untouched() &&
+                  semb_test_seam_acquisitions() == before,
+              label + " extra BATCH call refused with output canaries untouched and no additional acquisition",
+              Name(extra.status));
+    }
+
+    if (close_check) {
+      auto close_job = std::async(std::launch::async, [=] { return semb_encoder_close(enc); });
+      const bool close_ready = close_job.wait_for(10s) == std::future_status::ready;
+      Verdict(close_ready, label + " close deadline while occupants hold their leases", "");
+      if (close_ready) {
+        const semb_status close_status = close_job.get();
+        Verdict(Is(close_status, "SEMB_HANDLE_IN_USE"), label + " close refused while occupants hold their leases",
+                Name(close_status));
+      }
+    }
+  }
+
+  ReleaseBounded(std::chrono::steady_clock::now() + 30s);
+  const auto drain_deadline = std::chrono::steady_clock::now() + 30s;
+  for (auto& f : jobs) {
+    if (f.wait_until(drain_deadline) != std::future_status::ready) FatalTimeout((label + " occupant drain deadline").c_str());
+    f.get();
+  }
+  bool occupants_ok = true;
+  if (occupant_kind == CallKind::kRaw) {
+    for (auto& o : raw_occupants)
+      if (!Is(o->status, "SEMB_OK")) occupants_ok = false;
+  } else {
+    for (auto& o : batch_occupants)
+      if (!Is(o->status, "SEMB_OK")) occupants_ok = false;
+  }
+  Verdict(occupants_ok, label + " every occupant call itself completes successfully once released", "");
+
+  if (contender_kind == CallKind::kRaw) {
+    RawOut retry(dims);
+    RawCall(enc, extra_text, &retry, dims);
+    Verdict(Is(retry.status, "SEMB_OK") && retry.bytes(dims) == reference,
+            label + " the extra RAW call succeeds after release, serial-identical to the reference",
+            Name(retry.status));
+  } else {
+    BatchOut retry(dims);
+    BatchCall(enc, extra_id, extra_text, &retry, dims);
+    Verdict(Is(retry.status, "SEMB_OK") && retry.bytes(dims) == reference,
+            label + " the extra BATCH call succeeds after release, serial-identical to the reference",
+            Name(retry.status));
+  }
+  semb_encoder_close(enc);
+  ResetSeam(std::chrono::steady_clock::now() + 30s);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -527,6 +723,79 @@ int main(int argc, char** argv) {
       semb_encoder_close(enc);
     }
   }
+
+  // =========================================================================
+  // TE-160/S-6 (TE-96 sec 4.7's "Batch acquisition commissioning" paragraph,
+  // its own text: "valid multirow batches (varied counts, short/long shapes
+  // and both orders) must ... increment acquisitions by exactly one").
+  // C48-count above only bakes SINGLETON (n=1) batch calls, so a defect that
+  // releases and reacquires the workspace once PER ROW would be invisible to
+  // it -- n=1 makes "once per row" and "once per call" the same number. This
+  // cell bakes varied row COUNTS (1, 2, 5), varied per-row SHAPES (a short
+  // text and a longer one -- both held well under the mechanism fixture's
+  // own 64-token context_cap, per TE-145 sec 6's own precedent for this
+  // exact fixture), and BOTH ORDERS of short/long at n=2, and checks each
+  // call's own delta against the running total.
+  // =========================================================================
+  {
+    semb_encoder enc = Open(a, 1);
+    if (enc) {
+      ResetSeam(deadline30());
+      const std::string kShortText = "a short doc";
+      const std::string kLongText = "a longer document with more distinct words than the short one";
+      // {label, per-row texts} -- varied counts (1, 2, 5), short/long shapes,
+      // and both orders at n=2 (short-then-long, long-then-short).
+      const std::vector<std::pair<std::string, std::vector<std::string>>> specs = {
+          {"n1-short", {kShortText}},
+          {"n2-short-long", {kShortText, kLongText}},
+          {"n2-long-short", {kLongText, kShortText}},
+          {"n5-mixed", {kShortText, kLongText, kShortText, kLongText, kShortText}},
+      };
+      uint64_t running = semb_test_seam_acquisitions();
+      bool ok = true;
+      std::string detail;
+      for (auto& [label, texts] : specs) {
+        std::vector<semb_document> docs;
+        std::vector<std::string> ids;
+        for (size_t i = 0; i < texts.size(); ++i) ids.push_back(std::string(label) + "-" + std::to_string(i));
+        for (size_t i = 0; i < texts.size(); ++i) docs.push_back(MakeDoc(ids[i], texts[i]));
+        std::vector<uint8_t> buf((docs.size() * required1) + 64, 0xA5);
+        auto p = reinterpret_cast<uintptr_t>(buf.data());
+        float* aligned = reinterpret_cast<float*>((p + 15) & ~uintptr_t(15));
+        size_t req = 0xBAD5EED;
+        const semb_status s = semb_encode_batch(enc, docs.data(), docs.size(), aligned, buf.size() - 16, &req);
+        const uint64_t after = semb_test_seam_acquisitions();
+        const bool delta_one = (after == running + 1);
+        if (!Is(s, "SEMB_OK") || !delta_one) {
+          ok = false;
+          detail += " " + label + "(status=" + std::string(Name(s)) + " delta=" + std::to_string(after - running) +
+                     ")";
+        }
+        running = after;
+      }
+      Verdict(ok,
+              "S-6 a valid multirow batch call (varied row counts 1/2/5, short/long per-row shapes, "
+              "both orders at n=2) increments the workspace acquisition count by EXACTLY ONE per call, "
+              "never once per row (TE-96 sec 4.7 batch-acquisition commissioning)",
+              detail.empty() ? "every spec delta=1" : detail);
+      semb_encoder_close(enc);
+      ResetSeam(deadline30());
+    }
+  }
+
+  // =========================================================================
+  // TE-160/S-6: step 12's SEMB_CONCURRENCY_EXCEEDED with the pool's only
+  // slot held (TE-148 review S-6: "No cell anywhere drives
+  // semb_encode_batch to SEMB_CONCURRENCY_EXCEEDED"), and TE-96 sec 4.7's
+  // three named cross-entry occupancy crossings. See the `Crossing`
+  // function's own header comment (above `main`) for the full construction.
+  // =========================================================================
+  Crossing(a, 1, CallKind::kBatch, CallKind::kBatch,
+           "S-6 step 12 (semb_encode_batch -> SEMB_CONCURRENCY_EXCEEDED with the pool's only slot held)", false);
+  Crossing(a, 2, CallKind::kBatch, CallKind::kRaw, "S-6 cross-entry occupancy: batch occupies, raw contends", false);
+  Crossing(a, 2, CallKind::kRaw, CallKind::kBatch, "S-6 cross-entry occupancy: raw occupies, batch contends", false);
+  Crossing(a, 2, CallKind::kBatch, CallKind::kBatch, "S-6 cross-entry occupancy: batch occupies, batch contends",
+           /*close_check=*/true);
 
   std::printf("\nu1_batch_workspace_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
   return g_failures ? 1 : 0;

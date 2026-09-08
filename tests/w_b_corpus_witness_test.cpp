@@ -46,17 +46,53 @@
 // builder's round adds both, now against the amended two-argument
 // `semb_wb_digest(semb_encoder, uint8_t[32])` signature.
 //
-// THE FOUR PROPERTIES THIS FILE PINS OVER THE HANDLE-SCOPED SHAPE (per
-// `tests/semb_wb_witness_abi_contract.h`'s own header comment): (a) the
-// achievement cell, `semb_wb_digest(enc, ...)` equals the independent
-// recomputation below, over the SAME model and tokenizer `enc` was opened
-// on; (b) two calls on ONE handle agree (determinism within a process);
-// (c) two handles opened on the SAME artifacts agree (the value is a
-// function of the artifacts, not of the handle's own identity or open
-// order); (d) a caller's own `semb_encode_batch` calls, with arbitrary
-// ids, are INERT to it (TE-96 sec 4.7's must-accept). Plus the three
-// calling-convention preconditions the amended shape adds: NULL `enc`,
-// a non-live `enc` cookie, and NULL `out_digest`.
+// THE PROPERTIES THIS FILE PINS OVER THE HANDLE-SCOPED SHAPE, AMENDED
+// TE-160 (S-7). The contract header's own comment names four: (a) the
+// achievement cell, (b) determinism across two calls on one handle, (c)
+// cross-handle agreement, (d) id-inertness. TE-148's review (S-7) found
+// (b) and the original (d) cannot fail as built: `semb_wb_digest`
+// (`src/superembedder/encoder.cpp`) is a `memcpy` from `handle->wb_digest`,
+// a field written ONCE at open, so (b) compared that stored value against
+// itself across two calls on the SAME handle, and the original (d) read the
+// SAME stored bytes before and after a caller's own `semb_encode_batch`
+// calls that never touch it -- neither construction can go red under any
+// behaviour of the product. This file's own disposition, per S-7:
+//
+//   (a) LIVE, unchanged -- the achievement cell: `semb_wb_digest(enc, ...)`
+//       equals the independent recomputation below, over the SAME model
+//       and tokenizer `enc` was opened on.
+//   (b) RETIRED (TE-160/S-7) rather than left green and grading nothing --
+//       StandardsDocument.md sec 5.4's "a test exercises the real workload
+//       ... or it is a smoke test wearing a proof's name, and repetition
+//       does not upgrade it": a construction that cannot fail is not a
+//       weaker determinism test, it is not a test.
+//   (c) LIVE, unchanged -- cross-handle agreement: two handles opened on
+//       the SAME artifacts agree, so the value is a function of the
+//       artifacts, not of the handle's own identity or open order.
+//   (d) REPLACED (TE-160/S-7) with a construction that CAN fail, TE-96 sec
+//       4.7's own text: "ids are inert -- permuting the ids over a fixed
+//       text set leaves every row byte-identical." Fixed texts at fixed
+//       row positions, two DIFFERENT id assignments across those same
+//       positions, every emitted ROW asserted byte-identical. This grades
+//       the BATCH PATH's own row output (`semb_encode_batch`), never the
+//       cached `wb_digest` field the retired (d) read -- the guard-vitality
+//       mutation TE-96 sec 4.5's own W-B row names for this claim ("fold
+//       the id into the tokenizer input") moves a ROW's bytes, never the
+//       cached digest, so only a row-level construction can see it.
+//       Mutation-proved (this file's own section, below).
+//
+// The suite therefore carries THREE live properties over the handle-scoped
+// shape (a, c, and the row-level id-inertness), down from the four the
+// contract header's own comment names -- stated here so a future reader
+// does not recount four live cells that were never four. Plus the three
+// calling-convention preconditions the amended shape adds: NULL `enc`, a
+// non-live `enc` cookie, and NULL `out_digest`.
+//
+// TE-160/S-2 adds a further, independent achievement cell in this same
+// file (below the id-inertness block): the emitted `semb_fingerprint`
+// equals the five-field composition recomputed independently from
+// `Claude/Plans/SuperEmbedder_Plan.md` sec 3.3/sec 4.4b and TE-148 review's
+// own sec 6 F-4 derivation -- see that section's own header comment.
 //
 // USAGE: --model <.sslm> --tokenizer <.sslm> --dims <n>
 #include <cstdint>
@@ -87,6 +123,10 @@
 // declares via pool_abi.h, is not declared anywhere else this file
 // includes).
 #include "superembedder/encoder_interim_abi.h"
+
+#include "superembedder/witness_abi.h"  // semb_wa_digest -- zero real-ABI-type dependency (see its
+                                          // own header comment), safe alongside the contract headers
+                                          // above (TE-160/S-2's fingerprint pin).
 
 #include "superslm/artifact.h"
 #include "superslm/sha256.h"
@@ -497,14 +537,11 @@ int main(int argc, char** argv) {
                 "tokenizer (achievement claim: the wiring reads the REAL corpus, not kWbPendingSentinel)",
                 std::string(Name(sa)) + " expected=" + Hex(expected) + " actual=" + Hex(actual));
 
-        // (b) Determinism: two calls on ONE handle agree (D-SLM3978: no
-        // cache, but re-execution must be stable within one process, since
-        // the corpus and the artifact are both fixed).
-        uint8_t again[32];
-        const semb_status sb = semb_wb_digest(enc1, again);
-        Verdict(Is(sb, "SEMB_OK") && std::memcmp(actual, again, 32) == 0,
-                "(b) W-B semb_wb_digest is deterministic across two calls on ONE handle",
-                std::string(Name(sb)) + " " + Hex(again));
+        // (b) RETIRED, TE-160/S-7 (this file's own header comment carries
+        // the full account). `semb_wb_digest` is a memcpy from a field
+        // written once at open, so two calls on one handle comparing that
+        // field against itself cannot fail under any product behaviour --
+        // removed rather than kept as a green cell that grades nothing.
 
         // (c) Cross-handle agreement: a SECOND handle opened on the
         // identical artifacts computes the identical value -- the digest
@@ -525,49 +562,240 @@ int main(int argc, char** argv) {
     }
   }
 
-  // ---- (d) Id-inertness (TE-96 sec 4.7 must-accept): a CALLER's own
-  // semb_encode_batch calls, with arbitrary/permuted ids on UNRELATED
-  // documents, never perturb the internal, compiled-in W-B corpus digest --
-  // the caller's batch calls and the fixed witness corpus are independent.
-  // Both readings are taken on the SAME handle, matching the shape every
-  // other call this file makes to the accessor. ----
+  // ---- (d) Id-inertness over EVERY EMITTED ROW (TE-160/S-7, replacing the
+  // retired construction the review's S-7 found dead): TE-96 sec 4.7's own
+  // text, "ids are inert -- permuting the ids over a fixed text set leaves
+  // every row byte-identical." Three FIXED texts at three FIXED row
+  // positions; two batch calls differing ONLY in which id, from the SAME
+  // id set, is attached to which position -- the ids are PERMUTED across
+  // the fixed positions (a derangement, so every position gets a different
+  // id under the second assignment), the texts and their row order are
+  // not. Every emitted row is asserted byte-identical between the two
+  // calls. This grades the BATCH PATH's own row output (semb_encode_batch),
+  // never the cached wb_digest field the retired construction read -- the
+  // guard-vitality mutation TE-96 sec 4.5's own W-B row names for this
+  // claim ("fold the id into the tokenizer input") moves a ROW's bytes, so
+  // this construction, unlike the retired one, can see it (mutation-proof
+  // executed and filed in this round's own casebook). ----
   {
     semb_encoder enc = Open(a);
     if (enc) {
-      uint8_t before[32];
-      const semb_status sd0 = semb_wb_digest(enc, before);
-      Verdict(Is(sd0, "SEMB_OK"), "(d, setup) semb_wb_digest(enc, ...) before the caller's batch calls", Name(sd0));
+      const std::vector<std::string> texts = {
+          "the first row's own fixed text",
+          "the second row's own fixed text",
+          "the third row's own fixed text",
+      };
+      const std::vector<std::string> ids = {"row-alpha", "row-beta", "row-gamma"};
+      const std::vector<size_t> permuted_order = {1, 2, 0};  // a derangement: ids[1],ids[2],ids[0]
 
-      std::vector<std::pair<std::string, std::string>> perm1 = {{"zeta", "unrelated document one"},
-                                                                  {"alpha", "unrelated document two"}};
-      std::vector<std::pair<std::string, std::string>> perm2 = {{"alpha-2", "unrelated document two"},
-                                                                  {"zeta-2", "unrelated document one"}};
-      for (auto* perm : {&perm1, &perm2}) {
+      auto bake = [&](const std::vector<std::string>& row_ids, std::vector<std::vector<uint8_t>>* out_rows,
+                      semb_status* out_status) {
         std::vector<semb_document> docs;
-        for (auto& [id, text] : *perm) {
+        for (size_t i = 0; i < texts.size(); ++i) {
           semb_document d{};
           d.struct_size = sizeof(semb_document);
-          d.id = id.c_str();
-          d.id_len = id.size();
-          d.utf8 = text.c_str();
-          d.utf8_len = text.size();
+          d.id = row_ids[i].c_str();
+          d.id_len = row_ids[i].size();
+          d.utf8 = texts[i].c_str();
+          d.utf8_len = texts[i].size();
           docs.push_back(d);
         }
-        std::vector<uint8_t> buf(perm->size() * static_cast<size_t>(a.dims) * sizeof(float) + 64, 0xA5);
+        const size_t required = texts.size() * static_cast<size_t>(a.dims) * sizeof(float);
+        std::vector<uint8_t> buf(required + 64, 0xA5);
         auto p = reinterpret_cast<uintptr_t>(buf.data());
         float* aligned = reinterpret_cast<float*>((p + 15) & ~uintptr_t(15));
         size_t req = 0xBAD5EED;
-        semb_encode_batch(enc, docs.data(), docs.size(), aligned, buf.size() - 16, &req);
+        *out_status = semb_encode_batch(enc, docs.data(), docs.size(), aligned, buf.size() - 16, &req);
+        out_rows->clear();
+        if (*out_status == SEMB_OK) {
+          for (size_t i = 0; i < texts.size(); ++i) {
+            auto b = reinterpret_cast<uint8_t*>(aligned) + i * static_cast<size_t>(a.dims) * sizeof(float);
+            out_rows->emplace_back(b, b + static_cast<size_t>(a.dims) * sizeof(float));
+          }
+        }
+      };
+
+      std::vector<std::vector<uint8_t>> rows_a, rows_b;
+      semb_status s_a = -1000, s_b = -1000;
+      bake(ids, &rows_a, &s_a);
+      std::vector<std::string> ids_permuted(texts.size());
+      for (size_t i = 0; i < texts.size(); ++i) ids_permuted[i] = ids[permuted_order[i]];
+      bake(ids_permuted, &rows_b, &s_b);
+
+      bool ok = Is(s_a, "SEMB_OK") && Is(s_b, "SEMB_OK") && rows_a.size() == texts.size() &&
+                rows_b.size() == texts.size();
+      std::string detail = "s_a=" + std::string(Name(s_a)) + " s_b=" + std::string(Name(s_b));
+      if (ok) {
+        for (size_t i = 0; i < texts.size(); ++i) {
+          if (rows_a[i] != rows_b[i]) { ok = false; detail += " row" + std::to_string(i) + "-mismatch"; }
+        }
+      }
+      Verdict(ok,
+              "(d) row-level id-inertness (TE-96 sec 4.7 must-accept, TE-160/S-7): permuting which id "
+              "(of a fixed id set) is attached to which of three FIXED texts at three FIXED row "
+              "positions leaves every emitted row byte-identical between the two calls",
+              detail);
+      semb_encoder_close(enc);
+    }
+  }
+
+  // =========================================================================
+  // TE-160/S-2: the emitted `semb_fingerprint` pinned against the five-field
+  // composition, independently recomputed. TE-148's review (S-2) found no
+  // cell anywhere asserts the emitted fingerprint depends on W-B: reverting
+  // `ComputeProvisionalFingerprint` to hash the retired `kWbPendingSentinel`
+  // left all twelve W-B cells green, because none of them reads the
+  // fingerprint at all. This cell closes that gap.
+  //
+  // The formula, from `Claude/Plans/SuperEmbedder_Plan.md` sec 3.3 (the
+  // five length-prefixed fields) and sec 4.4b (`witness_sha = SHA-256(W-A
+  // digest || W-B digest || W-Q digest)`, three fixed-width components,
+  // "need no length-prefix to stay injective"), and from TE-148 review's
+  // own sec 6 F-4 derivation -- the reference this cell is built from, not
+  // the product's own composition code:
+  //
+  //   model_sha            = SHA-256(the model artifact's own file bytes)
+  //   tokenizer_sha         = SHA-256(the tokenizer artifact's own file bytes)
+  //   template_sha256       = SHA-256(u64_le(0) || u64_le(len(prefix)) || prefix)
+  //                           -- document_frame_bytes is empty under PS-N
+  //                           (D-SLM4726); prefix is the compiled-in query
+  //                           prefix literal sec 2.1 states verbatim: "Instruct:
+  //                           Given a web search query, retrieve relevant
+  //                           passages that answer the query\nQuery:"
+  //   witness_sha           = SHA-256(wa_digest || wb_digest || wq_digest)
+  //                           -- wa_digest is semb_wa_digest()'s own output;
+  //                           wb_digest is semb_wb_digest(enc, ...)'s own
+  //                           output (the same accessor property (a), above,
+  //                           pins); wq_digest is SHA-256 of the U1 pending
+  //                           placeholder sentinel W-Q hashes until it lands
+  //                           (post Ask 5/E0b, sec 4.4b's own "what a
+  //                           witness cannot reach" list)
+  //   certification_epoch   = SHA-256 of the U1 pending placeholder sentinel
+  //                           certification_epoch hashes until
+  //                           docs/certified-builds.json exists (sec 3.3's
+  //                           own field row)
+  //
+  //   inner       = SHA-256(tag || u64_le(32)||model_sha || u64_le(32)||tokenizer_sha
+  //                          || u64_le(32)||template_sha256 || u64_le(32)||witness_sha
+  //                          || u64_le(32)||certification_epoch)
+  //   fingerprint = tag || inner[0..23]
+  //
+  // where `tag` is `SEMB_FINGERPRINT_PROVISIONAL_TAG` ("SEMBP001",
+  // `include/superembedder/semb.h`'s own PUBLIC macro -- U1's raw-text
+  // slice marks every fingerprint provisional this way, by design, until
+  // the certified derivation replaces it). The two pending-sentinel byte
+  // strings are the ONLY constants this cell reads from
+  // `src/superembedder/encoder.cpp` rather than from the plan:
+  // `kWqPendingSentinel` and `kCertificationPendingSentinel` are private
+  // literals with no public accessor, and an equality oracle cannot be
+  // built without their exact bytes -- read once, at authoring time, and
+  // NOT the source of this cell's composition ARITHMETIC (the field order,
+  // the length-prefixing, the hashing scheme), which comes from the plan
+  // and the review's F-4. The mutation-proof below (this round's own
+  // casebook) is what confirms the cell is actually sensitive to W-B's own
+  // fold rather than passing by construction of a wrong formula.
+  // =========================================================================
+  {
+    // "SEMBP001" -- include/superembedder/semb.h's own PUBLIC
+    // SEMB_FINGERPRINT_PROVISIONAL_TAG macro value (not read from that
+    // header directly: including superembedder/semb.h in this TU would
+    // redeclare semb_status/semb_encoder over the test contract's own
+    // independent declarations, exactly the conflict
+    // include/superembedder/wb_digest_abi.h's own header comment names).
+    constexpr char kTag[] = "SEMBP001";
+    static_assert(sizeof(kTag) - 1 == 8, "SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE is 8");
+    // The two U1 pending-sentinel literals ComputeProvisionalFingerprint
+    // hashes until W-Q and the certified-build set exist (this section's
+    // own header comment states why these two constants, and only these,
+    // are read from encoder.cpp rather than derived from the plan).
+    constexpr char kWqPendingSentinel[] = "SEMB-W-Q-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
+    constexpr char kCertificationPendingSentinel[] =
+        "SEMB-CERTIFIED-BUILDS-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
+    // sec 2.1's own literal, verbatim (confirmed against the plan, not
+    // against src/superembedder/encoder.cpp's own kQueryPrefix).
+    constexpr char kQueryPrefix[] =
+        "Instruct: Given a web search query, retrieve relevant passages that answer the "
+        "query\nQuery:";
+
+    auto sha256 = [](const void* data, size_t n, uint8_t out[32]) {
+      superslm::Sha256 h;
+      h.Update(reinterpret_cast<const uint8_t*>(data), n);
+      h.Final(out);
+    };
+    auto update_field = [](std::vector<uint8_t>* buf, const uint8_t field[32]) {
+      PutU64LE(buf, 32);
+      buf->insert(buf->end(), field, field + 32);
+    };
+
+    const std::vector<uint8_t> model_bytes = ReadFile(a.model);
+    const std::vector<uint8_t> tokenizer_bytes = ReadFile(a.tokenizer);
+    if (model_bytes.empty() || tokenizer_bytes.empty()) {
+      Missing("(fingerprint) semb_fingerprint equals the independently-recomputed five-field composition",
+              "cannot read model/tokenizer artifact bytes");
+    } else {
+      uint8_t model_sha[32], tokenizer_sha[32];
+      sha256(model_bytes.data(), model_bytes.size(), model_sha);
+      sha256(tokenizer_bytes.data(), tokenizer_bytes.size(), tokenizer_sha);
+
+      uint8_t template_sha256[32];
+      {
+        std::vector<uint8_t> buf;
+        PutU64LE(&buf, 0);  // document_frame_bytes: empty under PS-N (D-SLM4726)
+        PutU64LE(&buf, sizeof(kQueryPrefix) - 1);
+        buf.insert(buf.end(), kQueryPrefix, kQueryPrefix + sizeof(kQueryPrefix) - 1);
+        sha256(buf.data(), buf.size(), template_sha256);
       }
 
-      uint8_t after[32];
-      const semb_status sd1 = semb_wb_digest(enc, after);
-      Verdict(Is(sd1, "SEMB_OK") && std::memcmp(before, after, 32) == 0,
-              "(d) W-B-inertness ids are inert: two caller batch calls with different id permutations on "
-              "unrelated documents leave the internal committed-corpus witness digest UNCHANGED "
-              "(TE-96 sec 4.7 must-accept)",
-              std::string(Name(sd1)) + " before=" + Hex(before) + " after=" + Hex(after));
-      semb_encoder_close(enc);
+      semb_encoder enc = Open(a);
+      if (enc) {
+        uint8_t wa[32];
+        semb_wa_digest(wa);
+        uint8_t wb[32];
+        const semb_status swb = semb_wb_digest(enc, wb);
+        uint8_t wq[32];
+        sha256(kWqPendingSentinel, sizeof(kWqPendingSentinel) - 1, wq);
+        uint8_t witness_sha[32];
+        {
+          std::vector<uint8_t> buf;
+          buf.insert(buf.end(), wa, wa + 32);
+          buf.insert(buf.end(), wb, wb + 32);
+          buf.insert(buf.end(), wq, wq + 32);
+          sha256(buf.data(), buf.size(), witness_sha);
+        }
+        uint8_t certification_epoch[32];
+        sha256(kCertificationPendingSentinel, sizeof(kCertificationPendingSentinel) - 1, certification_epoch);
+
+        uint8_t inner[32];
+        {
+          std::vector<uint8_t> buf(kTag, kTag + sizeof(kTag) - 1);
+          update_field(&buf, model_sha);
+          update_field(&buf, tokenizer_sha);
+          update_field(&buf, template_sha256);
+          update_field(&buf, witness_sha);
+          update_field(&buf, certification_epoch);
+          sha256(buf.data(), buf.size(), inner);
+        }
+        uint8_t expected[32];
+        std::memcpy(expected, kTag, sizeof(kTag) - 1);
+        std::memcpy(expected + (sizeof(kTag) - 1), inner, 32 - (sizeof(kTag) - 1));
+
+        char text_buf[] = "a document encoded to read the emitted fingerprint";
+        std::vector<uint8_t> row(static_cast<size_t>(a.dims) * sizeof(float) + 16);
+        auto p = reinterpret_cast<uintptr_t>(row.data());
+        float* aligned = reinterpret_cast<float*>((p + 15) & ~uintptr_t(15));
+        size_t req = 0;
+        semb_fingerprint fp{};
+        fp.struct_size = sizeof(fp);
+        const semb_status se = semb_encode(enc, text_buf, sizeof(text_buf) - 1, aligned,
+                                            static_cast<size_t>(a.dims) * sizeof(float), &req, &fp);
+
+        Verdict(Is(swb, "SEMB_OK") && Is(se, "SEMB_OK") && std::memcmp(expected, fp.digest, 32) == 0,
+                "(fingerprint) the emitted semb_fingerprint equals the five-field composition "
+                "recomputed independently from sec 3.3/sec 4.4b (achievement claim: witness_sha's "
+                "W-B component is the REAL semb_wb_digest(enc,...) value, not kWbPendingSentinel)",
+                std::string(Name(se)) + " expected=" + Hex(expected) + " actual=" + Hex(fp.digest));
+        semb_encoder_close(enc);
+      }
     }
   }
 
