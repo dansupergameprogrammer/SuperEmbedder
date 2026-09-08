@@ -293,6 +293,36 @@ add_test(
 if(NOT SEMB_C12B_MODEL STREQUAL "")
 	set_tests_properties(c12b_row_digest_check PROPERTIES LABELS "real_artifact")
 endif()
+
+# TE-180 item 4 (D-SLM6430 bare cell C): the store's committed real entry
+# against tests/c12b_row_digest_check.py's own instrument (semb_c12b_
+# row_digest), for every one of the 239 real documents -- mechanizing the
+# manual cross-check Claude/Brunel/te164-slice3-build-2026-09-07.md sec 3
+# and Claude/Curie/te168-slice3-oracle-fix-2026-09-07.md sec 3 both report
+# as an executed, one-off probe. Independent of both epoch_store_emit's own
+# construction and of C2's own oracle (tests/c2_lineage_equality_test.cpp).
+# The fingerprint is the founding real entry TE-164 committed
+# (epoch-store/live/53454d4250.../, corpus-239, dims 1024) -- pinned
+# literally, matching this suite's own convention of pinning known values
+# (e.g. --terminator-id 151643 a few lines above) rather than discovering
+# it at test time. real_artifact only: needs the built instrument and the
+# real model, exactly like c12b_row_digest_check above.
+if(TARGET semb_c12b_row_digest AND NOT SEMB_C12B_MODEL STREQUAL "")
+	add_test(
+		NAME c12b_epoch_store_cross_check
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c12b_epoch_store_cross_check.py"
+			--instrument "${_semb_c12b_instrument}"
+			--model "${SEMB_C12B_MODEL}"
+			--corpus "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/corpus-239.tokens.tsv"
+			--append-token-id 151643
+			--store-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
+			--fingerprint 53454d42503030313faed4bd97878f3327567d1d1c89164a4557c5d4f825e821
+			--build-dir "${CMAKE_BINARY_DIR}"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+	set_tests_properties(c12b_epoch_store_cross_check PROPERTIES LABELS "real_artifact")
+endif()
+
 add_test(
 	NAME ps_n_reference_oracle_selftest
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/oracle/ps_n_reference.py" --selftest
