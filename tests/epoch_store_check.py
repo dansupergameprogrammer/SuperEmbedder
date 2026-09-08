@@ -17,7 +17,14 @@ ctest, run against a repository and a build:
       `git show <parent-ref>:epoch-store/...`, never the working tree):
       no live entry present there was modified in HEAD, and no live entry
       present there was deleted in HEAD unless a byte-identical twin now
-      exists under archive/ at the SAME fingerprint in HEAD.
+      exists under archive/ at the SAME fingerprint in HEAD -- AND no entry
+      ALREADY under archive/ in the parent commit was modified or removed
+      in HEAD (C1, TE-170): an entry may never leave archive/ either, so the
+      parent's own archive/ tree is read and diffed against HEAD's the same
+      way live/ is. A parent ref git cannot resolve at all (a bad ref, a
+      shallow clone missing the object) is a named FAIL, distinct from a
+      resolvable ref that simply carries no epoch-store/ tree yet (S5,
+      TE-170).
 
 Every outcome is a named PASS/FAIL row naming the entry and the member; the
 three SEMB_EPOCH_* names (tests/epoch_store_contract.py) are the FAIL rows'
@@ -26,11 +33,15 @@ both fix (see either file's own header comment for the full statement):
   - vectors.f32 and/or row-digest.tsv differ at an unchanged fingerprint,
     lineage.tsv held fixed -> SEMB_EPOCH_BYTES_DIVERGED.
   - lineage.tsv differs alone -> SEMB_EPOCH_LINEAGE_DIVERGED.
-  - every member differs (a wholesale re-mint), or a live entry vanished
-    with no archived twin -> SEMB_EPOCH_ENTRY_MODIFIED.
+  - every member differs (a wholesale re-mint), a live entry vanished with
+    no archived twin, or an ALREADY-archived entry's own bytes moved or
+    vanished -> SEMB_EPOCH_ENTRY_MODIFIED. Every FAIL row names WHICH
+    member(s) diverged and how (missing, or present-but-different) rather
+    than one generic message (M2, TE-170).
 A leg (a)/(b)/(c) never applicable at this run (no store; the real leg not
-configured) reports MISSING PREREQUISITE, named, never a silent PASS or a
-FAIL for a precondition this cell does not itself own.
+configured; nothing archived yet) reports MISSING PREREQUISITE, named,
+never a silent PASS or a FAIL for a precondition this cell does not itself
+own -- except an UNRESOLVABLE parent ref, which is always a FAIL (S5).
 
 RED AT 310c47d, BY NAME: `epoch-store/` does not exist anywhere in
 `--repo-root` (confirmed this round, `Claude/Mendeleev/
@@ -43,9 +54,9 @@ PREREQUISITE ("parent commit carries no epoch-store/ tree either") until a
 first commit lands one.
 
 INSTRUMENT COMMISSIONING (StandardsDocument.md sec 5.4): this script emits
-deciding PASS/FAIL/named-status rows and is registered QUARANTINED this
-round (`Claude/Tooling/instrument-commission.ps1 -Register`) with the six
-constructions (tests/epoch_store_constructions_check.py) as its must-reject
+deciding PASS/FAIL/named-status rows and is registered QUARANTINED
+(`Claude/Tooling/instrument-commission.ps1 -Register`) with the constructions
+population (tests/epoch_store_constructions_check.py) as its must-reject
 population and the untouched-append construction as its must-accept.
 Commissioning (actually running -Commission) is another seat's, per the
 dispatch.
@@ -233,58 +244,98 @@ def git_show_tree_paths(repo_root: Path, ref: str, subtree: str) -> Optional[Dic
     return out
 
 
+def diverged_members(parent_members: Dict[str, bytes], head_dir: Path) -> List[str]:
+    """Compares one entry's parent-commit bytes, member by member, against
+    what is on disk at `head_dir` now. Returns a list naming each member
+    that diverged -- missing entirely, or present but byte-different -- so
+    a FAIL row can name WHICH member moved instead of one generic message
+    (M2). An empty list means every member is present and byte-identical."""
+    out: List[str] = []
+    for name, parent_bytes in parent_members.items():
+        head_bytes = read_bytes(head_dir / name)
+        if head_bytes is None:
+            out.append(f"{name} (missing)")
+        elif head_bytes != parent_bytes:
+            out.append(f"{name} (differs)")
+    return out
+
+
 def check_parent_commit(repo_root: Path, parent_ref: str) -> None:
     """Cell 1(c): no live entry the parent commit carried was modified or
-    deleted-without-archive in HEAD."""
+    deleted-without-archive in HEAD, and no entry ALREADY under archive/ in
+    the parent commit was modified or removed in HEAD either (C1: "an
+    entry leaves the live store only by ARCHIVE-BY-MOVE ... an entry may
+    never leave archive/" -- the destination of that move needs the same
+    protection as the source, which the prior version of this check never
+    read)."""
     parent_live = git_show_tree_paths(repo_root, parent_ref, contract.LIVE_DIR)
+    parent_fingerprints: List[str] = []
     if parent_live is None:
         missing(f"(1c) parent commit ({parent_ref}) carries an epoch-store/live/ tree to diff against",
                 "no such tree -- the store's own first append has not landed yet")
-        return
-    verdict(True, f"(1c) parent commit ({parent_ref}) epoch-store/live/ tree read", f"{len(parent_live)} blob(s)")
+    else:
+        verdict(True, f"(1c) parent commit ({parent_ref}) epoch-store/live/ tree read", f"{len(parent_live)} blob(s)")
 
-    parent_fingerprints = sorted({k.split("/", 1)[0] for k in parent_live if "/" in k})
-    for fp in parent_fingerprints:
-        prefix = fp + "/"
-        parent_members = {k[len(prefix):]: v for k, v in parent_live.items() if k.startswith(prefix)}
-        head_entry_dir = contract.entry_dir(repo_root, contract.LIVE_DIR, fp)
-        head_members: Dict[str, Optional[bytes]] = {}
-        for name in contract.MEMBER_FILE_NAMES:
-            head_members[name] = read_bytes(head_entry_dir / name)
+        parent_fingerprints = sorted({k.split("/", 1)[0] for k in parent_live if "/" in k})
+        for fp in parent_fingerprints:
+            prefix = fp + "/"
+            parent_members = {k[len(prefix):]: v for k, v in parent_live.items() if k.startswith(prefix)}
+            head_entry_dir = contract.entry_dir(repo_root, contract.LIVE_DIR, fp)
+            head_members: Dict[str, Optional[bytes]] = {}
+            for name in contract.MEMBER_FILE_NAMES:
+                head_members[name] = read_bytes(head_entry_dir / name)
 
-        if all(v is None for v in head_members.values()):
-            # Deleted from live/ entirely in HEAD -- must be archived byte-identically.
-            archive_dir = contract.entry_dir(repo_root, contract.ARCHIVE_DIR, fp)
-            archived_ok = True
-            for name, parent_bytes in parent_members.items():
-                archived_bytes = read_bytes(archive_dir / name)
-                if archived_bytes != parent_bytes:
-                    archived_ok = False
-            verdict(archived_ok, f"(1c) {fp}: deleted from live/ has a byte-identical archive/ twin",
-                    "archived" if archived_ok else f"{contract.STATUS_ENTRY_MODIFIED} -- no matching archive/{fp}/")
-            continue
+            if all(v is None for v in head_members.values()):
+                # Deleted from live/ entirely in HEAD -- must be archived byte-identically.
+                archive_dir = contract.entry_dir(repo_root, contract.ARCHIVE_DIR, fp)
+                diverged = diverged_members(parent_members, archive_dir)
+                verdict(not diverged, f"(1c) {fp}: deleted from live/ has a byte-identical archive/ twin",
+                        "archived" if not diverged else f"{contract.STATUS_ENTRY_MODIFIED} -- " + "; ".join(diverged))
+                continue
 
-        vectors_changed = head_members[contract.VECTORS_FILE_NAME] != parent_members.get(contract.VECTORS_FILE_NAME)
-        row_digest_changed = head_members[contract.ROW_DIGEST_FILE_NAME] != parent_members.get(contract.ROW_DIGEST_FILE_NAME)
-        lineage_changed = head_members[contract.LINEAGE_FILE_NAME] != parent_members.get(contract.LINEAGE_FILE_NAME)
-        bytes_group_changed = vectors_changed or row_digest_changed
+            vectors_changed = head_members[contract.VECTORS_FILE_NAME] != parent_members.get(contract.VECTORS_FILE_NAME)
+            row_digest_changed = head_members[contract.ROW_DIGEST_FILE_NAME] != parent_members.get(contract.ROW_DIGEST_FILE_NAME)
+            lineage_changed = head_members[contract.LINEAGE_FILE_NAME] != parent_members.get(contract.LINEAGE_FILE_NAME)
+            bytes_group_changed = vectors_changed or row_digest_changed
 
-        if bytes_group_changed and lineage_changed:
-            verdict(False, f"(1c) {fp}: live entry unchanged since parent commit",
-                    f"{contract.STATUS_ENTRY_MODIFIED} -- every member differs (re-minted in place)")
-        elif bytes_group_changed:
-            verdict(False, f"(1c) {fp}: live entry unchanged since parent commit",
-                    f"{contract.STATUS_BYTES_DIVERGED} -- vectors.f32/row-digest.tsv moved, lineage.tsv held fixed")
-        elif lineage_changed:
-            verdict(False, f"(1c) {fp}: live entry unchanged since parent commit",
-                    f"{contract.STATUS_LINEAGE_DIVERGED} -- lineage.tsv moved alone")
-        else:
-            verdict(True, f"(1c) {fp}: live entry unchanged since parent commit", "byte-identical")
+            if bytes_group_changed and lineage_changed:
+                verdict(False, f"(1c) {fp}: live entry unchanged since parent commit",
+                        f"{contract.STATUS_ENTRY_MODIFIED} -- every member differs (re-minted in place)")
+            elif bytes_group_changed:
+                verdict(False, f"(1c) {fp}: live entry unchanged since parent commit",
+                        f"{contract.STATUS_BYTES_DIVERGED} -- vectors.f32/row-digest.tsv moved, lineage.tsv held fixed")
+            elif lineage_changed:
+                verdict(False, f"(1c) {fp}: live entry unchanged since parent commit",
+                        f"{contract.STATUS_LINEAGE_DIVERGED} -- lineage.tsv moved alone")
+            else:
+                verdict(True, f"(1c) {fp}: live entry unchanged since parent commit", "byte-identical")
 
-    head_fingerprints = set(contract.list_live_fingerprints(repo_root))
-    new_appends = head_fingerprints - set(parent_fingerprints)
-    verdict(True, "(1c) new appends since parent commit (informational, not a divergence)",
-            f"{len(new_appends)} new fingerprint(s): {sorted(new_appends)}" if new_appends else "none")
+    # ---- C1: the archive half. Once an entry exists under archive/, it may
+    # never leave -- every member the parent commit held there must still be
+    # present and byte-identical in HEAD. The prior version of this check
+    # read parent_live only, so a live entry archived in one commit could be
+    # deleted outright, or silently edited, in a later commit with zero
+    # FAIL rows anywhere. ----
+    parent_archive = git_show_tree_paths(repo_root, parent_ref, contract.ARCHIVE_DIR)
+    if parent_archive is None:
+        missing(f"(1c) parent commit ({parent_ref}) carries an epoch-store/archive/ tree to diff against",
+                "no such tree -- nothing has been archived yet")
+    else:
+        verdict(True, f"(1c) parent commit ({parent_ref}) epoch-store/archive/ tree read", f"{len(parent_archive)} blob(s)")
+        archive_fingerprints = sorted({k.split("/", 1)[0] for k in parent_archive if "/" in k})
+        for fp in archive_fingerprints:
+            prefix = fp + "/"
+            parent_members = {k[len(prefix):]: v for k, v in parent_archive.items() if k.startswith(prefix)}
+            head_archive_dir = contract.entry_dir(repo_root, contract.ARCHIVE_DIR, fp)
+            diverged = diverged_members(parent_members, head_archive_dir)
+            verdict(not diverged, f"(1c) {fp}: archived entry unchanged since parent commit (an entry may never leave archive/, C1)",
+                    "byte-identical" if not diverged else f"{contract.STATUS_ENTRY_MODIFIED} -- " + "; ".join(diverged))
+
+    if parent_live is not None:
+        head_fingerprints = set(contract.list_live_fingerprints(repo_root))
+        new_appends = head_fingerprints - set(parent_fingerprints)
+        verdict(True, "(1c) new appends since parent commit (informational, not a divergence)",
+                f"{len(new_appends)} new fingerprint(s): {sorted(new_appends)}" if new_appends else "none")
 
 
 def main() -> int:

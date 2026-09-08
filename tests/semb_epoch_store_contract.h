@@ -83,7 +83,12 @@
 //     in the parent commit is absent from HEAD with no byte-identical twin
 //     under archive/<same fingerprint>/ in HEAD ("an entry leaves the live
 //     store only by ARCHIVE-BY-MOVE... absent a matching archive entry,
-//     deletion stays SEMB_EPOCH_ENTRY_MODIFIED", sec 8 C32 verbatim)
+//     deletion stays SEMB_EPOCH_ENTRY_MODIFIED", sec 8 C32 verbatim), OR an
+//     entry ALREADY present under archive/<fingerprint>/ in the parent
+//     commit is absent, or byte-different, at that SAME archive path in
+//     HEAD (TE-170, C1: "an entry may never leave archive/" applies with
+//     equal force to the destination of the move, not only to the source --
+//     the archive path is not merely accepted once and then unwatched)
 //     -> SEMB_EPOCH_ENTRY_MODIFIED.
 //   - a NEW fingerprint directory present in HEAD's live/ with no entry at
 //     that path in the parent commit, whose own three members are

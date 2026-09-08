@@ -2,7 +2,11 @@
 sub-plan's own cell 2, "the four able-to-fail constructions" plus "the
 lifecycle pair" (`Claude/Plans/te140-u1-remainder-sequencing.md` sec 4.3;
 `Claude/Plans/SuperEmbedder_Plan.md` sec 8, C32's own able-to-fail list,
-quoted verbatim in the dispatch). Six constructions, each executed against
+quoted verbatim in the dispatch), extended by TE-170's own review-fix round
+with construction 7 (C1: an archived entry deleted outright) and
+construction 8 (M7: an archived twin whose bytes diverge) -- the
+discriminating pair the review's own C1 finding and its own M7 coverage
+gap named. Eight constructions, each executed against
 `epoch_store_check.py`'s own parent-commit logic (cell 1(c)) in a SCRATCH
 git repository this script builds under the build directory -- never the
 product repository, never a hand-fabricated byte blob standing in for a
@@ -25,12 +29,15 @@ inherited), and a BASE commit holding a well-formed TWO-ENTRY live store:
     against the build under test's OWN real fingerprint, entirely separate
     from this cell's lifecycle claim).
 
-EACH CONSTRUCTION checks out a fresh branch from the BASE commit (so the
-six are independent, never interfering with each other), applies EXACTLY
-ONE mutation, commits, then runs `epoch_store_check.check_parent_commit`
-(imported directly, in-process, stdout captured) with `--parent-ref` the
-base commit -- exactly the shape cell 1(c) itself runs in production,
-applied here to a commit this script controls completely.
+EACH CONSTRUCTION checks out a fresh branch from the BASE commit (so they
+are independent, never interfering with each other), applies EXACTLY ONE
+mutation (constructions 7 and 8 apply two, in two commits, since the
+mutation under test is itself a SECOND commit against an already-archived
+first commit -- see each's own comment), commits, then runs
+`epoch_store_check.check_parent_commit` (imported directly, in-process,
+stdout captured) with `--parent-ref` the relevant commit -- exactly the
+shape cell 1(c) itself runs in production, applied here to a commit this
+script controls completely.
 
   1. bytes moved under an unchanged fingerprint (fp1's vectors.f32 flipped,
      lineage.tsv held fixed)      -> SEMB_EPOCH_BYTES_DIVERGED
@@ -45,11 +52,20 @@ applied here to a commit this script controls completely.
      -> GREEN ("archived")
   6. deletion without the archive twin refused (fp2 removed from live/,
      nothing added under archive/fp2/) -> SEMB_EPOCH_ENTRY_MODIFIED
+  7. (C1, TE-170) an archived entry deleted outright: commit 1 archives
+     fp2 (accepted, as in 5); commit 2 deletes archive/fp2/ entirely, so
+     the entry exists at NEITHER live/ nor archive/ -> SEMB_EPOCH_ENTRY_MODIFIED
+     against commit 1 as the parent -- the review's own scratch construction.
+  8. (M7, TE-170) an archived twin that diverges: commit 1 archives fp2
+     (accepted, as in 5); commit 2 flips one byte in archive/fp2/vectors.f32
+     -> SEMB_EPOCH_ENTRY_MODIFIED against commit 1 as the parent -- the
+     discriminating half construction 7 does not exercise (deletion vs.
+     silent divergence).
 
 RED-FIRST: run before the product's own store exists and before
 epoch_store_check.py's own check_parent_commit is exercised against a real
 build -- each construction below is a scratch fixture this script itself
-builds and mutates, so all six run and quote a verdict regardless of
+builds and mutates, so every one runs and quotes a verdict regardless of
 whether `epoch-store/` exists anywhere in the product tree (confirmed
 independent of that fact: this script never reads the product repository's
 own epoch-store/, only the scratch one it creates).
@@ -66,7 +82,7 @@ USAGE
     --synthetic-dims <n> --synthetic-tokens <tsv>
     --synthetic-terminator-id <n> --scratch-dir <dir> [--git <git-exe>]
 
-Exit codes: 0 all six constructions quote their expected verdict; 1 any
+Exit codes: 0 all constructions quote their expected verdict; 1 any
 construction quotes something else (a dead check, or a check that cannot
 fire on the class it exists to catch).
 """
@@ -282,7 +298,49 @@ def main() -> int:
            "deleting a live entry with no byte-identical archive/ twin must be reported SEMB_EPOCH_ENTRY_MODIFIED",
            failures)
 
-    print(f"\nepoch_store_constructions_check: 6 construction(s), {len(failures)} failure(s): {failures}")
+    # ---- Construction 7 (C1, TE-170): an archived entry deleted outright,
+    # once it exists at NEITHER live/ nor archive/, is refused. Two commits:
+    # commit 1 archives fp2 (accepted, matching construction 5); commit 2
+    # deletes the archived twin with no live entry to fall back to -- the
+    # review's own scratch construction (Poirot C1). ----
+    checkout_new_branch(repo, args.git, "construction-7", base_sha)
+    fp2_live = contract.entry_dir(repo, contract.LIVE_DIR, fp2)
+    fp2_archive = contract.entry_dir(repo, contract.ARCHIVE_DIR, fp2)
+    fp2_archive.mkdir(parents=True, exist_ok=True)
+    for name in contract.MEMBER_FILE_NAMES:
+        shutil.copyfile(fp2_live / name, fp2_archive / name)
+    shutil.rmtree(fp2_live)
+    c7_archived_sha = commit_all(repo, args.git, "construction 7 commit 1: archive-by-move fp2")
+    out_archived = captured_check_parent_commit(repo, base_sha)
+    expect("FAIL" not in out_archived and fp2 in out_archived, "construction-7-archive-by-move-still-accepted",
+           "commit 1 (archive-by-move) must still be accepted, matching construction 5", failures)
+    shutil.rmtree(fp2_archive)
+    commit_all(repo, args.git, "construction 7 commit 2: delete the archived twin outright")
+    out = captured_check_parent_commit(repo, c7_archived_sha)
+    expect(contract.STATUS_ENTRY_MODIFIED in out and fp2 in out, "construction-7-archived-twin-deleted-refused",
+           "deleting an archived entry outright, once it exists at neither live/ nor archive/, must be reported "
+           "SEMB_EPOCH_ENTRY_MODIFIED -- the review's own scratch construction, C1", failures)
+
+    # ---- Construction 8 (M7, TE-170): an archived twin whose bytes differ
+    # from what was archived is refused -- the discriminating half of
+    # archive-by-move construction 7 does not exercise (outright deletion
+    # vs. silent divergence). ----
+    checkout_new_branch(repo, args.git, "construction-8", base_sha)
+    fp2_live = contract.entry_dir(repo, contract.LIVE_DIR, fp2)
+    fp2_archive = contract.entry_dir(repo, contract.ARCHIVE_DIR, fp2)
+    fp2_archive.mkdir(parents=True, exist_ok=True)
+    for name in contract.MEMBER_FILE_NAMES:
+        shutil.copyfile(fp2_live / name, fp2_archive / name)
+    shutil.rmtree(fp2_live)
+    c8_archived_sha = commit_all(repo, args.git, "construction 8 commit 1: archive-by-move fp2")
+    flip_one_byte(fp2_archive / contract.VECTORS_FILE_NAME)
+    commit_all(repo, args.git, "construction 8 commit 2: flip a byte in the archived twin")
+    out = captured_check_parent_commit(repo, c8_archived_sha)
+    expect(contract.STATUS_ENTRY_MODIFIED in out and fp2 in out, "construction-8-archived-twin-diverged-refused",
+           "an archived twin whose bytes differ from what was archived must be reported SEMB_EPOCH_ENTRY_MODIFIED "
+           "-- the discriminating half of archive-by-move, M7", failures)
+
+    print(f"\nepoch_store_constructions_check: 8 construction(s), {len(failures)} failure(s): {failures}")
     return 1 if failures else 0
 
 
