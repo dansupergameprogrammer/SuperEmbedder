@@ -285,6 +285,21 @@ int RunFingerprint(int argc, char** argv) {
     std::fprintf(stderr, "epoch_store_mint: semb_encoder_open refused: %s\n", semb_status_name(open_st));
     return 1;
   }
+  // --dims is refused against the model's own hidden size before any probe
+  // runs (S4, `Claude/Poirot/5617c9b-te169-slice3-review.md`): an over-sized
+  // --dims was previously accepted silently by every mode this tool has.
+  uint32_t real_dims = 0;
+  const semb_status dims_st = semb_encoder_dims(enc, &real_dims);
+  if (dims_st != SEMB_OK) {
+    std::fprintf(stderr, "epoch_store_mint: semb_encoder_dims refused: %s\n", semb_status_name(dims_st));
+    semb_encoder_close(enc);
+    return 1;
+  }
+  if (real_dims != dims) {
+    std::fprintf(stderr, "epoch_store_mint: fingerprint: --dims %u != model hidden_size %u\n", dims, real_dims);
+    semb_encoder_close(enc);
+    return 1;
+  }
   std::vector<float> throwaway(dims, 0.0f);
   size_t required = 0;
   semb_fingerprint fp{};
@@ -382,6 +397,22 @@ int RunEncode(int argc, char** argv) {
                    semb_status_name(st));
       return 1;
     }
+    // --dims is refused against the model's own hidden size before any
+    // document is cached (S4, `Claude/Poirot/5617c9b-te169-slice3-review.md`):
+    // an over-sized --dims previously minted a zero-padded row and exited 0.
+    uint32_t real_dims = 0;
+    const semb_status dims_st = semb_encoder_dims(pub_enc, &real_dims);
+    if (dims_st != SEMB_OK) {
+      std::fprintf(stderr, "epoch_store_mint: semb_encoder_dims refused: %s\n", semb_status_name(dims_st));
+      semb_encoder_close(pub_enc);
+      return 1;
+    }
+    if (real_dims != dims) {
+      std::fprintf(stderr, "epoch_store_mint: encode: --dims %u != model hidden_size %u (real leg)\n", dims,
+                   real_dims);
+      semb_encoder_close(pub_enc);
+      return 1;
+    }
   } else {
     const char* engine_status = nullptr;
     const SembInterimStatus st =
@@ -389,6 +420,22 @@ int RunEncode(int argc, char** argv) {
     if (st != kSembInterimOk || !interim_enc) {
       std::fprintf(stderr, "epoch_store_mint: semb_interim_encoder_open (synthetic leg) refused (status=%d, engine=%s)\n",
                    static_cast<int>(st), engine_status ? engine_status : "?");
+      return 1;
+    }
+    // --dims is refused against the model's own hidden size before any
+    // document is cached, the same guard as the real leg above -- this is
+    // the leg S4's own reproduction used (`--dims 64` on a hidden-32 pair).
+    SembInterimGeometry geometry{};
+    geometry.struct_size = sizeof(geometry);
+    if (semb_interim_encoder_geometry(interim_enc, &geometry) != kSembInterimOk) {
+      std::fprintf(stderr, "epoch_store_mint: semb_interim_encoder_geometry refused\n");
+      semb_interim_encoder_close(interim_enc);
+      return 1;
+    }
+    if (geometry.hidden_size != dims) {
+      std::fprintf(stderr, "epoch_store_mint: encode: --dims %u != model hidden_size %u (synthetic leg)\n", dims,
+                   geometry.hidden_size);
+      semb_interim_encoder_close(interim_enc);
       return 1;
     }
   }
@@ -523,6 +570,17 @@ int RunAssemble(int argc, char** argv) {
   std::vector<uint8_t> lineage_all_stream;
   PutU64LE(&lineage_all_stream, static_cast<uint64_t>(docs.size()));
 
+  // The contract's own dims*4-bytes-per-row, no-header, no-separator stride
+  // (`tests/semb_epoch_store_contract.h`) requires every row the SAME
+  // length; assemble opens no model and so cannot check that length against
+  // a real hidden size the way encode's two legs now do above, but it CAN
+  // require the cache to be uniform -- the mechanism available to it, and
+  // the one the review's own reproduction exercises (a hand-mixed cache of
+  // one 256-byte row and seven 128-byte rows). Refused before any row is
+  // added to the blob (S4, `Claude/Poirot/5617c9b-te169-slice3-review.md`).
+  size_t expected_vec_len = 0;
+  bool have_expected_vec_len = false;
+
   for (const DocTokens& d : docs) {
     std::vector<uint8_t> vec_bytes, seam_bytes;
     const std::string vec_path = raw_cache_dir + "/" + d.id + ".vec";
@@ -535,6 +593,16 @@ int RunAssemble(int argc, char** argv) {
     if (!ReadWholeFile(seam_path, &seam_bytes)) {
       std::fprintf(stderr, "epoch_store_mint: assemble: missing cache file %s (encode mode did not run for '%s' -- nothing written)\n",
                    seam_path.c_str(), d.id.c_str());
+      return 1;
+    }
+    if (!have_expected_vec_len) {
+      expected_vec_len = vec_bytes.size();
+      have_expected_vec_len = true;
+    } else if (vec_bytes.size() != expected_vec_len) {
+      std::fprintf(stderr,
+                   "epoch_store_mint: assemble: '%s' .vec is %zu bytes, the cache's first row is %zu bytes -- "
+                   "ragged cache, refused (uniform dims*4 stride required)\n",
+                   d.id.c_str(), vec_bytes.size(), expected_vec_len);
       return 1;
     }
     vectors_blob.insert(vectors_blob.end(), vec_bytes.begin(), vec_bytes.end());
