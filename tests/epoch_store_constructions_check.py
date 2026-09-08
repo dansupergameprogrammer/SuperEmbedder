@@ -3,10 +3,9 @@ sub-plan's own cell 2, "the four able-to-fail constructions" plus "the
 lifecycle pair" (`Claude/Plans/te140-u1-remainder-sequencing.md` sec 4.3;
 `Claude/Plans/SuperEmbedder_Plan.md` sec 8, C32's own able-to-fail list,
 quoted verbatim in the dispatch), extended by TE-170's own review-fix round
-with construction 7 (C1: an archived entry deleted outright) and
-construction 8 (M7: an archived twin whose bytes diverge) -- the
-discriminating pair the review's own C1 finding and its own M7 coverage
-gap named. Eight constructions, each executed against
+with construction 7 (C1: an archived entry deleted outright), construction
+8 (M7: an archived twin whose bytes diverge), and construction 9 (S5: an
+unresolvable parent ref). Nine constructions, each executed against
 `epoch_store_check.py`'s own parent-commit logic (cell 1(c)) in a SCRATCH
 git repository this script builds under the build directory -- never the
 product repository, never a hand-fabricated byte blob standing in for a
@@ -61,6 +60,9 @@ script controls completely.
      -> SEMB_EPOCH_ENTRY_MODIFIED against commit 1 as the parent -- the
      discriminating half construction 7 does not exercise (deletion vs.
      silent divergence).
+  9. (S5, TE-170) an unresolvable --parent-ref ("deadbee", no such object in
+     ANY repository) -> a named FAIL, never the MISSING PREREQUISITE state
+     a resolvable-but-treeless ref reports.
 
 RED-FIRST: run before the product's own store exists and before
 epoch_store_check.py's own check_parent_commit is exercised against a real
@@ -340,7 +342,17 @@ def main() -> int:
            "an archived twin whose bytes differ from what was archived must be reported SEMB_EPOCH_ENTRY_MODIFIED "
            "-- the discriminating half of archive-by-move, M7", failures)
 
-    print(f"\nepoch_store_constructions_check: 8 construction(s), {len(failures)} failure(s): {failures}")
+    # ---- Construction 9 (S5, TE-170): an unresolvable parent ref is a
+    # named FAIL, never the same MISSING PREREQUISITE state a resolvable
+    # ref carrying no epoch-store/ tree yet reports. No new commit needed
+    # -- the ref itself is what does not resolve, in ANY repository. ----
+    out = captured_check_parent_commit(repo, "deadbee")
+    expect("FAIL" in out and "ref resolves" in out, "construction-9-unresolvable-parent-ref-is-a-fail",
+           "a --parent-ref git cannot resolve at all must be a named FAIL (S5)", failures)
+    expect("MISSING PREREQUISITE" not in out, "construction-9-not-conflated-with-first-append",
+           "must not be reported as the resolvable-ref-no-tree-yet 'first append has not landed' state", failures)
+
+    print(f"\nepoch_store_constructions_check: 9 construction(s), {len(failures)} failure(s): {failures}")
     return 1 if failures else 0
 
 

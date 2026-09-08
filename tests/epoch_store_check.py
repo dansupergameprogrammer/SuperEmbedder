@@ -222,14 +222,33 @@ def check_leg(repo_root: Path, emit_binary: str, label: str, model: str, tokeniz
                 "byte-identical" if match else f"{status} -- committed {len(committed)} bytes, emitted {len(emitted or b'')} bytes differ")
 
 
+def git_ref_resolves(repo_root: Path, ref: str) -> bool:
+    """S5, TE-170: True iff `ref` resolves to a commit at all. A ref git
+    cannot resolve (a bad ref, a shallow clone missing the object) is
+    distinct from a ref that resolves but simply carries no epoch-store/
+    tree yet -- the two were conflated before this round, both surfacing as
+    the identical "first append has not landed" MISSING PREREQUISITE."""
+    rp = subprocess.run(["git", "-C", str(repo_root), "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+                         capture_output=True, text=True)
+    return rp.returncode == 0
+
+
 def git_show_tree_paths(repo_root: Path, ref: str, subtree: str) -> Optional[Dict[str, bytes]]:
     """Returns {relative-path-under-subtree: blob-bytes} for every blob
-    `git ls-tree -r` finds under `subtree` at `ref`, or None if `ref` has no
-    such tree at all (a distinct, non-failing state -- e.g. the parent
-    commit predates the store's own first append)."""
+    `git ls-tree -r` finds under `subtree` at `ref`, or None if `ref`
+    resolves but carries no such tree at all (a distinct, non-failing
+    state -- e.g. the parent commit predates the store's own first
+    append). CALLERS CONFIRM `ref` ITSELF RESOLVES (git_ref_resolves)
+    BEFORE CALLING THIS (S5, TE-170): an `ls-tree` failure here is
+    therefore a git-internal error on an already-verified ref, not "no
+    tree," and is raised rather than silently folded into the same
+    None/MISSING-PREREQUISITE state an unresolvable ref used to share
+    with a resolvable-but-empty one."""
     ls = subprocess.run(["git", "-C", str(repo_root), "ls-tree", "-r", "--name-only", ref, "--", subtree],
                          capture_output=True, text=True)
-    if ls.returncode != 0 or not ls.stdout.strip():
+    if ls.returncode != 0:
+        raise RuntimeError(f"git ls-tree failed for a ref already confirmed to resolve ({ref!r}): {ls.stderr.strip()}")
+    if not ls.stdout.strip():
         return None
     out: Dict[str, bytes] = {}
     for rel in ls.stdout.splitlines():
@@ -267,7 +286,16 @@ def check_parent_commit(repo_root: Path, parent_ref: str) -> None:
     entry leaves the live store only by ARCHIVE-BY-MOVE ... an entry may
     never leave archive/" -- the destination of that move needs the same
     protection as the source, which the prior version of this check never
-    read)."""
+    read). A parent ref git cannot resolve at all is a named FAIL (S5,
+    TE-170) -- distinct from a resolvable ref that simply carries no
+    epoch-store/ tree yet, which the two cases used to share as one
+    MISSING PREREQUISITE state."""
+    if not git_ref_resolves(repo_root, parent_ref):
+        verdict(False, f"(1c) parent commit ({parent_ref}) ref resolves to a commit",
+                f"git cannot resolve {parent_ref!r} to a commit -- an unreadable parent is a FAIL, never the "
+                "'store's own first append has not landed yet' state (S5, TE-170)")
+        return
+
     parent_live = git_show_tree_paths(repo_root, parent_ref, contract.LIVE_DIR)
     parent_fingerprints: List[str] = []
     if parent_live is None:
