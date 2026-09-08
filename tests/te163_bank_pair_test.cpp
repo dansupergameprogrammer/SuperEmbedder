@@ -136,7 +136,9 @@ struct Statuses {
   int32_t ok, null_argument, invalid_handle, corpus_empty, document_id_duplicate,
       fingerprint_mismatch, manifest_schema_unsupported, bank_size_mismatch,
       artifact_sha_mismatch, adapter_id_mismatch, ps_version_label_mismatch,
-      context_cap_exceeded;
+      context_cap_exceeded, bank_ids_count_mismatch, bank_nonfinite_row,
+      bank_zero_norm_row, bank_geometry_ceiling_exceeded,
+      bank_metric_dtype_unsupported, bank_digest_mismatch, artifact_unreadable;
 };
 Statuses ResolveStatuses() {
   using semb_contract::StatusByName;
@@ -153,6 +155,19 @@ Statuses ResolveStatuses() {
   s.adapter_id_mismatch = StatusByName("SEMB_ADAPTER_ID_MISMATCH");
   s.ps_version_label_mismatch = StatusByName("SEMB_PS_VERSION_LABEL_MISMATCH");
   s.context_cap_exceeded = StatusByName("SEMB_CONTEXT_CAP_EXCEEDED");
+  // TE-183 (D-SLM6410), ordinals 28-31: the four FORMAT.md sec 1 obligations
+  // cell 2's tamper constructions drove by value only, unpinned, until now.
+  s.bank_ids_count_mismatch = StatusByName("SEMB_BANK_IDS_COUNT_MISMATCH");
+  s.bank_nonfinite_row = StatusByName("SEMB_BANK_NONFINITE_ROW");
+  s.bank_zero_norm_row = StatusByName("SEMB_BANK_ZERO_NORM_ROW");
+  s.bank_geometry_ceiling_exceeded = StatusByName("SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
+  // TE-192 (D-SLM6467 F2/F8), ordinal 32: unknown metric/dtype.
+  s.bank_metric_dtype_unsupported = StatusByName("SEMB_BANK_METRIC_DTYPE_UNSUPPORTED");
+  // TE-192 (D-SLM6467 F3/F8), ordinal 33: a manifest digest (row_digest, or
+  // corpus_digest's self-consistency against its own witness copy)
+  // disagreeing with what it is checked against.
+  s.bank_digest_mismatch = StatusByName("SEMB_BANK_DIGEST_MISMATCH");
+  s.artifact_unreadable = StatusByName("SEMB_ARTIFACT_UNREADABLE");
   return s;
 }
 
@@ -597,25 +612,39 @@ int main(int argc, char** argv) {
     {
       fs::path stem = scratch / (a.stem + "_t_ids_missing");
       if (CopyTriple(good_stem, stem, label + "/cell2 ids array missing entirely", nullptr, [](std::string header) {
+            // "ids" is written last (confirmed at source, encoder.cpp's own
+            // header.Set() order and the baked header's own byte layout), so
+            // removing it must also remove the preceding ", " -- leaving it
+            // in place drops a dangling trailing comma before the closing
+            // brace, which is a JSON SYNTAX error, not the "ids missing"
+            // semantic this construction names: it made semb_bank_open's own
+            // json parse throw and refuse SEMB_ARTIFACT_UNREADABLE before the
+            // ids-cardinality check this construction targets ever ran.
             json_mini::Parser p(header);
             json_mini::Value v = p.Parse();
             const auto& ids = v["ids"];
-            std::string quoted = "\"ids\": [";
+            std::string quoted = ", \"ids\": [";
             for (size_t i = 0; i < ids.arr().size(); ++i) quoted += (i ? ", " : "") + ("\"" + ids.arr()[i].s() + "\"");
             quoted += "]";
             return ReplaceOnce(header, quoted, "");
           })) {
-        try_open_expect("ids array missing entirely -- asserted a refusal, no status this round names it "
-                         "(routed as a finding)", stem, -1, "");
+        try_open_expect("ids array missing entirely -> SEMB_BANK_IDS_COUNT_MISMATCH (TE-183, D-SLM6410)",
+                         stem, st.bank_ids_count_mismatch, "SEMB_BANK_IDS_COUNT_MISMATCH");
       }
     }
     // ids array: short (one fewer entry than count).
     {
       fs::path stem = scratch / (a.stem + "_t_ids_short");
       if (CopyTriple(good_stem, stem, label + "/cell2 ids array short by one", nullptr,
-                     [](std::string header) { return ReplaceOnce(header, "\"g1\"", ""); })) {
-        try_open_expect("ids array short by one -- asserted a refusal, no status this round names it "
-                         "(routed as a finding)", stem, -1, "");
+                     // Same JSON-syntax hazard as "ids array missing
+                     // entirely" just above: "g1" is the array's LAST
+                     // element, so removing only the token leaves a
+                     // dangling ", " before the closing "]" -- a syntax
+                     // error, not a short array. Removing the leading ", "
+                     // too leaves a syntactically valid one-element array.
+                     [](std::string header) { return ReplaceOnce(header, ", \"g1\"", ""); })) {
+        try_open_expect("ids array short by one -> SEMB_BANK_IDS_COUNT_MISMATCH (TE-183, D-SLM6410)",
+                         stem, st.bank_ids_count_mismatch, "SEMB_BANK_IDS_COUNT_MISMATCH");
       }
     }
     // ids array: duplicated (both entries the same id).
@@ -638,8 +667,8 @@ int main(int argc, char** argv) {
             }
             return bin;
           })) {
-        try_open_expect("a non-finite row value -- asserted a refusal, no status this round names it "
-                         "(routed as a finding)", stem, -1, "");
+        try_open_expect("a non-finite row value -> SEMB_BANK_NONFINITE_ROW (TE-183, D-SLM6410)",
+                         stem, st.bank_nonfinite_row, "SEMB_BANK_NONFINITE_ROW");
       }
     }
     // A zero-norm row (metric cosine). D-SLM6411 item (b): the construction
@@ -655,8 +684,8 @@ int main(int argc, char** argv) {
                        std::fill(bin.begin(), bin.begin() + std::min<size_t>(bin.size(), static_cast<size_t>(dims) * 4), '\0');
                        return bin;
                      })) {
-        try_open_expect("a zero-norm row under cosine (zeroed at the pair's own dims) -- asserted a refusal, "
-                         "no status this round names it (routed as a finding)", stem, -1, "");
+        try_open_expect("a zero-norm row under cosine (zeroed at the pair's own dims) -> SEMB_BANK_ZERO_NORM_ROW "
+                         "(TE-183, D-SLM6410)", stem, st.bank_zero_norm_row, "SEMB_BANK_ZERO_NORM_ROW");
       }
     }
     // Header geometry over the ceilings -- dims over 131,072, on the header
@@ -666,8 +695,9 @@ int main(int argc, char** argv) {
       if (CopyTriple(good_stem, stem, label + "/cell2 dims over 131,072", nullptr,
                      [&](std::string header) { return ReplaceOnce(header, "\"dims\": " + std::to_string(a.dims),
                                                                     "\"dims\": 999999999"); })) {
-        try_open_expect("dims over 131,072 refused on the header alone -- asserted a refusal, no status this "
-                         "round names it (routed as a finding)", stem, -1, "");
+        try_open_expect("dims over 131,072 refused on the header alone -> SEMB_BANK_GEOMETRY_CEILING_EXCEEDED "
+                         "(TE-183, D-SLM6410)", stem, st.bank_geometry_ceiling_exceeded,
+                         "SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
       }
     }
     // count over 2^28, on the header alone.
@@ -675,8 +705,32 @@ int main(int argc, char** argv) {
       fs::path stem = scratch / (a.stem + "_t_count_ceiling");
       if (CopyTriple(good_stem, stem, label + "/cell2 count over 2^28", nullptr,
                      [](std::string header) { return ReplaceOnce(header, "\"count\": 2", "\"count\": 999999999"); })) {
-        try_open_expect("count over 2^28 refused on the header alone -- asserted a refusal, no status this "
-                         "round names it (routed as a finding)", stem, -1, "");
+        try_open_expect("count over 2^28 refused on the header alone -> SEMB_BANK_GEOMETRY_CEILING_EXCEEDED "
+                         "(TE-183, D-SLM6410)", stem, st.bank_geometry_ceiling_exceeded,
+                         "SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
+      }
+    }
+    // Unknown metric (F2, D-SLM6467/D-SLM6472): FORMAT.md sec 1's own
+    // admitted set is {"dot", "cosine", "l2"}; a value outside that set is
+    // this round's own SEMB_BANK_METRIC_DTYPE_UNSUPPORTED (32).
+    {
+      fs::path stem = scratch / (a.stem + "_t_metric_unknown");
+      if (CopyTriple(good_stem, stem, label + "/cell2 unknown metric", nullptr,
+                     [](std::string header) { return ReplaceOnce(header, "\"metric\": \"cosine\"",
+                                                                    "\"metric\": \"unknown\""); })) {
+        try_open_expect("unknown metric -> SEMB_BANK_METRIC_DTYPE_UNSUPPORTED (F2, D-SLM6467)", stem,
+                         st.bank_metric_dtype_unsupported, "SEMB_BANK_METRIC_DTYPE_UNSUPPORTED");
+      }
+    }
+    // Unknown dtype (F2, D-SLM6467/D-SLM6472): FORMAT.md sec 1's own
+    // admitted dtype is "float32" alone.
+    {
+      fs::path stem = scratch / (a.stem + "_t_dtype_unknown");
+      if (CopyTriple(good_stem, stem, label + "/cell2 unknown dtype", nullptr,
+                     [](std::string header) { return ReplaceOnce(header, "\"dtype\": \"float32\"",
+                                                                    "\"dtype\": \"garbage\""); })) {
+        try_open_expect("unknown dtype -> SEMB_BANK_METRIC_DTYPE_UNSUPPORTED (F2, D-SLM6467)", stem,
+                         st.bank_metric_dtype_unsupported, "SEMB_BANK_METRIC_DTYPE_UNSUPPORTED");
       }
     }
   }
