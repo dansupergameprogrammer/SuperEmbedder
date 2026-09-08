@@ -189,6 +189,17 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
       return SEMB_MANIFEST_SCHEMA_UNSUPPORTED;
     }
 
+    // TE-193 P-3: FORMAT.md sec 1's own field table makes "channels" a
+    // schemaVersion-2-only table ("and required by it"), and the reference
+    // importer refuses it by name (wvbank.py: "channels table requires
+    // schemaVersion 2"). A v1 header carrying it violates the v1 schema
+    // itself -- the same "unknown schemaVersion, metric, or dtype"
+    // importer obligation class the check above already refuses
+    // schemaVersion with, so it reuses that status. Any schemaVersion
+    // other than 1 is already refused above, so every "channels" key
+    // reaching here is a v1 header.
+    if (header.Find("channels")) return SEMB_MANIFEST_SCHEMA_UNSUPPORTED;
+
     const js::Value* dims_v = header.Find("dims");
     const js::Value* count_v = header.Find("count");
     if (!dims_v || dims_v->kind != js::Kind::kInt || !count_v || count_v->kind != js::Kind::kInt) {

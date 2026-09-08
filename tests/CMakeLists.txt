@@ -728,3 +728,30 @@ add_test(
 		--tokenizer "${SEMB_U1_TOKENIZER}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+
+# ---------------------------------------------------------------------------
+# TE-196 (U1 slice 4 fix round): the manifest-binding driver -- the cells
+# for the TE-193 review's P-3 (channels under schemaVersion 1) and the
+# later items of the same round as their cells land in the binary. Every
+# symbol it links exists at 21b1735, but it needs the synthetic mechanism
+# pair and a scratch dir as runtime arguments, so it follows the
+# te163_bank_pair_check shape: EXCLUDE_FROM_ALL, built and run on demand
+# by tests/te196_manifest_binding_check.py (which also ensures the pair,
+# since ctest does not order tests by dependency). The mechanism-bake
+# scaffolding inside the binary is COPIED from
+# tests/te163_bank_pair_test.cpp per this round's own brief (TE-192 owns
+# that file in a concurrent round -- nothing is factored out of it). The
+# src include dir is for json_lite.h, the product's own internal JSON
+# reader (the same include the te166_bake_239_timer target already uses).
+# ---------------------------------------------------------------------------
+add_executable(te196_manifest_binding_test EXCLUDE_FROM_ALL te196_manifest_binding_test.cpp)
+target_link_libraries(te196_manifest_binding_test PRIVATE superembedder superslm::superslm)
+target_include_directories(te196_manifest_binding_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+	"${CMAKE_SOURCE_DIR}/src/superembedder")
+
+set(_semb_te196_args --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}")
+add_test(
+	NAME te196_manifest_binding_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te196_manifest_binding_check.py" ${_semb_te196_args}
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
