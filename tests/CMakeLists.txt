@@ -756,11 +756,21 @@ endif()
 
 # TE-180 item 2 (D-SLM6428 bare cell A): an empty or unreadable
 # --corpus-jsonl is a registered red-by-name cell. c2_lineage_equality_test.cpp's
-# own S7 block (:444-455) reads --corpus-jsonl and reports the named FAIL
-# BEFORE anything opens an encoder or reads the live entry -- confirmed by
-# reading the source -- so the SYNTHETIC leg's own args (--regen-synthetic-
-# pair, no real artifact) are enough to reach it; no real_artifact leg
-# needed. Two constructions (an empty file; a path that does not exist),
+# own S7 block (:444-455) is the LAST thing main() runs -- AFTER the
+# synthetic pair regeneration, the mutation-proof block's two
+# ComputeSeamDigest calls (:345-361), the live-fingerprint read via Open()
+# and semb_encode (:366-385), the lineage.tsv read (:392-404) and the
+# whole per-document C2 loop (:408-434) -- confirmed by reading the source
+# AND by execution (TE-190 M1): the run prints "C2 summary: 8 of 8
+# documents checked, 0 mismatch(es)" before the S7 FAIL row. It is reached
+# by the SYNTHETIC leg's own args (--regen-synthetic-pair, no real
+# artifact) because --corpus-jsonl is the only gate S7 checks, not because
+# S7 runs early; no real_artifact leg is needed. Each of the four
+# registrations below therefore re-runs the entire synthetic C2 loop to
+# reach S7 -- the ~1s-per-cell cost these four cells carry is C2's own, not
+# S7's, and none of the four can distinguish S7 firing from any other cell
+# in the same TU failing (M1, TE-190). Two constructions (an empty file; a
+# path that does not exist),
 # both producing the SAME S7 message suffix by design (c2_lineage_equality_test.cpp's
 # own ternary: "carries no readable document (empty corpus)" for the first,
 # "cannot open <path>" for the second, then the shared "-- an empty or
