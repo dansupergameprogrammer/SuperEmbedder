@@ -4,12 +4,14 @@ lifecycle pair" (`Claude/Plans/te140-u1-remainder-sequencing.md` sec 4.3;
 `Claude/Plans/SuperEmbedder_Plan.md` sec 8, C32's own able-to-fail list,
 quoted verbatim in the dispatch), extended by TE-170's own review-fix round
 with construction 7 (C1: an archived entry deleted outright), construction
-8 (M7: an archived twin whose bytes diverge), and construction 9 (S5: an
-unresolvable parent ref). Nine constructions, each executed against
-`epoch_store_check.py`'s own parent-commit logic (cell 1(c)) in a SCRATCH
-git repository this script builds under the build directory -- never the
-product repository, never a hand-fabricated byte blob standing in for a
-commit.
+8 (M7: an archived twin whose bytes diverge), construction 9 (S5: an
+unresolvable parent ref), and constructions 10-11 (M6: the builder's real
+`tools/epoch-store/archive.py` driven as a subprocess, green, paired with
+a raw deletion that bypasses it, red). Eleven constructions, each executed
+against `epoch_store_check.py`'s own parent-commit logic (cell 1(c)) in a
+SCRATCH git repository this script builds under the build directory --
+never the product repository, never a hand-fabricated byte blob standing
+in for a commit.
 
 THE SCRATCH REPO. A fresh `git init` under `--scratch-dir`, `.gitattributes`
 carrying `* -text` (the product repository's own rule, asserted rather than
@@ -63,6 +65,13 @@ script controls completely.
   9. (S5, TE-170) an unresolvable --parent-ref ("deadbee", no such object in
      ANY repository) -> a named FAIL, never the MISSING PREREQUISITE state
      a resolvable-but-treeless ref reports.
+  10. (M6, TE-170) the real tools/epoch-store/archive.py tool, run as a
+      subprocess against the scratch repository, archives fp4 (commit 1
+      appends it, then archive.py moves it in commit 2) -> accepted (no
+      FAIL rows), against commit 1 as the parent.
+  11. (M6, TE-170) fp5 deleted directly, bypassing archive.py entirely (no
+      archive/ twin) -> SEMB_EPOCH_ENTRY_MODIFIED against commit 1 as the
+      parent -- the red pairing for construction 10's green.
 
 RED-FIRST: run before the product's own store exists and before
 epoch_store_check.py's own check_parent_commit is exercised against a real
@@ -105,6 +114,8 @@ import epoch_store_contract as contract  # noqa: E402
 
 FP2_FIXED = "0" * 63 + "1"   # a fixed, valid-shaped, distinct-from-fp1 fingerprint (guarded below)
 FP3_FIXED = "0" * 63 + "2"
+FP4_FIXED = "0" * 63 + "3"   # M6, TE-170: the archive.py-tool-driven pair
+FP5_FIXED = "0" * 63 + "4"
 
 
 def run(cmd: List[str], cwd: Path) -> str:
@@ -220,6 +231,8 @@ def main() -> int:
         return 1
     fp2 = FP2_FIXED if FP2_FIXED != fp1 else "1" * 64
     fp3 = FP3_FIXED if FP3_FIXED not in (fp1, fp2) else "2" * 64
+    fp4 = FP4_FIXED if FP4_FIXED not in (fp1, fp2, fp3) else "3" * 64
+    fp5 = FP5_FIXED if FP5_FIXED not in (fp1, fp2, fp3, fp4) else "4" * 64
     print(f"[PASS] (setup) fp1 minted: {fp1}")
 
     # ---- Build the scratch repo and its BASE commit: fp1 (real) + fp2
@@ -352,7 +365,46 @@ def main() -> int:
     expect("MISSING PREREQUISITE" not in out, "construction-9-not-conflated-with-first-append",
            "must not be reported as the resolvable-ref-no-tree-yet 'first append has not landed' state", failures)
 
-    print(f"\nepoch_store_constructions_check: 9 construction(s), {len(failures)} failure(s): {failures}")
+    # ---- Construction 10 (M6, TE-170): the builder's real archive.py
+    # tool, run against the scratch repository, archives an entry and the
+    # check accepts it -- proving the check against the TOOL's own real
+    # data path, not this script's hand-rolled copy+rmtree every other
+    # construction above uses. archive.py is read-only to this seat; it is
+    # invoked as a subprocess, never modified. ----
+    checkout_new_branch(repo, args.git, "construction-10", base_sha)
+    copy_entry(repo, fp1, fp4)
+    c10_base_sha = commit_all(repo, args.git, "construction 10 commit 1: append fp4 (to be archived by the real tool)")
+    archive_tool = repo_root / "tools" / "epoch-store" / "archive.py"
+    archive_proc = subprocess.run([sys.executable, str(archive_tool), fp4, "--repo-root", str(repo)],
+                                   capture_output=True, text=True)
+    if archive_proc.returncode != 0:
+        expect(False, "construction-10-archive-tool-succeeds",
+               f"tools/epoch-store/archive.py exited {archive_proc.returncode}: "
+               f"{archive_proc.stdout}{archive_proc.stderr}", failures)
+    else:
+        commit_all(repo, args.git, "construction 10 commit 2: archive.py moved fp4 to archive/")
+        out = captured_check_parent_commit(repo, c10_base_sha)
+        expect("FAIL" not in out and fp4 in out, "construction-10-archive-tool-accepted",
+               "an entry archived by the real archive.py tool (not this script's hand-rolled move) must be "
+               "accepted (no FAIL rows) -- M6", failures)
+
+    # ---- Construction 11 (M6, TE-170): a raw deletion that bypasses
+    # archive.py entirely (no archive/ twin at all) is refused -- pairs
+    # construction 10's green, tool-driven path with a red one that skips
+    # the tool. The tool's own refusal branches are not exercised here (it
+    # is read-only to this seat); this construction proves the CHECK still
+    # refuses a deletion the tool was never asked to perform. ----
+    checkout_new_branch(repo, args.git, "construction-11", base_sha)
+    copy_entry(repo, fp1, fp5)
+    c11_base_sha = commit_all(repo, args.git, "construction 11 commit 1: append fp5")
+    shutil.rmtree(contract.entry_dir(repo, contract.LIVE_DIR, fp5))
+    commit_all(repo, args.git, "construction 11 commit 2: delete fp5 directly, bypassing archive.py")
+    out = captured_check_parent_commit(repo, c11_base_sha)
+    expect(contract.STATUS_ENTRY_MODIFIED in out and fp5 in out, "construction-11-raw-deletion-refused",
+           "deleting a live entry directly, without running archive.py, must be reported "
+           "SEMB_EPOCH_ENTRY_MODIFIED -- M6's own red pairing for construction 10's green", failures)
+
+    print(f"\nepoch_store_constructions_check: 11 construction(s), {len(failures)} failure(s): {failures}")
     return 1 if failures else 0
 
 
