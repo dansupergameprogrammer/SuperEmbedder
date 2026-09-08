@@ -235,14 +235,51 @@ void PutU64LE(std::vector<uint8_t>* out, uint64_t v) {
   for (int i = 0; i < 8; ++i) out->push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xFF));
 }
 
+// TE-172 (N-7, D-SLM6390 item 2): the cut rule this recomputation applies,
+// realized independently from the RULING'S OWN WORDS -- "each document is
+// the longest byte prefix on a UTF-8 boundary whose tokenized length under
+// the handle's own tokenizer is at most context_cap - 1, found by
+// tokenizing prefixes" -- not read from
+// src/superembedder/encoder.cpp's CutWbDocumentText. D-SLM6341's ORIGINAL
+// rule ("cut at context_cap-1 at open") is the same rule; what changed at
+// TE-165 is HOW it is realized -- a byte-prefix search through the real
+// tokenizer, not a tokenize-then-truncate-the-id-array -- and this
+// recomputation now matches that. Walks UTF-8 character boundaries
+// forward, tokenizing each candidate prefix, stopping at the first
+// boundary whose own tokenized length exceeds max_content_ids; the empty
+// prefix (0 ids) is always a valid answer, so `best` starts at 0 rather
+// than assuming the first boundary fits.
+std::string_view CutWbDocumentTextForTest(const superslm::TokenizerView& tokenizer, std::string_view text,
+                                            size_t max_content_ids) {
+  if (tokenizer.Encode(text).size() <= max_content_ids) return text;
+  size_t best = 0;
+  size_t i = 0;
+  while (i < text.size()) {
+    const uint8_t lead = static_cast<uint8_t>(text[i]);
+    size_t width = 1;
+    if ((lead & 0xE0) == 0xC0) width = 2;
+    else if ((lead & 0xF0) == 0xE0) width = 3;
+    else if ((lead & 0xF8) == 0xF0) width = 4;
+    const size_t next = (i + width < text.size()) ? i + width : text.size();
+    if (tokenizer.Encode(text.substr(0, next)).size() > max_content_ids) break;
+    best = next;
+    i = next;
+  }
+  return text.substr(0, best);
+}
+
 // Independent recomputation of W-B's own corpus digest, per sec 4.4b's
 // formula, using ONLY primitives that predate this round (see the file
-// header). Returns false with `why` set on any setup failure (an engine
-// refusal opening the tokenizer, an absent end token, etc.) -- MISSING
+// header) plus CutWbDocumentTextForTest, above (TE-172, realized from
+// D-SLM6390 item 2's own words, not from the product's implementation).
+// Returns false with `why` set on any setup failure (an engine refusal
+// opening the tokenizer, an absent end token, etc.) -- MISSING
 // PREREQUISITE, not a silent wrong digest. `out_cut_count`, when non-NULL,
-// receives the number of the 16 documents whose own tokenized content
-// exceeded context_cap-1 ids and was therefore cut before the end token
-// was appended (TE-155 item 1, D-SLM6341) -- 0 when every document fits.
+// receives the number of the 16 documents whose own real UTF-8-boundary
+// prefix is SHORTER than their full text -- i.e., a document whose full
+// tokenization would have exceeded context_cap-1 ids and was therefore cut
+// before the end token was appended (D-SLM6341, D-SLM6390 item 2) -- 0
+// when every document fits whole.
 bool ComputeExpectedWbDigest(const std::string& model_path, const std::string& tokenizer_path,
                               const std::vector<Record>& corpus, uint8_t out_digest[32], std::string* why,
                               size_t* out_cut_count = nullptr) {
@@ -290,13 +327,14 @@ bool ComputeExpectedWbDigest(const std::string& model_path, const std::string& t
   std::vector<uint8_t> stream;
   PutU64LE(&stream, static_cast<uint64_t>(corpus.size()));
   for (const Record& r : corpus) {
-    std::vector<int32_t> ids = tokenizer.Encode(std::string_view(r.text));
-    if (ids.size() > max_content_ids) {
-      // D-SLM6341's cut, matching ComputeWbDigest's own rule exactly: keep
-      // the leading max_content_ids ids only, BEFORE the end token below.
-      ids.resize(max_content_ids);
-      if (out_cut_count) ++*out_cut_count;
-    }
+    // TE-172 (N-7, D-SLM6390 item 2): the longest UTF-8-boundary byte
+    // prefix whose tokenized length is at most max_content_ids, found
+    // through the tokenizer -- CutWbDocumentTextForTest, above -- not the
+    // retired tokenize-then-resize() rule this comparison used to run.
+    const std::string_view text(r.text);
+    const std::string_view prefix = CutWbDocumentTextForTest(tokenizer, text, max_content_ids);
+    if (prefix.size() < text.size() && out_cut_count) ++*out_cut_count;
+    std::vector<int32_t> ids = tokenizer.Encode(prefix);
     ids.push_back(end_id);  // PS-N: no document frame, terminator appended once (sec 3.1's shared adapter)
 
     // TE-155 item 1 (found by execution, not by construction,
@@ -495,6 +533,95 @@ int main(int argc, char** argv) {
     }
   }
 
+  // ---- Mutation-proof of THIS FILE'S OWN cut rule (TE-172, N-7): the
+  // recomputation's cut must be the RULED rule (D-SLM6390 item 2 -- the
+  // longest UTF-8-boundary byte prefix whose tokenized length is at most
+  // context_cap-1, found through the tokenizer), not the RETIRED one
+  // (tokenize the whole document, then resize() the id array). The two
+  // rules coincide over EVERY (tokenizer, cap) pair this suite's own
+  // achievement cell otherwise drives -- the real candidate never cuts at
+  // cap 32768, and the mechanism pair's near-byte-level tokenizer
+  // coincides with both rules at every budget 1-200 (0 of 200, executed
+  // and confirmed this round) -- so neither existing leg can make cell (a)
+  // fail on this claim; a wrong cut rule would pass it silently, which is
+  // exactly how this diff shipped with the retired rule still in place.
+  //
+  // Driven instead at a (tokenizer, cap) pair this round's own execution
+  // found the two rules DO diverge on (Claude/Poirot's own casebook, N-7
+  // sec 6 F-5, reproduced independently this round): the REAL Qwen3
+  // tokenizer, committed document "wb-03" ("Fresh bread, two coppers a
+  // loaf, and the miller wants his due before the week turns again."),
+  // max_content_ids = 1 (a context_cap of 2) -- the FIRST divergent budget
+  // of the 23 (of 200 swept, 1-200) the real tokenizer diverges on; the
+  // mechanism tokenizer diverges on NONE of the 200, so this cell only
+  // runs on the real leg (a.dims == 1024, this suite's own established
+  // real-leg signal, tests/u1_workspace_seam_test.cpp's precedent) --
+  // running it against the mechanism tokenizer would be vacuous, since
+  // both rules already agree there.
+  //
+  // Both rules' outputs are PINNED to values this round's own execution
+  // established against the real tokenizer artifact (a scratch probe
+  // reproducing both rules over the committed corpus, D:\te172_scratch,
+  // never committed) rather than recomputed a third way here -- a third
+  // implementation could share the same bug as the first two, and pinning
+  // is the mutation-proof: reverting CutWbDocumentTextForTest to the
+  // retired rule makes `ruled` produce the RETIRED value instead, and this
+  // cell goes red. ----
+  if (a.dims == 1024) {
+    const std::vector<uint8_t> tokenizer_bytes = ReadFile(a.tokenizer);
+    superslm::SslmArtifact tokenizer_artifact;
+    superslm::SslmError artifact_error;
+    bool ok = !tokenizer_bytes.empty() && superslm::SslmArtifact::OpenFromMemory(
+                                               tokenizer_bytes.data(), tokenizer_bytes.size(), tokenizer_artifact,
+                                               &artifact_error) == superslm::SslmStatus::Ok;
+    superslm::TokenizerView tokenizer;
+    std::string tok_err;
+    if (ok) ok = superslm::TokenizerView::Open(tokenizer_artifact, tokenizer, &tok_err);
+    if (!ok) {
+      Missing("(cut-rule) the ruled cut (D-SLM6390 item 2) diverges from the retired one at a "
+              "(tokenizer, cap) pair this round's own execution found",
+              "cannot open the real tokenizer artifact independently of ComputeExpectedWbDigest");
+    } else if (corpus.size() <= 3 || corpus[3].id != "wb-03") {
+      Missing("(cut-rule) the ruled cut (D-SLM6390 item 2) diverges from the retired one at a "
+              "(tokenizer, cap) pair this round's own execution found",
+              "corpus[3] is not the committed document wb-03 this cell's pinned values are against -- "
+              "the fixture's own document order changed");
+    } else {
+      constexpr size_t kMaxContentIds = 1;  // context_cap 2 -- the first divergent budget (F-5)
+      const std::string_view text(corpus[3].text);
+      const std::vector<int32_t> ruled =
+          tokenizer.Encode(CutWbDocumentTextForTest(tokenizer, text, kMaxContentIds));
+      // The RETIRED rule, reproduced independently right here (not via the
+      // shared helper), so a mutation to the helper alone cannot make both
+      // sides move together and vacuously agree.
+      std::vector<int32_t> retired = tokenizer.Encode(text);
+      if (retired.size() > kMaxContentIds) retired.resize(kMaxContentIds);
+
+      auto ids_to_string = [](const std::vector<int32_t>& ids) {
+        std::string s;
+        for (int32_t id : ids) s += std::to_string(id) + " ";
+        return s;
+      };
+      const std::vector<int32_t> kExpectedRuled = {36731};
+      const std::vector<int32_t> kExpectedRetired = {55653};
+      Verdict(ruled == kExpectedRuled,
+              "(cut-rule) wb-03 cut to max_content_ids=1 under the ruled rule (D-SLM6390 item 2, this "
+              "file's own CutWbDocumentTextForTest) equals the value this round's own execution "
+              "established against the real tokenizer",
+              "ruled=(" + ids_to_string(ruled) + ")");
+      Verdict(retired == kExpectedRetired,
+              "(cut-rule) (control) wb-03 cut to max_content_ids=1 under the RETIRED rule equals the "
+              "value this round's own execution established -- confirms the two rules genuinely diverge "
+              "here, so the cell above can actually fail rather than passing by construction",
+              "retired=(" + ids_to_string(retired) + ")");
+    }
+  } else {
+    Missing("(cut-rule) the ruled cut (D-SLM6390 item 2) diverges from the retired one at a "
+            "(tokenizer, cap) pair this round's own execution found",
+            "mechanism tokenizer: 0 of 200 budgets 1-200 differ between the two rules (executed this "
+            "round) -- no divergent pair exists at this scale to drive");
+  }
+
   // ---- The achievement cell (property a): semb_wb_digest(enc, ...) equals
   // the independent recomputation over the committed corpus, for a handle
   // opened on the same model and tokenizer the recomputation reads.
@@ -509,22 +636,25 @@ int main(int argc, char** argv) {
     if (!ComputeExpectedWbDigest(a.model, a.tokenizer, corpus, expected, &why_expected, &cut_count)) {
       Missing("W-B semb_wb_digest(enc, ...) equals the independent corpus-witness recomputation", why_expected);
     } else {
-      // ---- Cap-cut witness (TE-155 item 1, D-SLM6341): report how many of
-      // the 16 committed documents needed their tokenized content cut to
-      // context_cap-1 ids before the end token was appended. Reported
-      // rather than asserted against a fixed count, since this SAME binary
-      // runs against both the real candidate (context_cap 32768 -- 0
-      // documents expected to cut, since all 16 are short prose) and the
-      // mechanism pair (context_cap 64 -- every document expected to cut,
-      // since the near-byte-level tokenizer produces well over 64 ids for
-      // an 83-108 character document) with no flag telling it which; the
-      // two invocations' own quoted output is where the "0 on real, > 0 on
-      // mechanism" rule (D-SLM6341) is witnessed, per this suite's own
-      // driver (tests/u1_batch_contract_check.py) running this executable
-      // once per leg. ----
+      // ---- Cap-cut witness (D-SLM6341, D-SLM6390 item 2, TE-172 N-7):
+      // report how many of the 16 committed documents needed a SHORTER
+      // prefix than their own full text -- i.e., whose full tokenization
+      // would have exceeded context_cap-1 ids -- before the end token was
+      // appended. Reported rather than asserted against a fixed count,
+      // since this SAME binary runs against both the real candidate
+      // (context_cap 32768 -- 0 documents expected to cut, since all 16
+      // are short prose) and the mechanism pair (context_cap 64 -- every
+      // document expected to cut, since the near-byte-level tokenizer
+      // produces well over 64 ids for an 83-108 character document) with
+      // no flag telling it which; the two invocations' own quoted output
+      // is where the "0 on real, > 0 on mechanism" rule (D-SLM6341) is
+      // witnessed, per this suite's own driver
+      // (tests/u1_batch_contract_check.py) running this executable once
+      // per leg. ----
       Verdict(true,
-              "(cap-cut) documents cut to context_cap-1 content ids before the end token was appended "
-              "(D-SLM6341: semb_encoder_open never refuses on account of the witness corpus)",
+              "(cap-cut) documents cut to a prefix whose tokenized length is at most context_cap-1 content "
+              "ids before the end token was appended (D-SLM6341, D-SLM6390 item 2: semb_encoder_open never "
+              "refuses on account of the witness corpus)",
               std::to_string(cut_count) + " of " + std::to_string(corpus.size()) + " document(s) cut");
 
       semb_encoder enc1 = Open(a);
