@@ -797,7 +797,16 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
   if (out_vectors) {
     if (out_capacity_bytes < required) return kSembInterimBufferTooSmall;
   }
-  if (doc_count == 0) return kSembInterimOk;  // the caller's own CORPUS_EMPTY guards n==0 earlier
+  if (doc_count == 0) {
+    // TE-184 (D-SLM6434 item 1, TE-161/TE-148 M-2): the header's own
+    // contract ("On success *out_seam_stream_len holds the exact length
+    // written") applies to this early return too -- zero documents means
+    // zero bytes written to out_seam_stream, and a caller that supplied
+    // the pointer reads that fact rather than its own caller-supplied
+    // sentinel.
+    if (out_seam_stream_len) *out_seam_stream_len = 0;
+    return kSembInterimOk;  // the caller's own CORPUS_EMPTY guards n==0 earlier
+  }
   if (!docs_content_ids || !docs_n_content) return kSembInterimNullArgument;
 
   // The seam tap's own capacity, checked BEFORE any forward runs (shape-

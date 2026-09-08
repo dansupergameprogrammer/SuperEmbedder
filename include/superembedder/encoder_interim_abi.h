@@ -208,8 +208,22 @@ SembInterimStatus semb_interim_encode_ps_n(SembInterimEncoder* encoder, const in
 // insufficient capacity returns kSembInterimBufferTooSmall with
 // *out_seam_stream_len holding the exact required length, before touching
 // out_seam_stream. On success *out_seam_stream_len holds the exact length
-// written. A caller that wants only rows passes out_seam_stream == nullptr
-// and pays nothing extra (no serialisation call is made per document).
+// written -- including doc_count == 0, where it is written to zero rather
+// than left at whatever the caller supplied. A caller that wants only
+// rows passes out_seam_stream == nullptr and pays nothing extra (no
+// serialisation call is made per document).
+//
+// out_vectors == nullptr AND out_seam_stream == nullptr together (TE-184,
+// D-SLM6434 item 1, TE-161 M-1): every document's forward still runs --
+// this function has no third mode that skips the encode itself -- but both
+// output halves are skipped, so nothing is written anywhere and the call
+// is, from the caller's own observable side, a no-op that still reports
+// kSembInterimOk (or whatever refusal the forward itself produces).
+// Unreached by either caller in this tree today (the public verb always
+// supplies at least one of the two; ComputeWbDigest always supplies the
+// seam), but a shared internal ABI two independent callers compose
+// against is a state a future caller can reach, so it is pinned here
+// rather than left silent: intentional, and this is its contract.
 SembInterimStatus semb_interim_encode_batch_ps_n(
     SembInterimEncoder* encoder, const int32_t* const* docs_content_ids,
     const size_t* docs_n_content, size_t doc_count, size_t chunk_budget, float* out_vectors,
