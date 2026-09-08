@@ -65,9 +65,10 @@
 // header's own count, per the dispatch's own standing constraint).
 //
 // THE PARTITION THIS CONTRACT FIXES between the three statuses, so the
-// check (tests/epoch_store_check.py) and the six constructions
-// (tests/epoch_store_constructions_check.py) agree on which status a given
-// mutation produces, and so the builder's own product code, once it
+// check (tests/epoch_store_check.py) and the constructions population
+// (tests/epoch_store_constructions_check.py, eleven as of TE-170/TE-174)
+// agree on which status a given mutation produces, and so the builder's
+// own product code, once it
 // exists, is graded against a fixed rather than an improvised meaning:
 //   - vectors.f32 and/or row-digest.tsv differ from the parent commit's
 //     entry at the SAME fingerprint path, lineage.tsv held fixed

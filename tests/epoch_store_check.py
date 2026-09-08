@@ -296,11 +296,29 @@ def check_parent_commit(repo_root: Path, parent_ref: str) -> None:
                 "'store's own first append has not landed yet' state (S5, TE-170)")
         return
 
+    # M11, TE-174: read the archive/ tree before the live-tree message below
+    # is chosen, so a parent commit with no live/ tree because every entry
+    # was archived is distinguished from one that has genuinely never seen
+    # a first append -- the prior version of this message named the second
+    # cause for both states, reintroduced into a lifecycle state this
+    # round's own C1 fix (TE-170) made routine (every live entry archived).
+    # Read once and reused by the archive-half block below (sec "C1: the
+    # archive half"), never re-fetched.
+    parent_archive = git_show_tree_paths(repo_root, parent_ref, contract.ARCHIVE_DIR)
+    archive_fingerprints_for_message: List[str] = (
+        sorted({k.split("/", 1)[0] for k in parent_archive if "/" in k}) if parent_archive else [])
+
     parent_live = git_show_tree_paths(repo_root, parent_ref, contract.LIVE_DIR)
     parent_fingerprints: List[str] = []
     if parent_live is None:
-        missing(f"(1c) parent commit ({parent_ref}) carries an epoch-store/live/ tree to diff against",
-                "no such tree -- the store's own first append has not landed yet")
+        if archive_fingerprints_for_message:
+            missing(f"(1c) parent commit ({parent_ref}) carries an epoch-store/live/ tree to diff against",
+                    "no such tree -- every live entry has been archived "
+                    f"({len(archive_fingerprints_for_message)} fingerprint(s) under archive/); this is not the "
+                    "store's first append (M11, TE-174)")
+        else:
+            missing(f"(1c) parent commit ({parent_ref}) carries an epoch-store/live/ tree to diff against",
+                    "no such tree -- the store's own first append has not landed yet")
     else:
         verdict(True, f"(1c) parent commit ({parent_ref}) epoch-store/live/ tree read", f"{len(parent_live)} blob(s)")
 
@@ -343,14 +361,15 @@ def check_parent_commit(repo_root: Path, parent_ref: str) -> None:
     # present and byte-identical in HEAD. The prior version of this check
     # read parent_live only, so a live entry archived in one commit could be
     # deleted outright, or silently edited, in a later commit with zero
-    # FAIL rows anywhere. ----
-    parent_archive = git_show_tree_paths(repo_root, parent_ref, contract.ARCHIVE_DIR)
+    # FAIL rows anywhere. `parent_archive` was already read above (M11,
+    # TE-174), so the message this round corrects and this block's own diff
+    # agree on the identical tree read rather than two separate git calls. ----
     if parent_archive is None:
         missing(f"(1c) parent commit ({parent_ref}) carries an epoch-store/archive/ tree to diff against",
                 "no such tree -- nothing has been archived yet")
     else:
         verdict(True, f"(1c) parent commit ({parent_ref}) epoch-store/archive/ tree read", f"{len(parent_archive)} blob(s)")
-        archive_fingerprints = sorted({k.split("/", 1)[0] for k in parent_archive if "/" in k})
+        archive_fingerprints = archive_fingerprints_for_message
         for fp in archive_fingerprints:
             prefix = fp + "/"
             parent_members = {k[len(prefix):]: v for k, v in parent_archive.items() if k.startswith(prefix)}
