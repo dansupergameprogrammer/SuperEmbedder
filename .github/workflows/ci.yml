@@ -35,7 +35,16 @@ jobs:
         os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
+      # TE-164 (U1 slice 3 build): fetch-depth: 0 (full history), not the
+      # default shallow depth-1 clone -- tests/epoch_store_check.py's own
+      # cell 1(c) diffs epoch-store/live/ against `--parent-ref HEAD~1` by
+      # default, and a depth-1 checkout has no HEAD~1 object at all, so
+      # every CI run would report that leg MISSING PREREQUISITE forever
+      # rather than ever actually diffing real parent-commit history once
+      # the store has more than one commit.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
