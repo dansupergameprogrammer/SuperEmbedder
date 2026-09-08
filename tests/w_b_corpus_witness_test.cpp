@@ -46,17 +46,47 @@
 // builder's round adds both, now against the amended two-argument
 // `semb_wb_digest(semb_encoder, uint8_t[32])` signature.
 //
-// THE FOUR PROPERTIES THIS FILE PINS OVER THE HANDLE-SCOPED SHAPE (per
-// `tests/semb_wb_witness_abi_contract.h`'s own header comment): (a) the
-// achievement cell, `semb_wb_digest(enc, ...)` equals the independent
-// recomputation below, over the SAME model and tokenizer `enc` was opened
-// on; (b) two calls on ONE handle agree (determinism within a process);
-// (c) two handles opened on the SAME artifacts agree (the value is a
-// function of the artifacts, not of the handle's own identity or open
-// order); (d) a caller's own `semb_encode_batch` calls, with arbitrary
-// ids, are INERT to it (TE-96 sec 4.7's must-accept). Plus the three
-// calling-convention preconditions the amended shape adds: NULL `enc`,
-// a non-live `enc` cookie, and NULL `out_digest`.
+// THE PROPERTIES THIS FILE PINS OVER THE HANDLE-SCOPED SHAPE, AMENDED
+// TE-160 (S-7). The contract header's own comment names four: (a) the
+// achievement cell, (b) determinism across two calls on one handle, (c)
+// cross-handle agreement, (d) id-inertness. TE-148's review (S-7) found
+// (b) and the original (d) cannot fail as built: `semb_wb_digest`
+// (`src/superembedder/encoder.cpp`) is a `memcpy` from `handle->wb_digest`,
+// a field written ONCE at open, so (b) compared that stored value against
+// itself across two calls on the SAME handle, and the original (d) read the
+// SAME stored bytes before and after a caller's own `semb_encode_batch`
+// calls that never touch it -- neither construction can go red under any
+// behaviour of the product. This file's own disposition, per S-7:
+//
+//   (a) LIVE, unchanged -- the achievement cell: `semb_wb_digest(enc, ...)`
+//       equals the independent recomputation below, over the SAME model
+//       and tokenizer `enc` was opened on.
+//   (b) RETIRED (TE-160/S-7) rather than left green and grading nothing --
+//       StandardsDocument.md sec 5.4's "a test exercises the real workload
+//       ... or it is a smoke test wearing a proof's name, and repetition
+//       does not upgrade it": a construction that cannot fail is not a
+//       weaker determinism test, it is not a test.
+//   (c) LIVE, unchanged -- cross-handle agreement: two handles opened on
+//       the SAME artifacts agree, so the value is a function of the
+//       artifacts, not of the handle's own identity or open order.
+//   (d) REPLACED (TE-160/S-7) with a construction that CAN fail, TE-96 sec
+//       4.7's own text: "ids are inert -- permuting the ids over a fixed
+//       text set leaves every row byte-identical." Fixed texts at fixed
+//       row positions, two DIFFERENT id assignments across those same
+//       positions, every emitted ROW asserted byte-identical. This grades
+//       the BATCH PATH's own row output (`semb_encode_batch`), never the
+//       cached `wb_digest` field the retired (d) read -- the guard-vitality
+//       mutation TE-96 sec 4.5's own W-B row names for this claim ("fold
+//       the id into the tokenizer input") moves a ROW's bytes, never the
+//       cached digest, so only a row-level construction can see it.
+//       Mutation-proved (this file's own section, below).
+//
+// The suite therefore carries THREE live properties over the handle-scoped
+// shape (a, c, and the row-level id-inertness), down from the four the
+// contract header's own comment names -- stated here so a future reader
+// does not recount four live cells that were never four. Plus the three
+// calling-convention preconditions the amended shape adds: NULL `enc`, a
+// non-live `enc` cookie, and NULL `out_digest`.
 //
 // USAGE: --model <.sslm> --tokenizer <.sslm> --dims <n>
 #include <cstdint>
@@ -497,14 +527,11 @@ int main(int argc, char** argv) {
                 "tokenizer (achievement claim: the wiring reads the REAL corpus, not kWbPendingSentinel)",
                 std::string(Name(sa)) + " expected=" + Hex(expected) + " actual=" + Hex(actual));
 
-        // (b) Determinism: two calls on ONE handle agree (D-SLM3978: no
-        // cache, but re-execution must be stable within one process, since
-        // the corpus and the artifact are both fixed).
-        uint8_t again[32];
-        const semb_status sb = semb_wb_digest(enc1, again);
-        Verdict(Is(sb, "SEMB_OK") && std::memcmp(actual, again, 32) == 0,
-                "(b) W-B semb_wb_digest is deterministic across two calls on ONE handle",
-                std::string(Name(sb)) + " " + Hex(again));
+        // (b) RETIRED, TE-160/S-7 (this file's own header comment carries
+        // the full account). `semb_wb_digest` is a memcpy from a field
+        // written once at open, so two calls on one handle comparing that
+        // field against itself cannot fail under any product behaviour --
+        // removed rather than kept as a green cell that grades nothing.
 
         // (c) Cross-handle agreement: a SECOND handle opened on the
         // identical artifacts computes the identical value -- the digest
@@ -525,48 +552,79 @@ int main(int argc, char** argv) {
     }
   }
 
-  // ---- (d) Id-inertness (TE-96 sec 4.7 must-accept): a CALLER's own
-  // semb_encode_batch calls, with arbitrary/permuted ids on UNRELATED
-  // documents, never perturb the internal, compiled-in W-B corpus digest --
-  // the caller's batch calls and the fixed witness corpus are independent.
-  // Both readings are taken on the SAME handle, matching the shape every
-  // other call this file makes to the accessor. ----
+  // ---- (d) Id-inertness over EVERY EMITTED ROW (TE-160/S-7, replacing the
+  // retired construction the review's S-7 found dead): TE-96 sec 4.7's own
+  // text, "ids are inert -- permuting the ids over a fixed text set leaves
+  // every row byte-identical." Three FIXED texts at three FIXED row
+  // positions; two batch calls differing ONLY in which id, from the SAME
+  // id set, is attached to which position -- the ids are PERMUTED across
+  // the fixed positions (a derangement, so every position gets a different
+  // id under the second assignment), the texts and their row order are
+  // not. Every emitted row is asserted byte-identical between the two
+  // calls. This grades the BATCH PATH's own row output (semb_encode_batch),
+  // never the cached wb_digest field the retired construction read -- the
+  // guard-vitality mutation TE-96 sec 4.5's own W-B row names for this
+  // claim ("fold the id into the tokenizer input") moves a ROW's bytes, so
+  // this construction, unlike the retired one, can see it (mutation-proof
+  // executed and filed in this round's own casebook). ----
   {
     semb_encoder enc = Open(a);
     if (enc) {
-      uint8_t before[32];
-      const semb_status sd0 = semb_wb_digest(enc, before);
-      Verdict(Is(sd0, "SEMB_OK"), "(d, setup) semb_wb_digest(enc, ...) before the caller's batch calls", Name(sd0));
+      const std::vector<std::string> texts = {
+          "the first row's own fixed text",
+          "the second row's own fixed text",
+          "the third row's own fixed text",
+      };
+      const std::vector<std::string> ids = {"row-alpha", "row-beta", "row-gamma"};
+      const std::vector<size_t> permuted_order = {1, 2, 0};  // a derangement: ids[1],ids[2],ids[0]
 
-      std::vector<std::pair<std::string, std::string>> perm1 = {{"zeta", "unrelated document one"},
-                                                                  {"alpha", "unrelated document two"}};
-      std::vector<std::pair<std::string, std::string>> perm2 = {{"alpha-2", "unrelated document two"},
-                                                                  {"zeta-2", "unrelated document one"}};
-      for (auto* perm : {&perm1, &perm2}) {
+      auto bake = [&](const std::vector<std::string>& row_ids, std::vector<std::vector<uint8_t>>* out_rows,
+                      semb_status* out_status) {
         std::vector<semb_document> docs;
-        for (auto& [id, text] : *perm) {
+        for (size_t i = 0; i < texts.size(); ++i) {
           semb_document d{};
           d.struct_size = sizeof(semb_document);
-          d.id = id.c_str();
-          d.id_len = id.size();
-          d.utf8 = text.c_str();
-          d.utf8_len = text.size();
+          d.id = row_ids[i].c_str();
+          d.id_len = row_ids[i].size();
+          d.utf8 = texts[i].c_str();
+          d.utf8_len = texts[i].size();
           docs.push_back(d);
         }
-        std::vector<uint8_t> buf(perm->size() * static_cast<size_t>(a.dims) * sizeof(float) + 64, 0xA5);
+        const size_t required = texts.size() * static_cast<size_t>(a.dims) * sizeof(float);
+        std::vector<uint8_t> buf(required + 64, 0xA5);
         auto p = reinterpret_cast<uintptr_t>(buf.data());
         float* aligned = reinterpret_cast<float*>((p + 15) & ~uintptr_t(15));
         size_t req = 0xBAD5EED;
-        semb_encode_batch(enc, docs.data(), docs.size(), aligned, buf.size() - 16, &req);
-      }
+        *out_status = semb_encode_batch(enc, docs.data(), docs.size(), aligned, buf.size() - 16, &req);
+        out_rows->clear();
+        if (*out_status == SEMB_OK) {
+          for (size_t i = 0; i < texts.size(); ++i) {
+            auto b = reinterpret_cast<uint8_t*>(aligned) + i * static_cast<size_t>(a.dims) * sizeof(float);
+            out_rows->emplace_back(b, b + static_cast<size_t>(a.dims) * sizeof(float));
+          }
+        }
+      };
 
-      uint8_t after[32];
-      const semb_status sd1 = semb_wb_digest(enc, after);
-      Verdict(Is(sd1, "SEMB_OK") && std::memcmp(before, after, 32) == 0,
-              "(d) W-B-inertness ids are inert: two caller batch calls with different id permutations on "
-              "unrelated documents leave the internal committed-corpus witness digest UNCHANGED "
-              "(TE-96 sec 4.7 must-accept)",
-              std::string(Name(sd1)) + " before=" + Hex(before) + " after=" + Hex(after));
+      std::vector<std::vector<uint8_t>> rows_a, rows_b;
+      semb_status s_a = -1000, s_b = -1000;
+      bake(ids, &rows_a, &s_a);
+      std::vector<std::string> ids_permuted(texts.size());
+      for (size_t i = 0; i < texts.size(); ++i) ids_permuted[i] = ids[permuted_order[i]];
+      bake(ids_permuted, &rows_b, &s_b);
+
+      bool ok = Is(s_a, "SEMB_OK") && Is(s_b, "SEMB_OK") && rows_a.size() == texts.size() &&
+                rows_b.size() == texts.size();
+      std::string detail = "s_a=" + std::string(Name(s_a)) + " s_b=" + std::string(Name(s_b));
+      if (ok) {
+        for (size_t i = 0; i < texts.size(); ++i) {
+          if (rows_a[i] != rows_b[i]) { ok = false; detail += " row" + std::to_string(i) + "-mismatch"; }
+        }
+      }
+      Verdict(ok,
+              "(d) row-level id-inertness (TE-96 sec 4.7 must-accept, TE-160/S-7): permuting which id "
+              "(of a fixed id set) is attached to which of three FIXED texts at three FIXED row "
+              "positions leaves every emitted row byte-identical between the two calls",
+              detail);
       semb_encoder_close(enc);
     }
   }
