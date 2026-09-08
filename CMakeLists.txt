@@ -112,6 +112,7 @@ set(SEMB_LIBRARY_SOURCES
 	src/superembedder/wb_corpus.cpp
 	src/superembedder/witness_build_generation.cpp
 	src/superembedder/engine_adapter_interim.cpp
+	src/superembedder/json_lite.cpp
 )
 
 semb_compute_source_provenance(superembedder
