@@ -672,3 +672,59 @@ endfunction()
 if(DEFINED SEMB_LIBRARY_SOURCES)
   cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_workspace_tests)
 endif()
+
+# ---------------------------------------------------------------------------
+# TE-163 (U1 slice 4): the bank pair / manifest sidecar / semb_bank_open
+# red suite (Claude/Bach/briefs/te163-slice4-red.md) -- cells 1, 2, 3, 5, 6.
+# Links against symbols undefined at this branch's own base 7af22da
+# (semb_bake_to_path, semb_bank_open, semb_bank_close), so it is
+# EXCLUDE_FROM_ALL; tests/te163_bank_pair_check.py builds it on demand and
+# reports the unresolved symbol(s) by name, the same red-first shape
+# tests/u1_batch_contract_check.py already uses for Slice 2. No K-15 seam
+# observable is needed (bake/open/close are ordinary superembedder entries,
+# not seam-instrumented), so this links plain `superembedder`, not
+# `superembedder_testseam`.
+# ---------------------------------------------------------------------------
+add_executable(te163_bank_pair_test EXCLUDE_FROM_ALL te163_bank_pair_test.cpp)
+target_link_libraries(te163_bank_pair_test PRIVATE superembedder superslm::superslm)
+target_include_directories(te163_bank_pair_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+set(_semb_te163_args --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}")
+if(NOT SEMB_C12B_MODEL STREQUAL "")
+	list(APPEND _semb_te163_args --model "${SEMB_C12B_MODEL}")
+endif()
+if(NOT SEMB_U1_TOKENIZER STREQUAL "")
+	list(APPEND _semb_te163_args --tokenizer "${SEMB_U1_TOKENIZER}")
+endif()
+add_test(
+	NAME te163_bank_pair_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te163_bank_pair_check.py" ${_semb_te163_args}
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+	set_tests_properties(te163_bank_pair_check PROPERTIES LABELS "real_artifact")
+endif()
+
+# TE-163 cell 4: C34 legs (e)/(h), the manifest-honesty scratch-build
+# mutation proof (SEMB_ADAPTER_ID_MISMATCH / SEMB_PS_VERSION_LABEL_MISMATCH).
+# A compiled-in-constant mutation cannot be driven from an already-linked
+# executable -- this driver clones the source tree, edits one label constant
+# in the clone, reconfigures and rebuilds a scratch tree, and asserts the
+# bake refuses by name; restores, rebuilds, asserts it writes. Red at
+# 7af22da: semb_bake_to_path and both compiled-in label constants
+# (SEMB_ADAPTER_SELF_ID, SEMB_PS_VERSION_LABEL) do not exist yet -- this
+# driver reports RED-UNIMPLEMENTED by name rather than failing to configure.
+set(SEMB_TEST_ENGINE_PREFIX_TE163 "${SEMB_ENGINE_PREFIX}" CACHE PATH
+	"C34 (e)/(h) scratch-build mutation proof: the engine install prefix its scratch reconfigure links against")
+add_test(
+	NAME te163_c34_manifest_honesty_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te163_c34_manifest_honesty_check.py"
+		--repo-root "${CMAKE_SOURCE_DIR}"
+		--engine-prefix "${SEMB_TEST_ENGINE_PREFIX_TE163}"
+		--cmake-executable "${CMAKE_COMMAND}"
+		--cxx-compiler "${CMAKE_CXX_COMPILER}"
+		--python-executable "${Python3_EXECUTABLE}"
+		--model "${SEMB_C12B_MODEL}"
+		--tokenizer "${SEMB_U1_TOKENIZER}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
