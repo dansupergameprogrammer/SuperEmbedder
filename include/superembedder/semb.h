@@ -50,7 +50,21 @@ typedef struct semb_bank_opaque* semb_bank;
   X(SEMB_BANK_IDS_COUNT_MISMATCH,          28) \
   X(SEMB_BANK_NONFINITE_ROW,               29) \
   X(SEMB_BANK_ZERO_NORM_ROW,               30) \
-  X(SEMB_BANK_GEOMETRY_CEILING_EXCEEDED,   31)
+  X(SEMB_BANK_GEOMETRY_CEILING_EXCEEDED,   31) \
+  /* TE-191 (D-SLM6467's ruling on F2/F3): provisional, named one per */ \
+  /* class per D-SLM6392's own convention, proposed to the planner    */ \
+  /* for ratification alongside 28-31. FORMAT.md sec 1: "unknown      */ \
+  /* schemaVersion, metric, or dtype" is rejected; schemaVersion has  */ \
+  /* SEMB_MANIFEST_SCHEMA_UNSUPPORTED already, this is metric/dtype's */ \
+  /* own name (semb_bank_open, bank.cpp).                             */ \
+  X(SEMB_BANK_METRIC_DTYPE_UNSUPPORTED,    32) \
+  /* A manifest digest (row_digest recomputed over the payload, or    */ \
+  /* corpus_digest disagreeing with its own provenance.witness copy)  */ \
+  /* disagreeing with what it is checked against (semb_bank_open,     */ \
+  /* bank.cpp). Distinct from SEMB_FINGERPRINT_MISMATCH (the encoder  */ \
+  /* fingerprint's own five-component recomputation) and              */ \
+  /* SEMB_ARTIFACT_SHA_MISMATCH (provenance.artifact_sha).            */ \
+  X(SEMB_BANK_DIGEST_MISMATCH,             33)
 
 typedef enum semb_status {
 #define SEMB_STATUS_ENUM_VALUE_(name, value) name = value,
