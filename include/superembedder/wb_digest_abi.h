@@ -66,16 +66,29 @@ extern "C" {
 // into that handle's own `witness_sha`, in place of the literal
 // `kWbPendingSentinel` it hashed before this round.
 //
-// TE-159 (C-2, D-SLM6354, the conductor's ruling): this digest is derived
-// through THE SAME COMPOSITION `semb_encode_batch` itself wraps
-// (semb_interim_encode_batch_ps_n, encoder_interim_abi.h -- see that
-// function's own seam-tap doc comment), not a second, independent forward.
-// A change to the batch verb's own composition (special-token handling,
-// a document-frame application once PS-1 lands, truncation ordering) moves
-// this digest -- proven by execution, not merely asserted: a scratch build
-// with the composition's own appended-token handling perturbed produced a
-// different digest than the unperturbed build (see this round's own build
-// record for both quoted values).
+// TE-165 (D-SLM6390 items 1-3, re-opening TE-159's C-2/D-SLM6354 on
+// TE-161's own measurement, N-3/D-SLM6385): this digest is derived by
+// calling `ComposeBatch` (src/superembedder/encoder.cpp) with the seam
+// tapped -- the ONE internal batch composition `semb_encode_batch` itself
+// validates the caller's buffers and calls: per-document tokenization,
+// the document frame, the `>= context_cap` refusal, the appended
+// terminator, the single workspace acquisition, the chunk-batched
+// forward. TE-159's own remedy shared only the interim function
+// (`semb_interim_encode_batch_ps_n`) and kept a second, independent
+// tokenize-and-cut inside `ComputeWbDigest`, so a change to the batch
+// verb's OWN tokenize call, document frame or truncation rule did not
+// move this digest -- TE-161's review proved it by executing exactly that
+// perturbation. This digest now reaches the whole composition: a change
+// to the batch verb's own composition (special-token handling, the
+// document frame once PS-1 lands, the tokenizer call, truncation
+// ordering) moves this digest -- proven by execution, both the
+// composition's own appended-token perturbation (unchanged from TE-159)
+// and the document-frame perturbation TE-161 added (see this round's own
+// build record for both quoted digest pairs). W-B's own sixteen
+// documents are prepared as TEXT before the call (`CutWbDocumentText`),
+// the longest UTF-8-boundary byte prefix whose tokenized length is at
+// most `context_cap - 1` -- an input rule, not a second copy of the
+// composition's own tokenize-and-cut.
 semb_status semb_wb_digest(semb_encoder enc, uint8_t out_digest[32]);
 
 }  // extern "C"
