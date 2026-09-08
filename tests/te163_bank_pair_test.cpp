@@ -484,6 +484,53 @@ int main(int argc, char** argv) {
       bool tok_counts_ok = manifest.as_object.count("per_row_token_counts") &&
                             manifest["per_row_token_counts"].arr().size() == wb_docs.size();
       Verdict(tok_counts_ok, label + "/cell1 per_row_token_counts has one entry per row, row order", "");
+
+      // TE-187 bare cell 4 (row 5(b), D-SLM6409(b)): this bake's own act of
+      // encoding is its own witness pass -- provenance.witness.corpus_digest
+      // and the top-level corpus_digest are the SAME value BY CONSTRUCTION
+      // on a legitimately baked manifest. (The refusal side -- a manifest
+      // whose two copies disagree -- is TE-192 item 2's own
+      // "corpus_digest_binding" construction in cell 2.)
+      {
+        const std::string witness_corpus_digest = manifest["provenance"]["witness"]["corpus_digest"].s();
+        const std::string top_level_corpus_digest = manifest["corpus_digest"].s();
+        Verdict(!witness_corpus_digest.empty() && witness_corpus_digest == top_level_corpus_digest,
+                label + "/cell1 provenance.witness.corpus_digest equals the top-level corpus_digest "
+                        "(D-SLM6409(b): this bake's own encoding is its own witness pass)",
+                "witness=" + witness_corpus_digest.substr(0, 16) + "... top_level=" +
+                    top_level_corpus_digest.substr(0, 16) + "...");
+      }
+
+      // TE-187 bare cell 5 (row 5(c), D-SLM6409(c)): through Slice 4,
+      // object_code_sha, engine_object_code_sha, and machine_tier (the
+      // top-level field; provenance.witness.cpu_tier carries the same
+      // convention) still carry the pending-sentinel convention rather
+      // than a computed value -- a guard-vitality claim about what must
+      // NOT YET be true, violated by any one of the three carrying a
+      // computed value ahead of U2. semb_source_sha is explicitly excluded
+      // -- its own circularity is deferred to Slice 7 (D-SLM6443 item 2)
+      // -- never added to this cell's scope until that slice.
+      {
+        auto is_pending_sentinel = [](const std::string& v) {
+          return v.rfind("SEMB-", 0) == 0 && v.find("-PENDING-") != std::string::npos;
+        };
+        const std::string object_code_sha = manifest["provenance"]["object_code_sha"].s();
+        const std::string engine_object_code_sha = manifest["provenance"]["engine_object_code_sha"].s();
+        const std::string machine_tier = manifest["machine_tier"].s();
+        const std::string witness_cpu_tier = manifest["provenance"]["witness"]["cpu_tier"].s();
+        Verdict(is_pending_sentinel(object_code_sha),
+                label + "/cell1 provenance.object_code_sha still carries the pending-sentinel convention "
+                        "(D-SLM6409(c), not yet computed through Slice 4)", object_code_sha);
+        Verdict(is_pending_sentinel(engine_object_code_sha),
+                label + "/cell1 provenance.engine_object_code_sha still carries the pending-sentinel convention "
+                        "(D-SLM6409(c), not yet computed through Slice 4)", engine_object_code_sha);
+        Verdict(is_pending_sentinel(machine_tier),
+                label + "/cell1 the top-level machine_tier still carries the pending-sentinel convention "
+                        "(D-SLM6409(c), not yet computed through Slice 4)", machine_tier);
+        Verdict(is_pending_sentinel(witness_cpu_tier),
+                label + "/cell1 provenance.witness.cpu_tier still carries the pending-sentinel convention "
+                        "(D-SLM6409(c), not yet computed through Slice 4)", witness_cpu_tier);
+      }
     } else if (bake_cap_refused) {
       Missing(label + "/cell1 header/payload/manifest pins, payload identity, SuperFAISS must-accept",
               "this open handle's own context_cap is smaller than an uncut WB document (D-SLM6411 item c); "
