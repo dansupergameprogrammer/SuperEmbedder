@@ -415,6 +415,30 @@ int main(int argc, char** argv) {
     }
   }
 
+  // =========================================================================
+  // TE-193 P-14 -- json_lite's documented exception contract: Parse throws
+  // std::runtime_error on ANY malformed input, including an integer literal
+  // outside int64 range (std::stoll's own std::out_of_range is translated
+  // at the parse site). The cell catches std::exception and checks the
+  // DYNAMIC type, so the unfixed build (out_of_range, a logic_error, not a
+  // runtime_error) is red without terminating the process.
+  // =========================================================================
+  {
+    bool threw = false;
+    bool runtime_type = false;
+    try {
+      (void)semb::json::Parse("[99999999999999999999999999]");
+      threw = false;
+    } catch (const std::exception& e) {
+      threw = true;
+      runtime_type = dynamic_cast<const std::runtime_error*>(&e) != nullptr;
+    }
+    Verdict(threw && runtime_type,
+            label + "/P14 an out-of-int64-range integer parses to std::runtime_error (the documented type)",
+            threw ? (runtime_type ? "std::runtime_error" : "a std::exception that is NOT std::runtime_error")
+                  : "no exception thrown");
+  }
+
   std::printf("\nte196_manifest_binding_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
   return g_failures ? 1 : 0;
 }

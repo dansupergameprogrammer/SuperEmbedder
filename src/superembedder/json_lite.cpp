@@ -428,7 +428,23 @@ class ParserImpl {
     if (i_ < s_.size() && (s_[i_] == '.' || s_[i_] == 'e' || s_[i_] == 'E')) {
       throw std::runtime_error("json_lite: non-integer numbers are not supported");
     }
-    return Value::MakeInt(std::stoll(s_.substr(start, i_ - start)));
+    // TE-193 P-14: std::stoll throws std::out_of_range (a std::logic_error)
+    // on a digit string that does not fit int64 -- and this library's own
+    // contract (json_lite.h) promises std::runtime_error on ANY malformed
+    // input. An integer outside int64 is malformed for every shape this
+    // reader serves (the two documents' numeric fields are all small
+    // non-negative integers), and the only caller today maps whatever
+    // escapes to SEMB_ARTIFACT_UNREADABLE via a std::exception catch --
+    // but a future caller catching the DOCUMENTED type would not have
+    // caught std::out_of_range. Translated here, so the documented type is
+    // exactly what a caller can catch.
+    int64_t parsed = 0;
+    try {
+      parsed = std::stoll(s_.substr(start, i_ - start));
+    } catch (const std::out_of_range&) {
+      throw std::runtime_error("json_lite: integer out of int64 range");
+    }
+    return Value::MakeInt(parsed);
   }
 };
 
