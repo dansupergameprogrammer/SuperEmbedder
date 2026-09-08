@@ -432,7 +432,18 @@ int main(int argc, char** argv) {
     std::string jwhy;
     const std::vector<std::pair<std::string, std::string>> texts = ReadJsonlTexts(a.corpus_jsonl, &jwhy);
     if (texts.empty()) {
-      Missing("(cell 4) vectors.f32 rows equal semb_encode(text) bit for bit", jwhy.empty() ? "empty corpus" : jwhy);
+      // S7 (TE-174): --corpus-jsonl was explicitly given, so an empty,
+      // missing, or unparseable file is a named failure of the real leg,
+      // never MISSING PREREQUISITE -- MISSING PREREQUISITE is reserved for
+      // the artifact (the live entry, the model) being absent from the
+      // host, not for a supplied input the caller failed to provide
+      // correctly. tests/epoch_store_emit.cpp refuses the identical two
+      // inputs (cannot open; a per-document refusal on an empty corpus);
+      // this cell now matches that sibling instead of reporting a state a
+      // run can silently exit 0 under.
+      Verdict(false, "(cell 4) vectors.f32 rows equal semb_encode(text) bit for bit",
+              "--corpus-jsonl was given but " + (jwhy.empty() ? std::string("carries no readable document (empty corpus)") : jwhy) +
+              " -- an empty or unreadable corpus is a FAIL, not MISSING PREREQUISITE (S7, TE-174)");
     } else if (!have_entry) {
       // RED-FIRST, BY DESIGN A FAIL: same reasoning as C2's own live-entry
       // check above -- the store's absence is the unimplemented feature,
