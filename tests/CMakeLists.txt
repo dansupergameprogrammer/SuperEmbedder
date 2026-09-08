@@ -679,7 +679,7 @@ endif()
 # `Claude/Plans/SuperEmbedder_Plan.md` sec 8, C32/C2). Five registrations,
 # one per cell the dispatch's own brief enumerates:
 #   cell 1 -> epoch_store_check              (the store check itself)
-#   cell 2 -> epoch_store_constructions_check (the six constructions)
+#   cell 2 -> epoch_store_constructions_check (the constructions population, eleven as of TE-170/TE-174)
 #   cell 3 -> c2_lineage_equality_test_synthetic / _real_artifact (C2)
 #   cell 4 -> folded into c2_lineage_equality_test_real_artifact
 #   cell 5 -> epoch_store_gitattributes_check
@@ -747,7 +747,7 @@ if(NOT SEMB_C12B_MODEL STREQUAL "")
 	set_tests_properties(epoch_store_check PROPERTIES LABELS "real_artifact")
 endif()
 
-# Cell 2: the six able-to-fail constructions, in a scratch git repository.
+# Cell 2: the constructions population (eleven as of TE-170/TE-174), in a scratch git repository.
 add_test(
 	NAME epoch_store_constructions_check
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/epoch_store_constructions_check.py"

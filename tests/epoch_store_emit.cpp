@@ -108,7 +108,7 @@
 //     --tokens <corpus.tokens.tsv> --terminator-id <n> --out-dir <dir>
 //     [--corpus-jsonl <corpus.jsonl>] [--doc-ids <id1,id2,...>]
 // --doc-ids restricts the run to the named documents, in the order given
-// (used by the six-constructions cell to mint small, fast scratch entries
+// (used by the constructions-population cell to mint small, fast scratch entries
 // rather than the full 239/8-document corpus every time).
 //
 // Exit codes: 0 on success (files written, fingerprint printed); 1 on any
