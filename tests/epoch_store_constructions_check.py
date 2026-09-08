@@ -366,15 +366,34 @@ def main() -> int:
     expect("MISSING PREREQUISITE" not in out, "construction-9-not-conflated-with-first-append",
            "must not be reported as the resolvable-ref-no-tree-yet 'first append has not landed' state", failures)
 
-    # ---- Construction 10 (M6, TE-170): the builder's real archive.py
-    # tool, run against the scratch repository, archives an entry and the
-    # check accepts it -- proving the check against the TOOL's own real
+    # ---- Construction 10 (M6, TE-170; oracle corrected S9, TE-174): the
+    # builder's real archive.py tool, run against the scratch repository,
+    # archives an entry -- proving the check against the TOOL's own real
     # data path, not this script's hand-rolled copy+rmtree every other
     # construction above uses. archive.py is read-only to this seat; it is
-    # invoked as a subprocess, never modified. ----
+    # invoked as a subprocess, never modified.
+    #
+    # S9, TE-174: the prior oracle ("FAIL" not in out and fp4 in out) is a
+    # property of check_parent_commit's OWN OUTPUT, not of what archive.py
+    # actually did to the tree -- a mutant tool that COPIES the three
+    # members to archive/<fp4>/ and never removes live/<fp4>/ (dropping
+    # step 3 of the tool's own header comment) leaves live/<fp4>/ in place,
+    # yet the check still reports zero FAIL rows against a parent commit
+    # that has nothing archived yet (MISSING PREREQUISITE, not a FAIL), so
+    # the old oracle would say True on a tool that never archived anything.
+    # The fix asserts the archive tool's OWN documented postcondition
+    # directly, from the same three per-member SHA-256 values it prints:
+    # live/<fp4>/ is gone, archive/<fp4>/ holds all three members, and
+    # every one is byte-identical to what lived under live/<fp4>/ before
+    # the tool ran -- captured here independently of the tool's own
+    # printed digests, so a tool that also miscomputes what it prints
+    # cannot pass by agreeing with itself. ----
     checkout_new_branch(repo, args.git, "construction-10", base_sha)
     copy_entry(repo, fp1, fp4)
     c10_base_sha = commit_all(repo, args.git, "construction 10 commit 1: append fp4 (to be archived by the real tool)")
+    fp4_live_dir = contract.entry_dir(repo, contract.LIVE_DIR, fp4)
+    fp4_archive_dir = contract.entry_dir(repo, contract.ARCHIVE_DIR, fp4)
+    fp4_before_bytes = {name: (fp4_live_dir / name).read_bytes() for name in contract.MEMBER_FILE_NAMES}
     archive_tool = repo_root / "tools" / "epoch-store" / "archive.py"
     archive_proc = subprocess.run([sys.executable, str(archive_tool), fp4, "--repo-root", str(repo)],
                                    capture_output=True, text=True)
@@ -384,17 +403,44 @@ def main() -> int:
                f"{archive_proc.stdout}{archive_proc.stderr}", failures)
     else:
         commit_all(repo, args.git, "construction 10 commit 2: archive.py moved fp4 to archive/")
+        # The tool's own documented postcondition (S9): the live entry is
+        # gone and the archive entry holds every member, byte-identical to
+        # what was under live/ before the tool ran -- checked directly
+        # against the filesystem, not inferred from the checker's summary.
+        live_gone = not fp4_live_dir.exists()
+        expect(live_gone, "construction-10-live-entry-removed",
+               f"archive.py must remove live/{fp4}/ once every member is moved -- {fp4_live_dir} "
+               f"{'is gone' if live_gone else 'still exists'}", failures)
+        archive_members_ok = fp4_archive_dir.is_dir() and all(
+            (fp4_archive_dir / name).is_file() and (fp4_archive_dir / name).read_bytes() == fp4_before_bytes[name]
+            for name in contract.MEMBER_FILE_NAMES)
+        expect(archive_members_ok, "construction-10-archive-entry-byte-identical",
+               f"archive/{fp4}/ must hold all three members, each byte-identical to live/{fp4}/'s own bytes "
+               "before the move -- a copy-only tool that leaves live/ in place must fail this, S9", failures)
+        # The checker's own read is still worth confirming (a real move it
+        # cannot see would be its own defect), but per S9 it is no longer
+        # the sole oracle -- the two assertions above are what a copy-only
+        # mutant cannot pass.
         out = captured_check_parent_commit(repo, c10_base_sha)
-        expect("FAIL" not in out and fp4 in out, "construction-10-archive-tool-accepted",
+        expect("FAIL" not in out and fp4 in out, "construction-10-archive-tool-accepted-by-checker",
                "an entry archived by the real archive.py tool (not this script's hand-rolled move) must be "
-               "accepted (no FAIL rows) -- M6", failures)
+               "accepted (no FAIL rows) by the checker's own read -- M6", failures)
 
     # ---- Construction 11 (M6, TE-170): a raw deletion that bypasses
     # archive.py entirely (no archive/ twin at all) is refused -- pairs
     # construction 10's green, tool-driven path with a red one that skips
-    # the tool. The tool's own refusal branches are not exercised here (it
-    # is read-only to this seat); this construction proves the CHECK still
-    # refuses a deletion the tool was never asked to perform. ----
+    # the tool. archive.py itself has no deletion mode (its only two
+    # branches are "move to archive/, verified" and a named refusal, per
+    # its own header comment) -- there is no "tool's own deletion path" to
+    # invoke, so a raw filesystem deletion is the only way to construct
+    # "the check must refuse a live entry removed without the tool ever
+    # running." This is deliberately the same mutation shape construction
+    # 6 already exercises (a live entry removed with no archive/ twin);
+    # kept here as its own construction because M6's own pairing is
+    # tool-driven-accept (10) beside non-tool-driven-refuse (11), not
+    # because the check's refusal logic differs by construction -- S9's
+    # own gap was specific to construction 10's oracle, never to this
+    # one's. ----
     checkout_new_branch(repo, args.git, "construction-11", base_sha)
     copy_entry(repo, fp1, fp5)
     c11_base_sha = commit_all(repo, args.git, "construction 11 commit 1: append fp5")
