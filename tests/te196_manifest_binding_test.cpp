@@ -233,6 +233,49 @@ int main(int argc, char** argv) {
     }
   }
 
+  // =========================================================================
+  // TE-193 P-4 -- the manifest binds metric and dtype: the bake writes both
+  // into the manifest, and open compares header against manifest so a
+  // header edited after the bake refuses. The metric flip is header-side
+  // (cosine -> l2 is inside FORMAT.md's admitted set, so only the manifest
+  // binding can catch it); the dtype flip is manifest-side (float32 is the
+  // header's only admitted dtype, so a header-side flip would refuse at the
+  // admitted-set check instead of at the binding).
+  // =========================================================================
+  {
+    // Bake half: the freshly baked manifest carries both fields, agreeing
+    // with the header the same bake wrote.
+    {
+      const std::string manifest_text = ReadFileBytes(fs::path(good_stem.string() + ".semb.json"));
+      json_mini::Parser mp(manifest_text);
+      json_mini::Value manifest = mp.Parse();
+      const bool has_both = manifest.as_object.count("metric") && manifest.as_object.count("dtype") &&
+                            manifest["metric"].s() == "cosine" && manifest["dtype"].s() == "float32";
+      Verdict(has_both,
+              label + "/P4 the baked manifest binds metric and dtype (cosine/float32, agreeing with its own header)",
+              has_both ? "metric=cosine dtype=float32" : "missing or disagreeing");
+    }
+    const semb_status st_metric_dtype = ResolveStatus("SEMB_BANK_METRIC_DTYPE_UNSUPPORTED");
+    {
+      const fs::path stem = scratch / (a.stem + "_t_metric_header");
+      if (CopyTriple(good_stem, stem, label + "/P4 header metric cosine -> l2", nullptr,
+                     [](std::string header) { return ReplaceOnce(header, "\"metric\": \"cosine\"", "\"metric\": \"l2\""); })) {
+        TryOpenExpect(label + "/P4 header metric edited cosine -> l2 against an untampered manifest "
+                             "-> SEMB_BANK_METRIC_DTYPE_UNSUPPORTED",
+                      stem, st_metric_dtype, "SEMB_BANK_METRIC_DTYPE_UNSUPPORTED");
+      }
+    }
+    {
+      const fs::path stem = scratch / (a.stem + "_t_dtype_manifest");
+      if (CopyTriple(good_stem, stem, label + "/P4 manifest dtype float32 -> int8",
+                     [](std::string manifest) { return ReplaceOnce(manifest, "\"dtype\": \"float32\"", "\"dtype\": \"int8\""); })) {
+        TryOpenExpect(label + "/P4 manifest dtype edited float32 -> int8 against an untampered header "
+                             "-> SEMB_BANK_METRIC_DTYPE_UNSUPPORTED",
+                      stem, st_metric_dtype, "SEMB_BANK_METRIC_DTYPE_UNSUPPORTED");
+      }
+    }
+  }
+
   std::printf("\nte196_manifest_binding_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
   return g_failures ? 1 : 0;
 }

@@ -242,6 +242,32 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
       }
     }
 
+    // TE-193 P-4: the manifest binds metric and dtype the same way it
+    // binds count/dims below -- the bake writes both into the manifest
+    // (encoder.cpp), and open compares header against manifest so a
+    // header edited after the bake refuses rather than silently changing
+    // how the bank is scored (FORMAT.md sec 2: a cosine bank is normalized
+    // at bake and dot-scored; l2 is a squared distance where lower is
+    // better) and silently retiring the cosine-only zero-norm scan above.
+    // A header/manifest disagreement over either field is the metric/dtype
+    // integrity class -- SEMB_BANK_METRIC_DTYPE_UNSUPPORTED (ordinal 32,
+    // D-SLM6467), the same status the admitted-set check above already
+    // names for this pair of fields. A manifest missing either field is a
+    // required-field absence, the same class every other missing manifest
+    // field here refuses with.
+    {
+      const js::Value* manifest_metric_v = manifest.Find("metric");
+      const js::Value* manifest_dtype_v = manifest.Find("dtype");
+      if (!manifest_metric_v || !manifest_metric_v->IsString() ||
+          !manifest_dtype_v || !manifest_dtype_v->IsString()) {
+        return SEMB_ARTIFACT_UNREADABLE;
+      }
+      if (manifest_metric_v->as_string != metric_v->as_string ||
+          manifest_dtype_v->as_string != dtype_v->as_string) {
+        return SEMB_BANK_METRIC_DTYPE_UNSUPPORTED;
+      }
+    }
+
     // Payload size disagreeing with the header (checked AFTER the ceiling
     // check above, per FORMAT.md's own ordering, so the multiplication
     // below is over already-bounded operands).

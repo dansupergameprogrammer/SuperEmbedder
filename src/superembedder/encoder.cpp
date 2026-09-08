@@ -1401,6 +1401,13 @@ extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* 
     manifest.Set("label:semb_version", js::Value::MakeString(superembedder::Version()));
     manifest.Set("count", js::Value::MakeInt(static_cast<int64_t>(n)));
     manifest.Set("dims", js::Value::MakeInt(static_cast<int64_t>(dims)));
+    // TE-193 P-4: the manifest binds metric and dtype the same way it
+    // binds count/dims -- the bake's own header values, written here so
+    // semb_bank_open can refuse a header edited after the bake (metric is
+    // the one consumer-visible header field an editor could otherwise flip
+    // past the manifest binding with every cross-check still passing).
+    manifest.Set("metric", js::Value::MakeString("cosine"));
+    manifest.Set("dtype", js::Value::MakeString("float32"));
     manifest.Set("row_digest", js::Value::MakeString(Hex(row_digest.data(), 32)));
     manifest.Set("corpus_digest", js::Value::MakeString(Hex(corpus_digest.data(), 32)));
     manifest.Set("machine_tier", js::Value::MakeString(kCpuTierPendingSentinel));
