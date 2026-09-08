@@ -46,11 +46,16 @@
 #include <future>
 #include <new>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include "semb_public_abi_contract.h"
 #include "semb_batch_abi_contract.h"
+#include "semb_wb_witness_abi_contract.h"  // semb_wb_digest -- TE-172 N-9(i) polls it as a second
+                                             // open-time observable alongside semb_encoder_dims; already
+                                             // proven safe alongside the other two contract headers by
+                                             // tests/w_b_corpus_witness_test.cpp's own include set.
 #include "support/semb_workspace_seam.h"
 
 using namespace std::chrono_literals;
@@ -70,6 +75,21 @@ using namespace std::chrono_literals;
 namespace leak_hook {
 std::atomic<int64_t> g_live_bytes{0};
 std::atomic<int64_t> g_live_allocations{0};
+// TE-172 N-9(ii): an ORDINAL-based one-shot failure policy, added to this
+// SAME hook rather than a second one -- a translation unit installs only
+// one global operator new/delete pair, and this file's own leak_hook
+// already carries the D-SLM6353/S-5 alignment fix (the aligned Header,
+// below) every allocator hook in this suite needs. g_alloc_ordinal counts
+// every allocation THIS HOOK has ever served, process-wide, since before
+// main(); g_fail_at_ordinal, when non-zero, names the ordinal whose
+// request throws std::bad_alloc instead of allocating -- one-shot: the
+// throwing call clears it, and a target that is never reached is left
+// armed until DisarmFail() clears it explicitly (a trial whose target
+// ordinal falls beyond that run's own total allocation count).
+std::atomic<uint64_t> g_alloc_ordinal{0};
+std::atomic<uint64_t> g_fail_at_ordinal{0};
+void ArmFailAtOrdinal(uint64_t ordinal) { g_fail_at_ordinal.store(ordinal, std::memory_order_release); }
+void DisarmFail() { g_fail_at_ordinal.store(0, std::memory_order_release); }
 // TE-159 item 5 (S-5, D-SLM6353): plain `struct Header { size_t size; };` is
 // 8 bytes, so `raw + sizeof(Header)` returns memory 8-mod-16 on x64 (malloc
 // itself returns 16-aligned) -- violating `operator new`'s own alignment
@@ -80,6 +100,12 @@ std::atomic<int64_t> g_live_allocations{0};
 // 16-aligned boundary for every allocation this hook returns.
 struct alignas(__STDCPP_DEFAULT_NEW_ALIGNMENT__) Header { size_t size; };
 void* Allocate(std::size_t n) {
+  const uint64_t ordinal = g_alloc_ordinal.fetch_add(1, std::memory_order_relaxed) + 1;
+  const uint64_t target = g_fail_at_ordinal.load(std::memory_order_acquire);
+  if (target != 0 && ordinal == target) {
+    g_fail_at_ordinal.store(0, std::memory_order_release);  // one-shot
+    throw std::bad_alloc();
+  }
   const size_t total = n + sizeof(Header);
   void* raw = std::malloc(total == 0 ? 1 : total);
   if (!raw) throw std::bad_alloc();
@@ -116,6 +142,16 @@ void Verdict(bool ok, const std::string& cell, const std::string& observed) {
   std::fflush(stdout);
 }
 void Phase(const char* text) { std::printf("[PHASE] %s\n", text); std::fflush(stdout); }
+// TE-172: this file's own "not applicable to this leg" reporter, matching
+// the [MISSING PREREQUISITE] convention every other TU in this suite
+// already uses (e.g. tests/w_b_corpus_witness_test.cpp's Missing()) --
+// named rather than silently skipped, so a leg that never drives a cell is
+// visible in the suite's own output.
+void Missing(const std::string& cell, const std::string& why) {
+  ++g_cells;
+  std::printf("[MISSING PREREQUISITE] %s: %s\n", cell.c_str(), why.c_str());
+  std::fflush(stdout);
+}
 const char* Name(semb_status s) { const char* n = semb_status_name(s); return n ? n : "<NULL>"; }
 bool Is(semb_status s, const char* name) { return s == semb_contract::StatusByName(name); }
 
@@ -135,6 +171,16 @@ Args ParseArgs(int argc, char** argv) {
   return a;
 }
 
+// TE-172 N-9(i): counts every SUCCESSFUL open this file's own shared Open()
+// helper has produced. AllocateHandleCookie (src/superembedder/encoder.cpp)
+// is a single process-wide monotonic counter that never resets or reuses a
+// value, and this helper is the ONLY call site of semb_encoder_open in this
+// TU besides N-9(i)'s own direct call (confirmed by inspection) -- so,
+// since no two opens in this file ever run concurrently with each other,
+// this counter lets N-9(i) predict EXACTLY which cookie its own real open
+// will receive, without spending a throwaway open to learn it.
+std::atomic<uint64_t> g_cookie_counter{0};
+
 semb_encoder Open(const Args& a, unsigned slots = 1) {
   semb_config c{};
   c.struct_size = sizeof(c);
@@ -146,6 +192,7 @@ semb_encoder Open(const Args& a, unsigned slots = 1) {
   semb_encoder enc = nullptr;
   const semb_status s = semb_encoder_open(&c, &enc);
   if (!Is(s, "SEMB_OK") || !enc) { Verdict(false, "(setup) open", Name(s)); return nullptr; }
+  g_cookie_counter.fetch_add(1, std::memory_order_acq_rel);
   return enc;
 }
 
@@ -796,6 +843,249 @@ int main(int argc, char** argv) {
   Crossing(a, 2, CallKind::kRaw, CallKind::kBatch, "S-6 cross-entry occupancy: raw occupies, batch contends", false);
   Crossing(a, 2, CallKind::kBatch, CallKind::kBatch, "S-6 cross-entry occupancy: batch occupies, batch contends",
            /*close_check=*/true);
+
+  // =========================================================================
+  // TE-172 N-9(i): the open-time cookie is unobservable to any OTHER
+  // caller until `ready` is published (D-SLM6390 item 4; N-1, D-SLM6383).
+  // Reproduces the reviewer's own N-1 construction
+  // (Claude/Poirot/2c6882c-te167-slice2-reconfirm.md sec 6 F-3): a second
+  // thread polls a GUESSED cookie through semb_encoder_dims and
+  // semb_wb_digest every 50ms for the whole duration of a real-candidate
+  // open (semb_encoder_open, max_concurrency=2, D-SLM6352: ~19.8s on the
+  // real artifact) -- zero observations expected; a third thread attempts
+  // semb_encoder_close on the same guessed cookie 10s into the call (the
+  // reviewer's own delay, chosen so the insert has already happened) --
+  // SEMB_INVALID_HANDLE expected, never a crash on a half-built handle.
+  //
+  // PRODUCT-LEG ONLY (a.dims == 1024, this suite's own established
+  // real-leg signal, tests/u1_workspace_seam_test.cpp's precedent): the
+  // mechanism pair's open completes in well under 50ms, so a polling
+  // thread there would report zero observations by construction --
+  // vacuous, not evidence, whichever way the guard behaves.
+  //
+  // THE GUESSED COOKIE is g_cookie_counter's own next value (above), not
+  // literal cookie 1: every earlier cell in this file has already opened
+  // and closed several handles through the shared Open() helper, and
+  // AllocateHandleCookie never resets or reuses a value. No other thread
+  // opens concurrently before this point, so the next cookie this
+  // process's registry hands out is deterministically g_cookie_counter+1
+  // -- confirmed below by comparing the prediction against the cookie the
+  // real open actually returns.
+  // =========================================================================
+  if (a.dims == 1024) {
+    const uint64_t predicted_next = g_cookie_counter.load(std::memory_order_acquire) + 1;
+    const semb_encoder guess = reinterpret_cast<semb_encoder>(static_cast<uintptr_t>(predicted_next));
+
+    std::atomic<int> observations{0};
+    std::atomic<bool> stop_polling{false};
+    std::thread poller([&] {
+      while (!stop_polling.load(std::memory_order_acquire)) {
+        uint32_t dims_out = 0;
+        if (Is(semb_encoder_dims(guess, &dims_out), "SEMB_OK")) observations.fetch_add(1);
+        uint8_t digest_out[32];
+        if (Is(semb_wb_digest(guess, digest_out), "SEMB_OK")) observations.fetch_add(1);
+        std::this_thread::sleep_for(50ms);
+      }
+    });
+    std::atomic<int> close_during_open_status{-1000};
+    std::thread closer([&] {
+      std::this_thread::sleep_for(10s);  // the reviewer's own F-3 delay -- the insert has happened by then
+      close_during_open_status.store(static_cast<int>(semb_encoder_close(guess)));
+    });
+
+    semb_config c{};
+    c.struct_size = sizeof(c);
+    c.model_path = a.model.data();
+    c.model_path_len = a.model.size();
+    c.tokenizer_path = a.tokenizer.data();
+    c.tokenizer_path_len = a.tokenizer.size();
+    c.max_concurrency = 2;
+    semb_encoder opened = nullptr;
+    const auto t0 = std::chrono::steady_clock::now();
+    const semb_status open_status = semb_encoder_open(&c, &opened);
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    stop_polling.store(true, std::memory_order_release);
+    poller.join();
+    closer.join();
+
+    Verdict(Is(open_status, "SEMB_OK") && opened == guess,
+            "N-9(i) (setup) the predicted next cookie (g_cookie_counter+1) matches the cookie the real "
+            "open actually issued",
+            "predicted=" + std::to_string(predicted_next) + " open_status=" + std::string(Name(open_status)) +
+                " elapsed=" + std::to_string(elapsed) + "s");
+
+    Verdict(observations.load() == 0,
+            "N-9(i) a second thread polling the guessed cookie's semb_encoder_dims/semb_wb_digest every "
+            "50ms for the whole duration of a real open observes ZERO live reads -- the cookie is "
+            "unobservable before `ready` is published (D-SLM6390 item 4, N-1/D-SLM6383)",
+            "observations=" + std::to_string(observations.load()));
+
+    Verdict(Is(static_cast<semb_status>(close_during_open_status.load()), "SEMB_INVALID_HANDLE"),
+            "N-9(i) semb_encoder_close on the guessed cookie, attempted 10s into the open, returns "
+            "SEMB_INVALID_HANDLE -- never a crash on a half-built handle",
+            Name(static_cast<semb_status>(close_during_open_status.load())));
+
+    if (Is(open_status, "SEMB_OK") && opened) {
+      g_cookie_counter.fetch_add(1, std::memory_order_acq_rel);
+      const semb_status close_status = semb_encoder_close(opened);
+      Verdict(Is(close_status, "SEMB_OK"), "N-9(i) (cleanup) close of the real handle succeeds after the "
+                                            "open completes", Name(close_status));
+    }
+  } else {
+    Missing("N-9(i) the open-time cookie is unobservable until ready",
+            "mechanism leg: the open completes in well under the polling interval, so no observation "
+            "window exists to drive -- product leg only");
+  }
+
+  // =========================================================================
+  // TE-172 N-9(ii): no cookie survives a FAILED open. Reproduces the
+  // reviewer's own N-2 construction
+  // (Claude/Poirot/2c6882c-te167-slice2-reconfirm.md sec 6 F-4): operator
+  // new throws on the Nth allocation across the TAIL of the open sequence
+  // (near ComputeWbDigest's own W-B derivation, well after
+  // AllocateHandleCookie has already run -- src/superembedder/encoder.cpp),
+  // sweeping trip points ending at the ordinal an untripped open actually
+  // needs. Reuses THIS FILE'S OWN aligned global-allocator instrument
+  // (leak_hook, above -- the D-SLM6353/S-5 alignment fix applies here too)
+  // rather than a second hook: a TU installs only one global operator
+  // new/delete pair, and leak_hook already is this file's.
+  //
+  // THE DETECTION IS THE FILE'S OWN LIVE-ALLOCATION COUNT (C49's own
+  // technique, above), NOT a semb_encoder_dims probe on the guessed
+  // cookie -- found by execution, not assumed: `ready` (D-SLM6390 item 4)
+  // gates semb_encoder_dims/semb_wb_digest/semb_encoder_close alike
+  // through FindReadyHandleLocked, and a leaked-but-never-ready entry is
+  // refused SEMB_INVALID_HANDLE by that gate WHETHER OR NOT
+  // HandleInsertGuard ever erases it -- so a cookie probe cannot
+  // distinguish "erased" from "leaked but not yet ready" and would pass
+  // under a neutered guard exactly as it passes under the real one
+  // (executed: a scratch build with HandleInsertGuard's destructor
+  // neutered reports 0 leaks under a cookie-probe check -- Claude/Curie's
+  // own record for this round names the reading). The guard's OWN job is
+  // freeing the partially-built handle -- its owned interim encoder and
+  // tokenizer copy included -- and that IS observable: every TRIPPED
+  // trial's own live-allocation count must return to its pre-trial
+  // reading once the failed open returns, with no explicit close (there
+  // is no cookie to close), because the guard's destructor runs on the
+  // SAME stack unwind that returns SEMB_ALLOCATION_FAILED.
+  //
+  // MECHANISM-LEG ONLY: the sweep needs one baseline open plus up to 200
+  // trials; at the real artifact's ~19.8s/open (D-SLM6352) that is
+  // unaffordable, and it is unnecessary -- the guard's own correctness
+  // does not depend on artifact size (TE-165's own build record makes the
+  // identical call for its own re-execution of this construction).
+  // =========================================================================
+  if (a.dims != 1024) {
+    auto open_raw = [&](semb_encoder* out) {
+      semb_config c{};
+      c.struct_size = sizeof(c);
+      c.model_path = a.model.data();
+      c.model_path_len = a.model.size();
+      c.tokenizer_path = a.tokenizer.data();
+      c.tokenizer_path_len = a.tokenizer.size();
+      c.max_concurrency = 1;
+      return semb_encoder_open(&c, out);
+    };
+
+    // Warm-up (unmeasured): one throwaway open+close before any
+    // measurement begins, so a one-time lazy static/pool cost the interim
+    // engine pays on its FIRST open (C49's own established caveat, above)
+    // does not read as this cell's own "excess."
+    {
+      semb_encoder warm = nullptr;
+      open_raw(&warm);
+      if (warm) semb_encoder_close(warm);
+    }
+
+    // Baseline: one untripped open, closed. Its own allocation DELTA (not
+    // the process-wide total, which already carries every earlier cell's
+    // own allocations) is the tail window's own upper edge, and its
+    // live-allocation reading once closed is the reading every TRIPPED
+    // trial is compared against (a full open+close cycle already returns
+    // to its own pre-open reading, C49's own established property, above).
+    const uint64_t before = leak_hook::g_alloc_ordinal.load(std::memory_order_acquire);
+    const int64_t live_before_baseline = leak_hook::g_live_allocations.load(std::memory_order_acquire);
+    semb_encoder baseline = nullptr;
+    const semb_status baseline_status = open_raw(&baseline);
+    const uint64_t after = leak_hook::g_alloc_ordinal.load(std::memory_order_acquire);
+    Verdict(Is(baseline_status, "SEMB_OK") && baseline != nullptr,
+            "N-9(ii) (setup) one untripped mechanism-pair open succeeds, to measure its own allocation cost",
+            Name(baseline_status));
+    if (Is(baseline_status, "SEMB_OK") && baseline) {
+      const uint64_t baseline_delta = after - before;
+      semb_encoder_close(baseline);
+      const int64_t live_after_baseline = leak_hook::g_live_allocations.load(std::memory_order_acquire);
+      Verdict(live_after_baseline == live_before_baseline,
+              "N-9(ii) (setup) the live-allocation count returns to its pre-open reading after the "
+              "untripped open's own close",
+              "before=" + std::to_string(live_before_baseline) + " after=" + std::to_string(live_after_baseline));
+
+      // TE-172: the pass/fail line is a THRESHOLD, not zero, calibrated by
+      // execution against a known-healthy and a known-defective build
+      // (StandardsDocument.md sec 5.4's inert-vs-moving calibration),
+      // because zero is not the correct-code reading. Executed against
+      // THIS committed cell, real (guarded) code: every trial's own
+      // per-trip excess is small and DECELERATES across the sweep (max
+      // single-trial excess 8; cumulative growth over 200 trials ~1,286,
+      // converging rather than compounding -- consistent with a bounded,
+      // one-time cost paid across the first several tail-region trials,
+      // not a per-trip leak). Against a scratch build with
+      // HandleInsertGuard's own destructor neutered (the must-reject,
+      // §"mutation-proof" below): every trial's own excess is
+      // large and does NOT decelerate (~2,381-2,400 every trial, ~477,101
+      // cumulative over 200 trials) -- the entire leaked handle, its
+      // tokenizer copy and its interim encoder included. kLeakThreshold
+      // sits at 25x the healthy build's own observed ceiling and under
+      // 1/10th the defective build's own observed floor -- a minimum
+      // effect size the check can act on, not a razor edge either
+      // execution's own sampling noise could cross.
+      constexpr int64_t kLeakThreshold = 200;
+
+      const uint64_t window = baseline_delta > 200 ? 200 : (baseline_delta > 0 ? baseline_delta : 1);
+      int tripped = 0, leaks = 0, untripped = 0;
+      int64_t max_excess = 0, cumulative_excess = 0;
+      std::string leak_detail;
+      for (uint64_t trial = 0; trial < window; ++trial) {
+        // Sweeps the TAIL, ending exactly at baseline_delta.
+        const uint64_t trip_offset = baseline_delta - window + 1 + trial;
+        const uint64_t trial_before = leak_hook::g_alloc_ordinal.load(std::memory_order_acquire);
+        const int64_t live_before_trial = leak_hook::g_live_allocations.load(std::memory_order_acquire);
+        leak_hook::ArmFailAtOrdinal(trial_before + trip_offset);
+        semb_encoder trial_handle = nullptr;
+        const semb_status trial_status = open_raw(&trial_handle);
+        leak_hook::DisarmFail();  // one-shot already on a fired trip; clears an untripped one too
+
+        if (Is(trial_status, "SEMB_OK") && trial_handle) {
+          ++untripped;  // the target ordinal was beyond this run's own total -- legitimate, not a defect
+          semb_encoder_close(trial_handle);
+        } else {
+          ++tripped;
+          const int64_t live_after_trial = leak_hook::g_live_allocations.load(std::memory_order_acquire);
+          const int64_t excess = live_after_trial - live_before_trial;
+          if (excess > 0) cumulative_excess += excess;
+          if (excess > kLeakThreshold) {
+            ++leaks;
+            max_excess = excess > max_excess ? excess : max_excess;
+            leak_detail += " trip#" + std::to_string(trial) + "(excess=" + std::to_string(excess) + ")";
+          }
+        }
+      }
+      Verdict(leaks == 0,
+              "N-9(ii) no cookie survives a FAILED open: sweeping " + std::to_string(window) +
+                  " injected-allocation-failure trip points across the tail of the open sequence, no "
+                  "TRIPPED trial's own live-allocation excess exceeds the commissioned threshold (" +
+                  std::to_string(kLeakThreshold) + ") -- the guard's rollback frees the leaked handle "
+                  "immediately, with no explicit close",
+              std::to_string(tripped) + " of " + std::to_string(window) + " trip(s) fired, " +
+                  std::to_string(untripped) + " untripped, " + std::to_string(leaks) +
+                  " over-threshold trip(s), max excess " + std::to_string(max_excess) +
+                  ", cumulative excess " + std::to_string(cumulative_excess) + leak_detail);
+    }
+  } else {
+    Missing("N-9(ii) no cookie survives a failed open",
+            "real leg: a 201-open sweep (D-SLM6352: ~19.8s/open) is unaffordable and unnecessary -- the "
+            "guard's own correctness does not depend on artifact size -- mechanism leg only");
+  }
 
   std::printf("\nu1_batch_workspace_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
   return g_failures ? 1 : 0;
