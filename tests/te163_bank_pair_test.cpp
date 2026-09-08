@@ -516,6 +516,39 @@ int main(int argc, char** argv) {
     }
   }
 
+  // TE-187 bare cell 3 (row 3), D-SLM6440's own fix (TE-184 item 3, built
+  // ad hoc in that round's own build record since tests/** was barred to
+  // that seat -- this is the registration TE-187 row 3 names as still
+  // owed): a missing OUTPUT directory refuses SEMB_ARTIFACT_UNREADABLE,
+  // never the generic engine-refused catch-all.
+  {
+    semb_encoder enc = Open(a);
+    if (enc) {
+      DocSet nodir_arena;
+      std::vector<semb_document> nodir_docs = {nodir_arena.Add("n0", "a single small document")};
+      const fs::path nodir_parent = scratch / (a.stem + "_nonexistent_parent");
+      const fs::path nodir_stem = nodir_parent / "out";
+      // The parent directory itself must not exist -- not merely be empty
+      // -- this is the "missing" half of D-SLM6440's own "missing or
+      // unwritable" rule; removed rather than assumed absent, so a prior
+      // run's leftovers cannot silently pass this construction.
+      fs::remove_all(nodir_parent);
+      Verdict(!fs::exists(nodir_parent),
+              label + "/cell1 (setup) the output path's own parent directory does not exist",
+              fs::exists(nodir_parent) ? "EXISTS (setup defect)" : "confirmed absent");
+      const std::string stem_str = nodir_stem.string();
+      const semb_status ns = semb_bake_to_path(enc, nodir_docs.data(), nodir_docs.size(), stem_str.c_str(), stem_str.size());
+      Verdict(ns == st.artifact_unreadable,
+              label + "/cell1 bake into a non-existent parent directory -> SEMB_ARTIFACT_UNREADABLE, not the "
+                      "generic engine-refused catch-all (TE-187 row 3, D-SLM6440)",
+              Name(ns));
+      Verdict(!fs::exists(nodir_parent),
+              label + "/cell1 the refused bake did not create the missing parent directory either",
+              fs::exists(nodir_parent) ? "the directory now exists (defect)" : "confirmed still absent");
+      semb_encoder_close(enc);
+    }
+  }
+
   // =========================================================================
   // CELL 2 -- semb_bank_open/semb_bank_close: a well-formed triple opens;
   // every importer obligation FORMAT.md sec 1 lists refuses, built by
