@@ -1393,6 +1393,28 @@ extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* 
     const std::string manifest_text = js::Write(manifest);
 
     const std::string stem(path_stem, path_stem_len);
+
+    // TE-184 (D-SLM6440): a missing (or, so far as this check can tell,
+    // unwritable) output directory is a path/output problem -- checked
+    // explicitly, before AtomicTripleWriter is even constructed, so it
+    // reports SEMB_ARTIFACT_UNREADABLE (this primitive's own path-problem
+    // status, already used above for an empty path_stem) rather than
+    // falling into the generic catch below via AtomicTripleWriter's
+    // temp-file open failure, which reads as an engine/model failure to a
+    // caller. Found against a real clean-room build tree whose `_scratch`
+    // output directory did not yet exist (`tools/te166_bake_239_timer.cpp`,
+    // D-SLM6436): root-caused to AtomicTripleWriter::WriteFile's
+    // std::ofstream failing to open the temp file and throwing
+    // std::runtime_error, indistinguishable at the generic catch from any
+    // other unexpected failure.
+    const std::filesystem::path stem_path(stem);
+    const std::filesystem::path out_dir =
+        stem_path.has_parent_path() ? stem_path.parent_path() : std::filesystem::path(".");
+    std::error_code out_dir_ec;
+    if (!std::filesystem::is_directory(out_dir, out_dir_ec)) {
+      return SEMB_ARTIFACT_UNREADABLE;
+    }
+
     AtomicTripleWriter writer(stem + ".wvbank.json", stem + ".wvbank.bin", stem + ".semb.json");
     writer.Commit(header_text, bin_bytes, manifest_text);
 
@@ -1402,6 +1424,11 @@ extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* 
   } catch (const std::length_error&) {
     return SEMB_ALLOCATION_FAILED;
   } catch (...) {
+    // The output directory's existence is checked explicitly above and
+    // never reaches here; this generic catch is now only an I/O failure
+    // mid-write after that check passed (a race, a permission change
+    // after the check, disk full) or any other unexpected exception this
+    // function's own logic did not anticipate.
     return SEMB_ENGINE_REFUSED;
   }
 }
