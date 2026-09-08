@@ -125,6 +125,8 @@ extern "C" int32_t semb_test_seam_reset(void) {
 #include "superslm/layer_marshal.h"
 #include "superslm/model.h"
 
+#include "superembedder/manifest_labels_abi.h"
+
 using namespace superslm;
 using superslm_marshal::LayerBacking;
 using superslm_marshal::MarshalLayer;
@@ -830,3 +832,22 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
   if (out_seam_stream && out_seam_stream_len) *out_seam_stream_len = seam_offset;
   return kSembInterimOk;
 }
+
+// TE-166 (U1 slice 4, C34 leg (e)): this TU's own compiled-in adapter
+// identity (`Claude/Plans/SuperEmbedder_Plan.md` sec 3.4's label-check
+// table: engine_path_id is checked against the linked adapter TU's own
+// compiled-in identity below). This is the ONE translation unit in this
+// library that names EmbedEntry/RunLayerLoopChunkBatched/etc. (this
+// file's own header comment; C39's singleton scan enforces it) -- the
+// value below names the interim adapter itself, distinct from any future
+// second adapter U3 might add. A plain string literal, located and
+// mutated BY NAME in a scratch clone by
+// `tests/te163_c34_manifest_honesty_check.py`'s own leg (e), never by a
+// linked symbol lookup -- ITS OWN VALUE MUST NOT APPEAR QUOTED ANYWHERE
+// ELSE EARLIER IN THIS FILE (that mutation-driver replaces only the
+// FIRST quoted occurrence of the literal in the whole file, so an
+// earlier quoted copy in a comment would silently absorb the edit and
+// leave this constant, the one this bake actually reads, untouched).
+constexpr char SEMB_ADAPTER_SELF_ID[] = "interim";
+
+extern "C" const char* semb_adapter_self_id() { return SEMB_ADAPTER_SELF_ID; }

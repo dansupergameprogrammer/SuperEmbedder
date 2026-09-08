@@ -29,6 +29,7 @@
 #include "big_uint.h"
 #include "binary32_construct.h"
 #include "superembedder/encoder_interim_abi.h"
+#include "superembedder/manifest_labels_abi.h"
 
 extern "C" SembWaPoolStatus semb_ps_n_dequantize(const int8_t* codes, int64_t m, int64_t e,
                                                   size_t hidden, float* out) {
@@ -76,3 +77,21 @@ extern "C" SembWaPoolStatus semb_ps_n_dequantize(const int8_t* codes, int64_t m,
   for (size_t i = 0; i < hidden; ++i) std::memcpy(&out[i], &bits[i], sizeof(float));
   return kSembOk;
 }
+
+// TE-166 (U1 slice 4, C34 leg (h)): this TU's own compiled-in
+// pooling-scheme label (`Claude/Plans/SuperEmbedder_Plan.md` sec 3.4's
+// label-check table: ps_version is checked against a SEMB_PS_VERSION_LABEL
+// constant compiled in the SAME TU as the pooling epilogue it names).
+// PS-N is the ratified scheme (D-SLM4726: no document frame) and this
+// file is its own dequantize/selection epilogue -- the value below is
+// this TU's own self-report. A plain string literal, located and mutated
+// BY NAME in a scratch clone by
+// `tests/te163_c34_manifest_honesty_check.py`'s own leg (h) (tried
+// against this file first, per that driver's own candidate-file order)
+// -- ITS OWN VALUE MUST NOT APPEAR QUOTED ANYWHERE ELSE EARLIER IN THIS
+// FILE (that mutation-driver replaces only the FIRST quoted occurrence
+// of the literal in the whole file; see engine_adapter_interim.cpp's own
+// identical note for the failure this avoids).
+constexpr char SEMB_PS_VERSION_LABEL[] = "PS-N";
+
+extern "C" const char* semb_ps_n_version_label() { return SEMB_PS_VERSION_LABEL; }
