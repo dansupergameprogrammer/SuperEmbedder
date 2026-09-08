@@ -8,6 +8,24 @@ namespace semb::json {
 
 namespace {
 
+// TE-191 F1: the recursive-descent parser below has no depth or node
+// budget of its own; a hostile header whose value is thousands of nested
+// arrays recurses until the stack is exhausted (an unrecoverable process
+// termination, not a thrown exception -- the outside review's executed
+// probe exited with Windows status 0xC00000FD at depth 5,000; depth 1,000
+// parsed). Both documents this reader serves (FORMAT.md sec 1's header,
+// plan sec 3.4's manifest) nest at most a handful of levels deep in
+// ordinary operation (an object containing a couple of arrays of scalars);
+// kMaxJsonDepth leaves two orders of magnitude of headroom above that
+// while sitting comfortably below the depth the executed probe showed
+// unsafe. kMaxJsonNodes bounds total parsed values so a wide-but-shallow
+// hostile input (many siblings rather than many nesting levels) cannot
+// exhaust memory/time either; it is set well above any legitimate
+// document this project bakes (a manifest's largest array is one entry
+// per row) while still being a finite, checkable ceiling.
+constexpr int kMaxJsonDepth = 200;
+constexpr size_t kMaxJsonNodes = 20'000'000;
+
 void WriteEscapedString(const std::string& s, std::string* out) {
   out->push_back('"');
   for (unsigned char c : s) {
@@ -84,6 +102,32 @@ class ParserImpl {
  private:
   const std::string& s_;
   size_t i_ = 0;
+  int depth_ = 0;
+  size_t node_count_ = 0;
+
+  // TE-191 F1: charged once per parsed value (object, array, string, int,
+  // bool, or null) -- the budget check every ParseValue() call pays before
+  // doing anything else, so a hostile input is refused before it grows any
+  // further rather than after it is fully materialized.
+  void ChargeNode() {
+    if (++node_count_ > kMaxJsonNodes) {
+      throw std::runtime_error("json_lite: node budget exceeded");
+    }
+  }
+
+  // RAII depth guard: entered on '{'/'[' before recursing into the
+  // container's own values, left on return (including via an exception
+  // unwinding through it) -- so depth_ always reflects the live recursion
+  // depth regardless of which branch throws.
+  struct DepthGuard {
+    ParserImpl* p;
+    explicit DepthGuard(ParserImpl* parser) : p(parser) {
+      if (++p->depth_ > kMaxJsonDepth) {
+        throw std::runtime_error("json_lite: nesting depth exceeded");
+      }
+    }
+    ~DepthGuard() { --p->depth_; }
+  };
 
   char Peek() const {
     if (i_ >= s_.size()) throw std::runtime_error("json_lite: unexpected end of input");
@@ -117,6 +161,7 @@ class ParserImpl {
   }
 
   Value ParseValue() {
+    ChargeNode();
     SkipWs();
     const char c = Peek();
     if (c == '{') return ParseObject();
@@ -131,6 +176,7 @@ class ParserImpl {
   }
 
   Value ParseObject() {
+    DepthGuard guard(this);
     Expect('{');
     Value v = Value::MakeObject();
     SkipWs();
@@ -155,6 +201,7 @@ class ParserImpl {
   }
 
   Value ParseArray() {
+    DepthGuard guard(this);
     Expect('[');
     Value v = Value::MakeArray();
     SkipWs();
@@ -171,6 +218,42 @@ class ParserImpl {
       throw std::runtime_error("json_lite: malformed array");
     }
     return v;
+  }
+
+  // Reads exactly four hex digits (a \u escape's own payload, with the
+  // \u already consumed by the caller) and returns the code unit.
+  unsigned int ParseHex4() {
+    unsigned int cp = 0;
+    for (int k = 0; k < 4; ++k) {
+      const char h = Next();
+      cp <<= 4;
+      if (h >= '0' && h <= '9') cp |= static_cast<unsigned int>(h - '0');
+      else if (h >= 'a' && h <= 'f') cp |= static_cast<unsigned int>(h - 'a' + 10);
+      else if (h >= 'A' && h <= 'F') cp |= static_cast<unsigned int>(h - 'A' + 10);
+      else throw std::runtime_error("json_lite: malformed \\u escape");
+    }
+    return cp;
+  }
+
+  // Encodes one Unicode scalar value (BMP or astral -- never a lone
+  // surrogate half, which ParseString's own \u handling below never hands
+  // this function) as UTF-8.
+  static void EncodeUtf8(unsigned int cp, std::string* out) {
+    if (cp <= 0x7F) {
+      out->push_back(static_cast<char>(cp));
+    } else if (cp <= 0x7FF) {
+      out->push_back(static_cast<char>(0xC0 | (cp >> 6)));
+      out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else if (cp <= 0xFFFF) {
+      out->push_back(static_cast<char>(0xE0 | (cp >> 12)));
+      out->push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    } else {
+      out->push_back(static_cast<char>(0xF0 | (cp >> 18)));
+      out->push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
+      out->push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
+      out->push_back(static_cast<char>(0x80 | (cp & 0x3F)));
+    }
   }
 
   std::string ParseString() {
@@ -191,35 +274,50 @@ class ParserImpl {
           case 'r': out.push_back('\r'); break;
           case 't': out.push_back('\t'); break;
           case 'u': {
-            unsigned int cp = 0;
-            for (int k = 0; k < 4; ++k) {
-              const char h = Next();
-              cp <<= 4;
-              if (h >= '0' && h <= '9') cp |= static_cast<unsigned int>(h - '0');
-              else if (h >= 'a' && h <= 'f') cp |= static_cast<unsigned int>(h - 'a' + 10);
-              else if (h >= 'A' && h <= 'F') cp |= static_cast<unsigned int>(h - 'A' + 10);
-              else throw std::runtime_error("json_lite: malformed \\u escape");
+            unsigned int cp = ParseHex4();
+            // TE-191 F5: a lone \u escape was previously encoded as a
+            // standalone BMP code point even when it was one half of a
+            // surrogate pair -- the executed construction showed
+            // "😀" (one Unicode scalar, U+1F600) and the
+            // literal UTF-8 bytes for the same character decoding to
+            // DIFFERENT byte sequences, so a semantic duplicate id
+            // evaded the bytewise uniqueness check. A high surrogate
+            // (0xD800-0xDBFF) must be immediately followed by a low
+            // surrogate (0xDC00-0xDFFF) escape and the pair combines into
+            // one astral code point; either half appearing alone is
+            // malformed JSON and a parse failure (RFC 8259 sec 8.2 /
+            // FORMAT.md sec 1's own "any non-finite value... duplicate or
+            // wrongly-counted ids" obligations depend on strings decoding
+            // to their one true scalar value).
+            if (cp >= 0xD800 && cp <= 0xDBFF) {
+              if (Next() != '\\' || Next() != 'u') {
+                throw std::runtime_error("json_lite: unpaired high surrogate");
+              }
+              const unsigned int low = ParseHex4();
+              if (low < 0xDC00 || low > 0xDFFF) {
+                throw std::runtime_error("json_lite: unpaired high surrogate");
+              }
+              cp = 0x10000u + ((cp - 0xD800u) << 10) + (low - 0xDC00u);
+            } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+              throw std::runtime_error("json_lite: unpaired low surrogate");
             }
-            // Minimal UTF-8 encode of a BMP code point (this library's own
-            // producer never writes ids containing astral-plane escapes;
-            // a caller reading a hand-tampered manifest with one is
-            // refused here rather than mis-decoded).
-            if (cp <= 0x7F) {
-              out.push_back(static_cast<char>(cp));
-            } else if (cp <= 0x7FF) {
-              out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-              out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-            } else {
-              out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-              out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-              out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-            }
+            EncodeUtf8(cp, &out);
             break;
           }
           default:
             throw std::runtime_error("json_lite: malformed escape");
         }
       } else {
+        // TE-191 F5: a raw, unescaped control byte inside a JSON string is
+        // not valid JSON (RFC 8259 sec 7: "the characters that MUST be
+        // escaped" includes U+0000 through U+001F unescaped) -- the
+        // executed construction put a literal newline inside an id string
+        // and open accepted it as SEMB_OK. Escaped forms (\n, \t, \uXXXX
+        // below 0x20) remain accepted; only an unescaped raw byte in this
+        // range is refused.
+        if (static_cast<unsigned char>(c) < 0x20) {
+          throw std::runtime_error("json_lite: raw control byte in string");
+        }
         out.push_back(c);
       }
     }

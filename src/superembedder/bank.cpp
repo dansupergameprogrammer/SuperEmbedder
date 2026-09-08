@@ -27,16 +27,33 @@
 #include "json_lite.h"
 #include "superslm/sha256.h"
 
+#include "superembedder/bank_internal_abi.h"
+#include "superembedder/manifest_labels_abi.h"
+
 // Completes semb.h's own forward declaration (`typedef struct
 // semb_bank_opaque* semb_bank;`, global scope) -- defined here at GLOBAL
 // scope too, not inside the anonymous namespace below, so this is the
 // SAME type the public header names rather than a second, unrelated type
 // that happens to share the name (MSVC C2872 "ambiguous symbol" is the
-// build's own proof the two would otherwise collide). No read accessor
-// exists through an already-open handle at this slice (Slice 5's own
-// semb_query_open reads rows; D-SLM6393 item 2) -- the handle exists to be
-// closed and to have been validated; nothing else is stored.
-struct semb_bank_opaque {};
+// build's own proof the two would otherwise collide).
+//
+// TE-191 F4: previously empty, so an open handle owned nothing and
+// Slice 5's frozen checked path (`semb_query_open` reads the expected
+// fingerprint from the already-open bank, sec 3.1/D-SLM4145) had no field
+// to read without re-opening the manifest itself -- exactly what the
+// checked-path design forbids (open validates once; nothing is re-read
+// from disk afterward). The handle now retains the expected fingerprint
+// semb_bank_open already validated (the same 32 bytes `encoder_fingerprint`
+// decodes to) and the geometry (`count`, `dims`) the header already
+// validated -- both already computed by the checks above, copied once,
+// never re-read from disk after open. `bank_internal_abi.h`'s
+// `semb_bank_debug_state` is the read side, kept internal/non-frozen
+// rather than added to the twelve verbs (sec 3.1, D-SLM4646).
+struct semb_bank_opaque {
+  std::array<uint8_t, 32> fingerprint{};
+  int64_t count = 0;
+  int64_t dims = 0;
+};
 
 namespace {
 
@@ -86,6 +103,22 @@ bool ReadFileBytes(const std::string& path, std::string* out) {
 
 void Hash(const void* data, size_t size, uint8_t out[32]) {
   superslm::Sha256Hash(static_cast<const uint8_t*>(data), size, out);
+}
+// TE-191 F7: FORMAT.md sec 1's payload is raw little-endian float32, not a
+// live, aligned `float[]` -- `std::string`'s storage promises contiguous
+// `char`s only. `memcpy` into a `float` object is the portable decoder;
+// direct typed dereference through a reinterpret_cast is undefined
+// behavior when the source pointer is not `alignof(float)`-aligned (the
+// review's own construction: a build enforcing alignment/object-lifetime
+// rules, or an unaligned input buffer). Every host this project builds
+// for (Windows/Linux/macOS, x86-64 and ARM64) is little-endian, so the
+// memcpy'd bytes are already in the right order; no byte-swap is needed
+// on any currently supported host.
+float DecodeFloatLE(const char* bytes) {
+  static_assert(sizeof(float) == 4, "FORMAT.md payload floats are 4 bytes");
+  float v;
+  std::memcpy(&v, bytes, sizeof(float));
+  return v;
 }
 void UpdateU64(superslm::Sha256* hash, uint64_t value) {
   uint8_t bytes[8];
@@ -178,6 +211,26 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
       return SEMB_ARTIFACT_UNREADABLE;
     }
 
+    // TE-191 F2: FORMAT.md sec 1's own admitted sets -- metric is "dot",
+    // "cosine", or "l2"; dtype is "float32" (the interchange payload's
+    // only defined dtype). Previously only the STRING-ness of these two
+    // fields was checked, so "unknown"/"garbage" opened as SEMB_OK. Both
+    // are FORMAT.md's own single "unknown schemaVersion, metric, or
+    // dtype" importer obligation (schemaVersion already has
+    // SEMB_MANIFEST_SCHEMA_UNSUPPORTED above); SEMB_BANK_METRIC_DTYPE_UNSUPPORTED
+    // is this round's own provisional name for the other two fields of
+    // that same obligation (D-SLM6467; routed to the planner in the build
+    // record).
+    {
+      const bool metric_admitted = metric_v->as_string == "dot" ||
+                                    metric_v->as_string == "cosine" ||
+                                    metric_v->as_string == "l2";
+      const bool dtype_admitted = dtype_v->as_string == "float32";
+      if (!metric_admitted || !dtype_admitted) {
+        return SEMB_BANK_METRIC_DTYPE_UNSUPPORTED;
+      }
+    }
+
     // Payload size disagreeing with the header (checked AFTER the ceiling
     // check above, per FORMAT.md's own ordering, so the multiplication
     // below is over already-bounded operands).
@@ -211,10 +264,10 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
     // A non-finite row value (FORMAT.md sec 1's own importer obligation).
     // D-SLM6392's own proposed name: SEMB_BANK_NONFINITE_ROW.
     {
-      const auto* floats = reinterpret_cast<const float*>(bin_bytes.data());
+      const char* base = bin_bytes.data();
       const size_t total = static_cast<size_t>(count) * static_cast<size_t>(dims);
       for (size_t i = 0; i < total; ++i) {
-        if (!std::isfinite(floats[i])) return SEMB_BANK_NONFINITE_ROW;
+        if (!std::isfinite(DecodeFloatLE(base + i * sizeof(float)))) return SEMB_BANK_NONFINITE_ROW;
       }
     }
 
@@ -222,11 +275,11 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
     // FORMAT.md: "zero-norm rows are a bake-time error" under cosine).
     // D-SLM6392's own proposed name: SEMB_BANK_ZERO_NORM_ROW.
     if (metric_v->as_string == "cosine") {
-      const auto* floats = reinterpret_cast<const float*>(bin_bytes.data());
+      const char* base = bin_bytes.data();
       for (int64_t row = 0; row < count; ++row) {
         double sumsq = 0.0;
         for (int64_t d = 0; d < dims; ++d) {
-          const double v = floats[row * dims + d];
+          const double v = DecodeFloatLE(base + static_cast<size_t>(row * dims + d) * sizeof(float));
           sumsq += v * v;
         }
         if (sumsq == 0.0) return SEMB_BANK_ZERO_NORM_ROW;
@@ -269,6 +322,7 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
     // anything this handle does not already own.
     const js::Value* fingerprint_v = manifest.Find("encoder_fingerprint");
     if (!fingerprint_v || !fingerprint_v->IsString()) return SEMB_ARTIFACT_UNREADABLE;
+    std::array<uint8_t, 32> fingerprint_bytes{};
     {
       static const char* kFields[] = {"model_sha", "tokenizer_sha", "template_sha256", "witness_sha",
                                        "certification_epoch"};
@@ -280,16 +334,110 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
         if (!HexToBytes(field_v->as_string, &bytes)) return SEMB_ARTIFACT_UNREADABLE;
         UpdateField(&hash, bytes);
       }
-      uint8_t recomputed[32];
-      hash.Final(recomputed);
-      if (Hex(recomputed, 32) != fingerprint_v->as_string) return SEMB_FINGERPRINT_MISMATCH;
+      hash.Final(fingerprint_bytes.data());
+      if (Hex(fingerprint_bytes.data(), 32) != fingerprint_v->as_string) return SEMB_FINGERPRINT_MISMATCH;
+    }
+
+    // TE-191 F3+F6: the manifest binds the pair -- previously
+    // semb_bank_open never read or cross-checked manifest count, dims,
+    // row_digest, corpus_digest, the per-row token-count cardinality, or
+    // the two labels this build can verify without an encoder argument,
+    // so a manifest disagreeing with its own paired header/payload (or
+    // with itself) still opened. Each disagreement below is its own named
+    // refusal (D-SLM6467's own ruling on F3+F6):
+    //
+    // count/dims: reuses SEMB_BANK_SIZE_MISMATCH, the existing "size
+    // disagrees with the header" class -- a manifest/header geometry
+    // disagreement is the same kind of defect the bin-size check above
+    // already names.
+    const js::Value* manifest_count_v = manifest.Find("count");
+    const js::Value* manifest_dims_v = manifest.Find("dims");
+    if (!manifest_count_v || manifest_count_v->kind != js::Kind::kInt ||
+        !manifest_dims_v || manifest_dims_v->kind != js::Kind::kInt ||
+        manifest_count_v->as_int != count || manifest_dims_v->as_int != dims) {
+      return SEMB_BANK_SIZE_MISMATCH;
+    }
+
+    // per-row token-count cardinality: one entry per row is the same
+    // cardinality obligation ids already carries above -- a length
+    // disagreement is a size disagreement, reusing the same status.
+    const js::Value* token_counts_v = manifest.Find("per_row_token_counts");
+    if (!token_counts_v || !token_counts_v->IsArray() ||
+        static_cast<int64_t>(token_counts_v->as_array.size()) != count) {
+      return SEMB_BANK_SIZE_MISMATCH;
+    }
+
+    // row_digest: recomputed over the payload bytes just read and
+    // validated above -- SHA-256(bin_bytes), the same construction
+    // semb_bake_to_path itself used to produce the value (encoder.cpp).
+    const js::Value* row_digest_v = manifest.Find("row_digest");
+    if (!row_digest_v || !row_digest_v->IsString()) return SEMB_ARTIFACT_UNREADABLE;
+    {
+      uint8_t recomputed_row_digest[32];
+      Hash(bin_bytes.data(), bin_bytes.size(), recomputed_row_digest);
+      if (Hex(recomputed_row_digest, 32) != row_digest_v->as_string) {
+        return SEMB_BANK_DIGEST_MISMATCH;
+      }
+    }
+
+    // corpus_digest: NOT recomputed here -- the original document text it
+    // hashes (encoder.cpp's own corpus-digest construction: per-row
+    // length-prefixed id || length-prefixed text) is not retained
+    // anywhere in the wvbank pair, only ids and the pooled vectors are, so
+    // nothing on disk lets semb_bank_open re-derive it from first
+    // principles. What open CAN check is the manifest's own internal
+    // self-consistency: D-SLM6409(b) makes provenance.witness.corpus_digest
+    // and the top-level corpus_digest the SAME value by construction
+    // (this bake's own act of encoding is its own witness pass), so a
+    // manifest whose two copies disagree is refused even though the
+    // corpus itself is unavailable to check against.
+    const js::Value* corpus_digest_v = manifest.Find("corpus_digest");
+    const js::Value* witness_v = provenance_v->Find("witness");
+    if (!corpus_digest_v || !corpus_digest_v->IsString() || !witness_v || !witness_v->IsObject()) {
+      return SEMB_ARTIFACT_UNREADABLE;
+    }
+    const js::Value* witness_corpus_digest_v = witness_v->Find("corpus_digest");
+    if (!witness_corpus_digest_v || !witness_corpus_digest_v->IsString()) {
+      return SEMB_ARTIFACT_UNREADABLE;
+    }
+    if (witness_corpus_digest_v->as_string != corpus_digest_v->as_string) {
+      return SEMB_BANK_DIGEST_MISMATCH;
+    }
+
+    // The two labels open can verify without an encoder argument
+    // (D-SLM6391's own "no comparison to any encoder" rule for fingerprint
+    // validity applies the same way here: these are free, handle-less
+    // accessors reporting THIS BUILD's own compiled-in identity, sec 3.4's
+    // label-check table's own mechanism, not a caller-supplied encoder).
+    // superslm_tag_commit is checked by tools/pin-superslm at the point it
+    // writes the lock (sec 3.4's own table); label:semb_version needs no
+    // cell "by construction" (sec 3.4's own table) -- neither is
+    // semb_bank_open's concern.
+    const js::Value* label_engine_path_id_v = manifest.Find("label:engine_path_id");
+    if (!label_engine_path_id_v || !label_engine_path_id_v->IsString() ||
+        label_engine_path_id_v->as_string != semb_adapter_self_id()) {
+      return SEMB_ADAPTER_ID_MISMATCH;
+    }
+    const js::Value* label_ps_version_v = manifest.Find("label:ps_version");
+    if (!label_ps_version_v || !label_ps_version_v->IsString() ||
+        (label_ps_version_v->as_string != semb_ps_n_version_label() &&
+         label_ps_version_v->as_string != semb_ps1_version_label())) {
+      return SEMB_PS_VERSION_LABEL_MISMATCH;
     }
 
     semb_bank cookie = nullptr;
     {
       std::lock_guard<std::mutex> lock(RegistryMutex());
       if (!AllocateHandleCookie(&cookie)) return SEMB_ALLOCATION_FAILED;
-      Registry().emplace(cookie, std::make_unique<semb_bank_opaque>());
+      auto handle = std::make_unique<semb_bank_opaque>();
+      // TE-191 F4: the handle owns its state -- copied once, here, from
+      // values this function already validated; nothing is re-read from
+      // disk after this point (semb_bank_debug_state, bank_internal_abi.h,
+      // is the read side).
+      handle->fingerprint = fingerprint_bytes;
+      handle->count = count;
+      handle->dims = dims;
+      Registry().emplace(cookie, std::move(handle));
     }
     *out = cookie;
     return SEMB_OK;
@@ -317,5 +465,21 @@ extern "C" semb_status semb_bank_close(semb_bank bank) {
     Registry().erase(found);
   }
   closing.reset();
+  return SEMB_OK;
+}
+
+// TE-191 F4 (bank_internal_abi.h): reads exactly what `bank` retained at
+// open -- nothing here re-reads the manifest, header, or payload from
+// disk.
+extern "C" semb_status semb_bank_debug_state(semb_bank bank, uint8_t out_fingerprint[32],
+                                              int64_t* out_count, int64_t* out_dims) {
+  if (!bank || !out_fingerprint || !out_count || !out_dims) return SEMB_NULL_ARGUMENT;
+  std::lock_guard<std::mutex> lock(RegistryMutex());
+  const auto found = Registry().find(bank);
+  if (found == Registry().end()) return SEMB_INVALID_HANDLE;
+  const semb_bank_opaque& state = *found->second;
+  std::memcpy(out_fingerprint, state.fingerprint.data(), state.fingerprint.size());
+  *out_count = state.count;
+  *out_dims = state.dims;
   return SEMB_OK;
 }

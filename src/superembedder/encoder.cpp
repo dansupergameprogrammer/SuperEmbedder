@@ -1155,13 +1155,27 @@ float* Align16(std::vector<float>& storage) {
   return reinterpret_cast<float*>(p);
 }
 
-// TE-166 (U1 slice 4): writes the three sibling files at a stem
-// atomically -- each written to a temp file in the SAME directory first,
-// then renamed into place LAST (`tests/semb_bake_abi_contract.h`'s own
-// "ATOMICALLY" clause: on any non-SEMB_OK return, none of the three files
-// exists). Every validation and self-check in semb_bake_to_path runs
-// BEFORE this is constructed; this class's own job is only to make the
-// three-file WRITE itself all-or-nothing against an I/O failure mid-write.
+// TE-166 (U1 slice 4): writes the three sibling files at a stem -- each
+// written to a temp file in the SAME directory first, then renamed into
+// place, manifest LAST. Every validation and self-check in
+// semb_bake_to_path runs BEFORE this is constructed; on any exception this
+// class's own Rollback() makes the WRITE all-or-nothing against a live,
+// uninterrupted I/O failure -- Commit() either finishes all three renames
+// or (via Rollback) leaves none of the three sibling files in place.
+//
+// TE-191 F6: that guarantee covers a live process; it is NOT crash
+// atomicity across the three-rename SET. Each `std::filesystem::rename`
+// is individually atomic; a process termination or power loss between two
+// of them is not something any in-process catch can undo. Renaming the
+// manifest LAST is what bounds the damage: a termination before it
+// completes leaves either the pre-bake triple entirely untouched, or the
+// new header+payload paired with the OLD manifest -- never a new manifest
+// paired with an old header or payload, because the manifest is the last
+// thing this function ever touches. `semb_bank_open`'s own manifest
+// cross-checks (count, dims, the row digest recomputed over the payload)
+// are what turn that hybrid state into a named refusal
+// (SEMB_BANK_SIZE_MISMATCH / SEMB_BANK_DIGEST_MISMATCH) instead of a
+// silently accepted mismatched pair.
 class AtomicTripleWriter {
  public:
   AtomicTripleWriter(std::string header_path, std::string bin_path, std::string manifest_path)

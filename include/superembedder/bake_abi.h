@@ -28,8 +28,23 @@ extern "C" {
 // `path_stem` (sized UTF-8 span, `path_stem_len` bytes, never
 // NUL-terminated). Computes the rows through the SAME validated call
 // `semb_encode_batch` itself is; every refusal that verb can produce
-// propagates unchanged and nothing is written. Writes atomically: on any
-// non-SEMB_OK return, none of the three sibling files exists.
+// propagates unchanged and nothing is written.
+//
+// On any non-SEMB_OK return from a live, uninterrupted call -- a
+// validation refusal, or a caught I/O exception during the write -- the
+// rollback leaves none of the three sibling files in place (TE-191 F6:
+// this claim covers a RETURN; it says nothing about a crash that never
+// returns at all). The three-file REPLACEMENT itself is NOT atomic as a
+// set: each of the three renames is individually atomic, but a process
+// termination or power loss between them is not undone by any in-process
+// handler. The manifest is renamed LAST (`AtomicTripleWriter::Commit`,
+// encoder.cpp), so a termination before it completes leaves either the
+// pre-bake triple entirely untouched, or the new header+payload paired
+// with the OLD manifest -- never a new manifest paired with an old header
+// or payload. `semb_bank_open`'s own manifest cross-checks (count, dims,
+// and the row digest recomputed over the payload) refuse that hybrid by
+// name (SEMB_BANK_SIZE_MISMATCH / SEMB_BANK_DIGEST_MISMATCH) rather than
+// silently accepting it.
 semb_status semb_bake_to_path(semb_encoder enc, const semb_document* docs, size_t n,
                                const char* path_stem, size_t path_stem_len);
 
