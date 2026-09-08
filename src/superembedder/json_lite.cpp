@@ -18,11 +18,27 @@ namespace {
 // ordinary operation (an object containing a couple of arrays of scalars);
 // kMaxJsonDepth leaves two orders of magnitude of headroom above that
 // while sitting comfortably below the depth the executed probe showed
-// unsafe. kMaxJsonNodes bounds total parsed values so a wide-but-shallow
-// hostile input (many siblings rather than many nesting levels) cannot
-// exhaust memory/time either; it is set well above any legitimate
-// document this project bakes (a manifest's largest array is one entry
-// per row) while still being a finite, checkable ceiling.
+// unsafe.
+//
+// TE-193 P-6: kMaxJsonNodes bounds total parsed values -- and a bound on
+// the COUNT alone does not bound MEMORY, because a wide-but-shallow input
+// (many siblings rather than many nesting levels) is only refused at node
+// kMaxJsonNodes + 1, by which point the tree the budget permits is already
+// materialized: 20,000,006 integer siblings in a 40 MB header cost 3,328 MB
+// of peak working set before the refusal arrived. The parser therefore
+// refuses a wide container AT ITS OWN OPENING, before any sibling is
+// materialized: CountDirectChildren() below scans the container's own span
+// -- strings, escapes and nesting tracked -- at O(1) tree memory, and the
+// container is refused up front when its direct children alone would
+// exceed the remaining budget. The direct-child count is a lower bound on
+// the subtree's node charge (every direct child is itself a parsed value),
+// so the early refusal can never refuse a document the budget admits.
+// A shallow hostile input is thus refused at memory proportional to its
+// input; every other shape is bounded by the per-value charge at the
+// ceiling's own cost, and nesting is bounded by the depth budget. The
+// ceiling stays 20,000,000 total values -- well above any document this
+// project bakes (a manifest's largest arrays are one entry per row) while
+// remaining a finite, checkable ceiling.
 constexpr int kMaxJsonDepth = 200;
 constexpr size_t kMaxJsonNodes = 20'000'000;
 
@@ -175,6 +191,60 @@ class ParserImpl {
     return ParseNumber();
   }
 
+  // TE-193 P-6: counts the DIRECT children of the container whose opening
+  // delimiter was just consumed, without materializing any of them -- a
+  // string-, escape- and nesting-aware scan over the container's own span
+  // (O(bytes) time, O(1) tree memory). Returns true with the child count in
+  // *out when the container's matching close is found; returns false (no
+  // verdict) when the input ends first or the closes mismatch -- that input
+  // is malformed and the parser below refuses it anyway, with the per-value
+  // charge still bounding the budget meanwhile.
+  bool CountDirectChildren(char close, size_t* out) {
+    size_t depth = 0;
+    bool in_string = false;
+    bool escaped = false;
+    size_t commas = 0;
+    for (size_t j = i_; j < s_.size(); ++j) {
+      const char c = s_[j];
+      if (in_string) {
+        if (escaped) {
+          escaped = false;
+        } else if (c == '\\') {
+          escaped = true;
+        } else if (c == '"') {
+          in_string = false;
+        }
+        continue;
+      }
+      if (c == '"') {
+        in_string = true;
+      } else if (c == '[' || c == '{') {
+        ++depth;
+      } else if (c == ']' || c == '}') {
+        if (depth == 0) {
+          if (c != close) return false;  // mismatched close: malformed, no verdict
+          *out = commas + 1;
+          return true;
+        }
+        --depth;
+      } else if (depth == 0 && c == ',') {
+        ++commas;
+      }
+    }
+    return false;  // input ends before the container closes: malformed, no verdict
+  }
+
+  // TE-193 P-6: refuses, at the container's own opening and before any
+  // sibling is materialized, a container whose direct children alone would
+  // exceed the remaining node budget (see the kMaxJsonNodes comment above
+  // for why the per-value charge alone cannot bound memory on this face).
+  void RefuseWideContainer(char close) {
+    size_t children = 0;
+    if (CountDirectChildren(close, &children) && node_count_ + children > kMaxJsonNodes) {
+      throw std::runtime_error("json_lite: node budget exceeded");
+    }
+  }
+
   Value ParseObject() {
     DepthGuard guard(this);
     Expect('{');
@@ -184,6 +254,7 @@ class ParserImpl {
       ++i_;
       return v;
     }
+    RefuseWideContainer('}');
     while (true) {
       SkipWs();
       std::string key = ParseString();
@@ -209,6 +280,7 @@ class ParserImpl {
       ++i_;
       return v;
     }
+    RefuseWideContainer(']');
     while (true) {
       v.as_array.push_back(ParseValue());
       SkipWs();

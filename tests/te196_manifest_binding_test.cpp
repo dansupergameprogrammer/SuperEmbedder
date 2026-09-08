@@ -23,6 +23,12 @@
 #include <string>
 #include <vector>
 
+#if defined(_WIN32)
+#include <windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
+#endif
+
 #include "json_mini.h"
 #include "json_lite.h"
 #include "superembedder/manifest_labels_abi.h"
@@ -162,6 +168,18 @@ std::string ReplaceOnce(std::string s, const std::string& from, const std::strin
   if (pos == std::string::npos) throw std::runtime_error("ReplaceOnce: '" + from + "' not found");
   return s.substr(0, pos) + to + s.substr(pos + from.size());
 }
+
+#if defined(_WIN32)
+// TE-193 P-6's own measurement instrument (the review's sec 6 method): the
+// peak working set of the calling process, read after the open call under
+// test -- the same counter the review quoted 3,328 MB from for the
+// unfixed build.
+size_t PeakWorkingSetBytes() {
+  PROCESS_MEMORY_COUNTERS pmc{};
+  if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) return 0;
+  return pmc.PeakWorkingSetSize;
+}
+#endif
 
 // Opens the triple at `stem`, expecting exactly `expect`, and asserts the
 // refusal shape the bank contract pins (every refused open: *out == NULL).
@@ -347,6 +365,53 @@ int main(int argc, char** argv) {
         TryOpenExpect(label + "/P12 dims over 131,072 still -> SEMB_BANK_GEOMETRY_CEILING_EXCEEDED (control)",
                       stem, st_ceiling, "SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
       }
+    }
+  }
+
+  // =========================================================================
+  // TE-193 P-6 -- a budget-plus-one document refuses DURING parsing, at
+  // bounded memory. kMaxJsonNodes = 20,000,000 (json_lite.cpp) is pinned by
+  // value here on purpose: if the ceiling ever changes, this cell goes red
+  // and names its own assumption. The construction is the review's own
+  // shape: an otherwise-good triple whose header carries one extra member
+  // -- an array of kMaxJsonNodes + 1 integer siblings (~40 MB of JSON).
+  // =========================================================================
+  {
+    constexpr size_t kJsonLiteMaxNodes = 20'000'000;
+    const semb_status st_unreadable = ResolveStatus("SEMB_ARTIFACT_UNREADABLE");
+    const fs::path stem = scratch / (a.stem + "_t_node_budget");
+    if (CopyTriple(good_stem, stem, label + "/P6 budget-plus-one sibling array", nullptr,
+                   [kJsonLiteMaxNodes](std::string header) {
+                     std::string member = ", \"hostile\": [";
+                     member.reserve((kJsonLiteMaxNodes + 1) * 2 + 16);
+                     for (size_t i = 0; i <= kJsonLiteMaxNodes; ++i) {
+                       if (i) member += ',';
+                       member += '0';
+                     }
+                     member += "]}";
+                     return ReplaceOnce(header, "}", member);
+                   })) {
+      TryOpenExpect(label + "/P6 a budget-plus-one wide container refuses during parsing "
+                           "-> SEMB_ARTIFACT_UNREADABLE",
+                    stem, st_unreadable, "SEMB_ARTIFACT_UNREADABLE");
+#if defined(_WIN32)
+      // Before the fix this construction materialized the ~20M-node tree
+      // the budget permits before refusing: peak working set 3,328 MB (the
+      // review's own measurement). After it, the refusal lands at the
+      // container's own opening, at memory proportional to the 40 MB
+      // input. The 1.5 GB bound is not host-sensitive on either side: the
+      // before-fix peak is allocation-determined (20M materialized values
+      // at ~160 bytes each), and the after-fix peak is the input plus CRT
+      // overhead, several times under.
+      const size_t peak = PeakWorkingSetBytes();
+      constexpr size_t kPeakBoundBytes = size_t{1500} * 1000 * 1000;
+      Verdict(peak != 0 && peak < kPeakBoundBytes,
+              label + "/P6 the refusal lands at bounded memory (peak working set < 1.5 GB)",
+              "peak working set = " + std::to_string(peak) + " bytes");
+#else
+      Observed(label + "/P6 peak working set not measured on this platform (no bound asserted; "
+                      "the refusal itself is asserted above)");
+#endif
     }
   }
 
