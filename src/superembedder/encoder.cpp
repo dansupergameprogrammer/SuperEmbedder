@@ -1186,9 +1186,16 @@ class AtomicTripleWriter {
 // written on any non-SEMB_OK return.
 extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* docs, size_t n,
                                           const char* path_stem, size_t path_stem_len) {
-  if (!enc || (!docs && n > 0) || (!path_stem && path_stem_len > 0) || path_stem_len == 0) {
+  // sec 3.1 property 7's own span rule, applied to a path exactly as
+  // semb_config's own path members and semb_bank_open's own `path`
+  // argument already are: (NULL, n>0) is SEMB_NULL_ARGUMENT; an empty
+  // span -- (NULL, 0) or a non-NULL pointer with path_stem_len == 0 -- is
+  // SEMB_ARTIFACT_UNREADABLE (an empty path names no writable location),
+  // never SEMB_NULL_ARGUMENT.
+  if (!enc || (!docs && n > 0) || (!path_stem && path_stem_len > 0)) {
     return SEMB_NULL_ARGUMENT;
   }
+  if (path_stem_len == 0) return SEMB_ARTIFACT_UNREADABLE;
   try {
     HandleLease lease(enc);
     if (!lease.get()) return SEMB_INVALID_HANDLE;
