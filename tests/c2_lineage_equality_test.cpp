@@ -52,6 +52,14 @@
 // --corpus-jsonl supplies the real artifact's own committed text for cell
 // 4's raw-path check (real artifact only, per the dispatch); omitted for
 // the synthetic leg, which exercises C2's own lineage claim alone.
+// CELL 4 BINDS BY DOCUMENT ID, NEVER BY LIST POSITION (S3, TE-170): the
+// text corpus (--corpus-jsonl) and the token corpus (--tokens) are two
+// files nothing else binds together, and vectors.f32's own rows are
+// written in --tokens order (mint.cpp's RunAssemble), not jsonl order.
+// Every id named in --tokens must have a --corpus-jsonl entry -- a missing
+// one is a named FAIL, never a silently smaller graded row count -- and
+// the row read from vectors.f32 for a given document is located by that
+// document's own index in --tokens, never by its index in the jsonl.
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
@@ -441,36 +449,62 @@ int main(int argc, char** argv) {
         std::vector<uint8_t> blob((std::istreambuf_iterator<char>(vf)), std::istreambuf_iterator<char>());
         semb_encoder enc = Open(a);
         if (enc) {
+          // S3, TE-170: the text corpus (--corpus-jsonl) and the token
+          // corpus (--tokens) are bound by DOCUMENT ID, never by list
+          // position -- vectors.f32's own rows are written in --tokens
+          // order (mint.cpp's RunAssemble), while the prior version of
+          // this loop indexed by the jsonl's own position. The two
+          // fixtures agree in order today, but nothing asserted they
+          // must, and a short --corpus-jsonl silently reduced the row
+          // count graded to whatever it happened to contain. Every id
+          // named in --tokens (docs) is now required to have a jsonl
+          // entry, and the row read from vectors.f32 is located by that
+          // document's own index in `docs` -- the store's own corpus
+          // order -- never by its index in `texts`.
+          std::map<std::string, std::string> text_by_id;
+          for (const auto& [id, text] : texts) text_by_id[id] = text;
+
           const size_t row_bytes = static_cast<size_t>(a.dims) * sizeof(float);
-          size_t index = 0;
           int checked = 0, mismatches = 0;
-          for (const auto& [id, text] : texts) {
-            if ((index + 1) * row_bytes > blob.size()) {
-              Verdict(false, "(cell 4) row for '" + id + "'", "vectors.f32 is shorter than corpus order implies");
+          for (size_t index = 0; index < docs.size(); ++index) {
+            const std::string& id = docs[index].id;
+            auto it = text_by_id.find(id);
+            if (it == text_by_id.end()) {
+              Verdict(false, "(cell 4) row for '" + id + "'",
+                      "FAIL -- id present in --tokens but absent from --corpus-jsonl; the text and token corpora "
+                      "are bound by id, not by list position (S3, TE-170)");
               ++mismatches;
-              ++index;
+              continue;
+            }
+            if ((index + 1) * row_bytes > blob.size()) {
+              Verdict(false, "(cell 4) row for '" + id + "'", "vectors.f32 is shorter than --tokens order implies");
+              ++mismatches;
               continue;
             }
             std::vector<float> raw(a.dims);
             size_t required = 0;
             semb_fingerprint fp{};
             fp.struct_size = sizeof(fp);
-            const semb_status es = semb_encode(enc, text.data(), text.size(), raw.data(), raw.size() * sizeof(float),
-                                                &required, &fp);
+            const semb_status es = semb_encode(enc, it->second.data(), it->second.size(), raw.data(),
+                                                raw.size() * sizeof(float), &required, &fp);
             if (es != SEMB_OK) {
               Verdict(false, "(cell 4) row for '" + id + "'", std::string("semb_encode refused: ") + semb_status_name(es));
               ++mismatches;
-              ++index;
               continue;
             }
             const bool match = std::memcmp(raw.data(), blob.data() + index * row_bytes, row_bytes) == 0;
             if (!match) ++mismatches;
             ++checked;
             Verdict(match, "(cell 4) row for '" + id + "' == semb_encode(text) bit for bit", match ? "match" : "MISMATCH");
-            ++index;
           }
           semb_encoder_close(enc);
           std::printf("cell 4 summary: %d checked, %d mismatch(es)\n", checked, mismatches);
+          // S3: the row count graded is asserted equal to the store's own
+          // count (docs.size(), --tokens order) -- a short jsonl must not
+          // silently reduce coverage.
+          Verdict(static_cast<size_t>(checked) == docs.size(),
+                  "(cell 4) every document named in --tokens was graded",
+                  "checked=" + std::to_string(checked) + " docs.size()=" + std::to_string(docs.size()));
         }
       }
     }
