@@ -771,10 +771,20 @@ endif()
 # S7's, and none of the four can distinguish S7 firing from any other cell
 # in the same TU failing (M1, TE-190). Two constructions (an empty file; a
 # path that does not exist),
-# both producing the SAME S7 message suffix by design (c2_lineage_equality_test.cpp's
-# own ternary: "carries no readable document (empty corpus)" for the first,
-# "cannot open <path>" for the second, then the shared "-- an empty or
-# unreadable corpus is a FAIL, not MISSING PREREQUISITE (S7, TE-174)").
+# both reaching the same S7 branch, whose message is c2_lineage_equality_test.cpp's
+# own ternary: "carries no readable document (empty corpus)" for the empty
+# file, "cannot open <path>" for the missing path, then the shared "-- an
+# empty or unreadable corpus is a FAIL, not MISSING PREREQUISITE (S7,
+# TE-174)" tail. TE-190 M3: asserting only the shared tail (as a single
+# regex both _fails_named cells shared) cannot tell the two branches apart
+# -- if the configure-time empty file is absent when ctest runs, the
+# "empty" registration's own command hits the SAME "cannot open <path>"
+# branch the missing-path registration exercises, and the shared-tail
+# regex still matches, so all four cells stay green while only the
+# cannot-open branch is exercised. Each construction below is therefore
+# asserted against its OWN discriminating regex (the empty file's "no
+# readable document"; the missing path's "cannot open"), never the shared
+# tail alone.
 #
 # CTEST PROPERTY FINDING, verified by execution this round rather than
 # assumed: WILL_FAIL and PASS_REGULAR_EXPRESSION do NOT conjoin when set on
@@ -793,7 +803,10 @@ endif()
 # only (the message fact) -- never as one registration combining both
 # properties, which the probe showed does not assert their conjunction.
 file(WRITE "${CMAKE_BINARY_DIR}/_epoch_store_cell_a/empty_corpus.jsonl" "")
-set(_c2_s7_message_regex "an empty or unreadable corpus is a FAIL, not MISSING PREREQUISITE")
+# TE-190 M3: each construction's own discriminating half of the ternary,
+# never the shared tail alone -- see the comment above this block.
+set(_c2_s7_empty_message_regex "no readable document")
+set(_c2_s7_missing_message_regex "cannot open")
 
 add_test(
 	NAME c2_lineage_equality_test_synthetic_empty_corpus_jsonl_exits_nonzero
@@ -820,7 +833,7 @@ add_test(
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 set_tests_properties(c2_lineage_equality_test_synthetic_empty_corpus_jsonl_fails_named PROPERTIES
-	PASS_REGULAR_EXPRESSION "${_c2_s7_message_regex}")
+	PASS_REGULAR_EXPRESSION "${_c2_s7_empty_message_regex}")
 
 add_test(
 	NAME c2_lineage_equality_test_synthetic_missing_corpus_jsonl_exits_nonzero
@@ -847,7 +860,7 @@ add_test(
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 set_tests_properties(c2_lineage_equality_test_synthetic_missing_corpus_jsonl_fails_named PROPERTIES
-	PASS_REGULAR_EXPRESSION "${_c2_s7_message_regex}")
+	PASS_REGULAR_EXPRESSION "${_c2_s7_missing_message_regex}")
 
 # The Python-side support tool cell 1 and cell 2 both shell out to, to
 # materialise an independently-derived store entry (tests/
