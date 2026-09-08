@@ -473,13 +473,23 @@ int main(int argc, char** argv) {
   // ---- Step 9: per-document, INDEX ORDER, first-failing CHECK -------------
   {
     // 9a: struct_size mismatch on document k>0, out_rows untouched.
+    // TE-182 bare cell 5 (D-SLM6434 item 1; TE-148 M-2): out_required_bytes
+    // is routed through buf.required ITSELF here, not a disconnected local
+    // -- RowBuffer::Untouched()'s own `required == 0xBAD5EED` clause was
+    // inert everywhere else in this file (every other cell passes a
+    // separate `req` local, so the member never receives what the product
+    // actually wrote); this is the one call whose own out-param IS the
+    // sentinel Untouched() reads, so a regression that wrote through
+    // out_required_bytes on this refusal path is now caught by name.
     std::vector<semb_document> docs = {docs_arena.Add("d0", "hello"), docs_arena.Add("d1", "world")};
     docs[1].struct_size = sizeof(semb_document) - 1;
     RowBuffer buf(2 * required1);
+    buf.required = 0xBAD5EED;
     size_t req = 0xBAD5EED;
-    semb_status s = semb_encode_batch(enc, docs.data(), docs.size(), buf.data(), buf.capacity_bytes(), &req);
+    semb_status s = semb_encode_batch(enc, docs.data(), docs.size(), buf.data(), buf.capacity_bytes(), &buf.required);
     Verdict(s == st.struct_size_mismatch && buf.Untouched(),
-            "step9a wrong struct_size on document index 1 -> SEMB_STRUCT_SIZE_MISMATCH, out_rows untouched",
+            "step9a wrong struct_size on document index 1 -> SEMB_STRUCT_SIZE_MISMATCH, out_rows untouched, "
+            "out_required_bytes (buf.required, the sentinel Untouched() itself reads) untouched",
             Name(s));
 
     // 9b: id==NULL && id_len>0 on document 0 -> NULL_ARGUMENT.
