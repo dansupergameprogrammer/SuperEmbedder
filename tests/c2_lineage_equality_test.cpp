@@ -323,9 +323,18 @@ int main(int argc, char** argv) {
   std::string why;
   const std::vector<DocTokens> docs = ReadTokensTsv(a.tokens, a.terminator_id, &why);
   if (docs.empty()) {
-    Missing("(setup) --tokens loads at least one document", why.empty() ? "empty corpus" : why);
+    // S10 (TE-176): --tokens is a REQUIRED argument -- refused above with a
+    // usage error (exit 2) when the flag itself is empty -- so reaching
+    // here means it WAS supplied and the file could not be read (missing,
+    // zero-length, or a malformed line). That is a supplied input the
+    // caller failed to provide correctly, not an artifact absent from the
+    // host, so it is a FAIL, never MISSING PREREQUISITE -- the identical
+    // rule cell 4's own S7 fix states below (:435-443) for --corpus-jsonl,
+    // and the sibling tests/epoch_store_emit.cpp already applies to this
+    // same flag (:344-347 cannot-open; :361 no documents selected).
+    Verdict(false, "(setup) --tokens loads at least one document", why.empty() ? "empty corpus" : why);
     std::printf("\nc2_lineage_equality_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
-    return 0;  // setup-only MISSING PREREQUISITE never fails the build.
+    return g_failures ? 1 : 0;
   }
   Verdict(true, "(setup) corpus loaded", a.tokens + " (" + std::to_string(docs.size()) + " documents)");
 
