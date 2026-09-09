@@ -744,6 +744,19 @@ int main(int argc, char** argv) {
                          stem, st.bank_ids_count_mismatch, "SEMB_BANK_IDS_COUNT_MISMATCH");
       }
     }
+    // ids array: long (one more entry than count) -- the third cardinality
+    // direction (TE-193 review P-8): "g1" gains a trailing ", \"g2\"", so the
+    // array holds three entries against the header's unchanged "count": 2.
+    // The construction stays syntactically valid JSON; the refusal is the
+    // ids-cardinality check itself, not a parse failure.
+    {
+      fs::path stem = scratch / (a.stem + "_t_ids_long");
+      if (CopyTriple(good_stem, stem, label + "/cell2 ids array long by one", nullptr,
+                     [](std::string header) { return ReplaceOnce(header, "\"g1\"", "\"g1\", \"g2\""); })) {
+        try_open_expect("ids array long by one -> SEMB_BANK_IDS_COUNT_MISMATCH (TE-183, D-SLM6410; TE-193 P-8)",
+                         stem, st.bank_ids_count_mismatch, "SEMB_BANK_IDS_COUNT_MISMATCH");
+      }
+    }
     // ids array: duplicated (both entries the same id).
     {
       fs::path stem = scratch / (a.stem + "_t_ids_dup");
