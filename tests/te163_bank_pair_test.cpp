@@ -48,6 +48,12 @@
 #include "semb_bake_abi_contract.h"
 #include "semb_bank_abi_contract.h"
 
+// This driver deliberately includes the test-side ABI contracts instead of
+// the product header, so repeat F4's internal declaration here rather than
+// including bank_internal_abi.h (which would redefine the contract types).
+extern "C" semb_status semb_bank_debug_state(semb_bank bank, uint8_t out_fingerprint[32],
+                                               int64_t* out_count, int64_t* out_dims);
+
 #include "superslm/sha256.h"
 
 namespace fs = std::filesystem;
@@ -767,6 +773,33 @@ int main(int argc, char** argv) {
                          stem, st.document_id_duplicate, "SEMB_DOCUMENT_ID_DUPLICATE");
       }
     }
+    // TE-201 item 4(i): ids compare after JSON string decoding.  The first
+    // spelling is a surrogate pair and the second is its literal UTF-8 scalar;
+    // a parser that preserves CESU-8-like surrogate halves would open them as
+    // distinct strings and this exact assertion would fail.
+    {
+      fs::path stem = scratch / (a.stem + "_t_ids_surrogate_duplicate");
+      if (CopyTriple(good_stem, stem, label + "/TE201 ids surrogate-pair duplicate", nullptr,
+                     [](std::string header) {
+                       return ReplaceOnce(header, "\"g0\", \"g1\"",
+                                          "\"\\uD83D\\uDE00\", \"\xF0\x9F\x98\x80\"");
+                     })) {
+        try_open_expect("surrogate-pair id and its literal UTF-8 scalar decode to one id -> "
+                        "SEMB_DOCUMENT_ID_DUPLICATE", stem, st.document_id_duplicate,
+                        "SEMB_DOCUMENT_ID_DUPLICATE");
+      }
+    }
+    // TE-201 item 4(ii): RFC 8259 forbids an unescaped U+0000--U+001F byte in
+    // a JSON string.  This is a literal newline in the header, not the valid
+    // two-byte escape spelling "\\n".
+    {
+      fs::path stem = scratch / (a.stem + "_t_ids_raw_control");
+      if (CopyTriple(good_stem, stem, label + "/TE201 id raw control byte", nullptr,
+                     [](std::string header) { return ReplaceOnce(header, "\"g0\"", "\"raw\ncontrol\""); })) {
+        try_open_expect("raw control byte in an id string -> SEMB_ARTIFACT_UNREADABLE", stem,
+                        st.artifact_unreadable, "SEMB_ARTIFACT_UNREADABLE");
+      }
+    }
     // A non-finite row value.
     {
       fs::path stem = scratch / (a.stem + "_t_nonfinite");
@@ -1061,6 +1094,45 @@ int main(int argc, char** argv) {
       Verdict(bank == nullptr, label + "/cell3 leaves *out == NULL on the fingerprint-mismatch refusal",
               bank == nullptr ? "confirmed" : "NOT NULL");
       if (bank) semb_bank_close(bank);
+    }
+  }
+
+  // =========================================================================
+  // TE-201 item 3 -- F4's retained-handle state survives deletion of the
+  // backing triple.  A copied triple keeps this destructive construction from
+  // disturbing the good triple later cells still require.
+  // =========================================================================
+  {
+    const fs::path stem = scratch / (a.stem + "_t_handle_ownership");
+    if (CopyTriple(good_stem, stem, label + "/TE201 handle owns opened state")) {
+      const std::string stem_str = stem.string();
+      semb_bank bank = nullptr;
+      const semb_status opened = semb_bank_open(stem_str.c_str(), stem_str.size(), &bank);
+      Verdict(opened == st.ok && bank != nullptr,
+              label + "/TE201 F4 copied good triple opens before backing files are deleted -> SEMB_OK", Name(opened));
+      if (opened == st.ok && bank) {
+        uint8_t before[32]{};
+        int64_t count_before = 0, dims_before = 0;
+        const semb_status before_status = semb_bank_debug_state(bank, before, &count_before, &dims_before);
+        Verdict(before_status == st.ok,
+                label + "/TE201 F4 pre-deletion debug state reads the live handle -> SEMB_OK", Name(before_status));
+        fs::remove(fs::path(stem_str + ".wvbank.json"));
+        fs::remove(fs::path(stem_str + ".wvbank.bin"));
+        fs::remove(fs::path(stem_str + ".semb.json"));
+        uint8_t after[32]{};
+        int64_t count_after = 0, dims_after = 0;
+        const semb_status after_status = semb_bank_debug_state(bank, after, &count_after, &dims_after);
+        Verdict(after_status == st.ok && std::memcmp(before, after, sizeof(before)) == 0 &&
+                    count_before == count_after && dims_before == dims_after,
+                label + "/TE201 F4 deleted backing files leave retained fingerprint/count/dims byte-identical -> SEMB_OK",
+                "status=" + std::string(Name(after_status)) + " count=" + std::to_string(count_after) +
+                    " dims=" + std::to_string(dims_after));
+        const semb_status closed = semb_bank_close(bank);
+        Verdict(closed == st.ok, label + "/TE201 F4 close retained handle -> SEMB_OK", Name(closed));
+        const semb_status stale = semb_bank_debug_state(bank, after, &count_after, &dims_after);
+        Verdict(stale == st.invalid_handle,
+                label + "/TE201 F4 debug state after close -> SEMB_INVALID_HANDLE", Name(stale));
+      }
     }
   }
 

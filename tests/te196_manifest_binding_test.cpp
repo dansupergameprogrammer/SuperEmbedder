@@ -170,6 +170,26 @@ std::string ReplaceOnce(std::string s, const std::string& from, const std::strin
   return s.substr(0, pos) + to + s.substr(pos + from.size());
 }
 
+// Removes one complete string-valued object member without leaving an invalid
+// comma behind.  The construction deliberately removes the field rather than
+// changing its value: this is the required-field presence class.
+std::string RemoveRequiredStringField(std::string s, const std::string& key, const std::string& value) {
+  const std::string member = "\"" + key + "\": \"" + value + "\"";
+  const size_t pos = s.find(member);
+  if (pos == std::string::npos) throw std::runtime_error("RemoveRequiredStringField: '" + member + "' not found");
+  size_t end = pos + member.size();
+  if (end < s.size() && s[end] == ',') {
+    ++end;
+    while (end < s.size() && (s[end] == ' ' || s[end] == '\n' || s[end] == '\r' || s[end] == '\t')) ++end;
+    return s.erase(pos, end - pos);
+  }
+  size_t begin = pos;
+  while (begin > 0 && (s[begin - 1] == ' ' || s[begin - 1] == '\n' || s[begin - 1] == '\r' || s[begin - 1] == '\t')) --begin;
+  if (begin == 0 || s[begin - 1] != ',') throw std::runtime_error("RemoveRequiredStringField: member has no removable comma");
+  --begin;
+  return s.erase(begin, end - begin);
+}
+
 #if defined(_WIN32)
 // TE-193 P-6's own measurement instrument (the review's sec 6 method): the
 // peak working set of the calling process, read after the open call under
@@ -229,6 +249,67 @@ int main(int argc, char** argv) {
     const semb_status s = semb_bank_open(good_str.c_str(), good_str.size(), &bank);
     Verdict(s == SEMB_OK, label + "/control the freshly baked good triple opens -> SEMB_OK", Name(s));
     if (s == SEMB_OK) semb_bank_close(bank);
+  }
+
+  // =========================================================================
+  // TE-201 item 1 -- json_lite's nesting ceiling is a separate resource
+  // budget from P-6's node count.  Pin kMaxJsonDepth by value so changing the
+  // library budget makes this driver red rather than silently changing its
+  // stated boundary.  The root object consumes one parser depth: 199 nested
+  // arrays remain within the 200-level ceiling, while 201 exceed it.
+  // =========================================================================
+  {
+    constexpr size_t kJsonLiteMaxDepth = 200;
+    const semb_status st_unreadable = ResolveStatus("SEMB_ARTIFACT_UNREADABLE");
+    auto nested_member = [](size_t arrays) {
+      std::string member = ", \"depth_budget\": ";
+      member.append(arrays, '[');
+      member += '0';
+      member.append(arrays, ']');
+      member += '}';
+      return member;
+    };
+    {
+      const fs::path stem = scratch / (a.stem + "_t_depth_201");
+      if (CopyTriple(good_stem, stem, label + "/TE201 depth budget 201 nested arrays", nullptr,
+                     [&nested_member](std::string header) { return ReplaceOnce(header, "}", nested_member(kJsonLiteMaxDepth + 1)); })) {
+        TryOpenExpect(label + "/TE201 201-deep array-of-arrays refuses -> SEMB_ARTIFACT_UNREADABLE",
+                      stem, st_unreadable, "SEMB_ARTIFACT_UNREADABLE");
+      }
+    }
+    {
+      const fs::path stem = scratch / (a.stem + "_t_depth_199_control");
+      if (CopyTriple(good_stem, stem, label + "/TE201 depth budget 199 nested arrays control", nullptr,
+                     [&nested_member](std::string header) { return ReplaceOnce(header, "}", nested_member(kJsonLiteMaxDepth - 1)); })) {
+        const std::string stem_str = stem.string();
+        semb_bank bank = nullptr;
+        const semb_status s = semb_bank_open(stem_str.c_str(), stem_str.size(), &bank);
+        Verdict(s == SEMB_OK && bank != nullptr,
+                label + "/TE201 199-deep array-of-arrays control opens -> SEMB_OK", Name(s));
+        if (bank) semb_bank_close(bank);
+      }
+    }
+  }
+
+  // =========================================================================
+  // TE-201 item 2 -- metric and dtype are required manifest fields, not only
+  // values that must agree when present.  Each edit removes exactly one field
+  // from a good manifest; the good-triple control above remains unchanged.
+  // =========================================================================
+  {
+    const semb_status st_unreadable = ResolveStatus("SEMB_ARTIFACT_UNREADABLE");
+    const std::string good_manifest = ReadFileBytes(fs::path(good_stem.string() + ".semb.json"));
+    json_mini::Parser p(good_manifest);
+    json_mini::Value manifest = p.Parse();
+    for (const char* field : {"metric", "dtype"}) {
+      const std::string value = manifest[field].s();
+      const fs::path stem = scratch / (a.stem + "_t_manifest_missing_" + field);
+      if (CopyTriple(good_stem, stem, label + "/TE201 manifest missing " + field,
+                     [field, value](std::string text) { return RemoveRequiredStringField(std::move(text), field, value); })) {
+        TryOpenExpect(label + "/TE201 manifest missing required " + field + " -> SEMB_ARTIFACT_UNREADABLE",
+                      stem, st_unreadable, "SEMB_ARTIFACT_UNREADABLE");
+      }
+    }
   }
 
   // =========================================================================

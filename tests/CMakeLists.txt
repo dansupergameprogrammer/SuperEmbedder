@@ -175,7 +175,19 @@ add_test(
 	NAME c41_part4_object_code_scan
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c41_part4_object_code_scan.py"
 		--build-dir "${CMAKE_BINARY_DIR}"
+		--repo-root "${CMAKE_SOURCE_DIR}"
 		--objdump "${SEMB_TEST_OBJDUMP}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# TE-201 item 5: structural scope gate for C41 part 4.  Unlike the
+# quarantined instruction reading, this compares the scan's declared source
+# population to SEMB_LIBRARY_SOURCES and fails if any library TU is absent.
+add_test(
+	NAME c41_part4_scope_derivation_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c41_part4_scope_derivation_check.py"
+		--repo-root "${CMAKE_SOURCE_DIR}"
+		--scan-script "${CMAKE_CURRENT_SOURCE_DIR}/c41_part4_object_code_scan.py"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
