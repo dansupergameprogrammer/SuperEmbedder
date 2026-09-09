@@ -63,10 +63,9 @@ std::string ReadFileBytes(const fs::path& p) {
   return oss.str();
 }
 
-// Statuses 0-31 resolve through the contract header's own StatusByName
-// (tests/semb_public_abi_contract.h). Ordinals 32-33 are provisional and
-// the contract does not carry them (H-5c is the open gap, TE-192's), so
-// this driver resolves ANY status by scanning the product's own
+// Statuses 0-33 resolve through the contract header's own StatusByName
+// (tests/semb_public_abi_contract.h); TE-192 added ordinals 32-33 and
+// closed H-5c. This driver still resolves ANY status by scanning the product's own
 // semb_status_name over the enum's range and matching the name -- resolved
 // against the running library, never hardcoded as an ordinal here.
 semb_status ResolveStatus(const char* name) {
