@@ -471,6 +471,36 @@ int main(int argc, char** argv) {
                       stem, st_unreadable, "SEMB_ARTIFACT_UNREADABLE");
       }
     }
+
+    // TE-205 S-1 -- a malformed header must retain the parser's refusal
+    // class even when its ordinary count is over the U1 read-boundary
+    // ceiling.  The first construction is the reviewer's exact composition;
+    // the second confirms duplicate `count` is no exception to parser
+    // authority when one of its values is over the ceiling.
+    const std::string count_field = "\"count\": 2";
+    {
+      const fs::path stem = scratch / (a.stem + "_t_duplicate_metric_u1_rows_over");
+      if (CopyTriple(good_stem, stem, label + "/TE205 S1 repeated metric plus count 10,000,001", nullptr,
+                     [count_field](std::string header) {
+                       header = ReplaceOnce(header, "\"metric\": \"cosine\"",
+                                            "\"metric\": \"cosine\", \"metric\": \"l2\"");
+                       return ReplaceOnce(std::move(header), count_field, "\"count\": 10000001");
+                     })) {
+        TryOpenExpect(label + "/TE205 S1 repeated metric plus count 10,000,001 -> SEMB_ARTIFACT_UNREADABLE",
+                      stem, st_unreadable, "SEMB_ARTIFACT_UNREADABLE");
+      }
+    }
+    {
+      const fs::path stem = scratch / (a.stem + "_t_duplicate_count_u1_rows_over");
+      if (CopyTriple(good_stem, stem, label + "/TE205 S1 repeated count including 10,000,001", nullptr,
+                     [count_field](std::string header) {
+                       return ReplaceOnce(header, count_field,
+                                          "\"count\": 10000001, \"count\": 2");
+                     })) {
+        TryOpenExpect(label + "/TE205 S1 repeated count including 10,000,001 -> SEMB_ARTIFACT_UNREADABLE",
+                      stem, st_unreadable, "SEMB_ARTIFACT_UNREADABLE");
+      }
+    }
   }
 
   // =========================================================================

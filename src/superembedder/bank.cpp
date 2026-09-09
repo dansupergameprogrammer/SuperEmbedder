@@ -70,9 +70,9 @@ bool IsJsonWhitespace(char c) {
 }
 
 // Reads an ordinary top-level integer member without creating a JSON Value
-// tree. It intentionally declines malformed, escaped-key, or duplicate-key
-// input so json_lite remains the sole authority for those forms. The caller
-// then performs the full parse and reports its normal malformed-input status.
+// tree. The caller validates a candidate over-ceiling header with json_lite
+// before refusing it, so malformed and duplicate-key forms remain owned by
+// the full parser and report its normal malformed-input status.
 bool TryReadTopLevelCount(const std::string& text, int64_t* out) {
   size_t i = 0;
   auto skip_ws = [&]() {
@@ -286,6 +286,17 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
     if (!ReadFileBytes(header_path, &header_text)) return SEMB_ARTIFACT_UNREADABLE;
     int64_t header_count = 0;
     if (TryReadTopLevelCount(header_text, &header_count) && header_count > kMaxU1BankRows) {
+      // The cheap scan establishes only that this text contains an ordinary
+      // top-level integer count. Before that count can take the read-boundary
+      // refusal, parse this small header alone: json_lite remains the sole
+      // authority for malformed JSON and duplicate members in every object.
+      // Thus the scan changes no header status except that a parser-accepted
+      // over-ceiling header refuses before payload or manifest reads.
+      try {
+        (void)semb::json::Parse(header_text);
+      } catch (const std::exception&) {
+        return SEMB_ARTIFACT_UNREADABLE;
+      }
       return SEMB_BANK_GEOMETRY_CEILING_EXCEEDED;
     }
 
