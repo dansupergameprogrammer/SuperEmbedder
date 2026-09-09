@@ -214,6 +214,20 @@ void TryOpenExpect(const std::string& cell, const fs::path& stem, semb_status ex
   if (bank) semb_bank_close(bank);  // never reached on a correct refusal; drains defensively
 }
 
+// The in-ceiling row control deliberately owns no 10,000,000-row payload.
+// Its only assertion is therefore that the reader's U1 ceiling does not
+// reject the boundary value; a later payload validation may return another
+// status. The output handle is still required to stay null on that later
+// refusal, and is closed defensively if a future fixture supplies a payload.
+void TryOpenNotStatus(const std::string& cell, const fs::path& stem, semb_status forbidden,
+                      const std::string& forbidden_name) {
+  const std::string stem_str = stem.string();
+  semb_bank bank = nullptr;
+  const semb_status s = semb_bank_open(stem_str.c_str(), stem_str.size(), &bank);
+  Verdict(s != forbidden, cell, std::string(Name(s)) + " (must not be " + forbidden_name + ")");
+  if (bank) semb_bank_close(bank);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -493,6 +507,49 @@ int main(int argc, char** argv) {
                      [dims_field](std::string header) { return ReplaceOnce(header, dims_field, "\"dims\": 999999999"); })) {
         TryOpenExpect(label + "/P12 dims over 131,072 still -> SEMB_BANK_GEOMETRY_CEILING_EXCEEDED (control)",
                       stem, st_ceiling, "SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
+      }
+    }
+  }
+
+  // =========================================================================
+  // TE-202 S-3 -- U1 admits at most 10,000,000 rows.  The over-ceiling
+  // construction changes only the header count of a good triple, so a reader
+  // that checks at the boundary refuses without materializing a JSON tree or
+  // reaching payload-pair validation. The boundary control has no matching
+  // payload; it proves only that the ceiling itself admits 10,000,000.
+  // =========================================================================
+  {
+    constexpr int64_t kU1MaxBankRows = 10'000'000;
+    const semb_status st_ceiling = ResolveStatus("SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
+    const std::string count_field = "\"count\": 2";
+    {
+      const fs::path stem = scratch / (a.stem + "_t_u1_rows_over");
+      if (CopyTriple(good_stem, stem, label + "/S3 header count 10,000,001", nullptr,
+                     [count_field](std::string header) {
+                       return ReplaceOnce(header, count_field, "\"count\": 10000001");
+                     })) {
+        TryOpenExpect(label + "/S3 header count 10,000,001 -> SEMB_BANK_GEOMETRY_CEILING_EXCEEDED",
+                      stem, st_ceiling, "SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
+#if defined(_WIN32)
+        const size_t peak = PeakWorkingSetBytes();
+        constexpr size_t kPeakBoundBytes = size_t{1500} * 1000 * 1000;
+        Verdict(peak != 0 && peak < kPeakBoundBytes,
+                label + "/S3 10,000,001 refusal has bounded peak working set (< 1.5 GB)",
+                "peak working set = " + std::to_string(peak) + " bytes");
+#else
+        Observed(label + "/S3 peak working set not measured on this platform (no bound asserted)");
+#endif
+      }
+    }
+    {
+      const fs::path stem = scratch / (a.stem + "_t_u1_rows_boundary");
+      if (CopyTriple(good_stem, stem, label + "/S3 header count 10,000,000 control", nullptr,
+                     [count_field](std::string header) {
+                       return ReplaceOnce(header, count_field,
+                                          "\"count\": " + std::to_string(kU1MaxBankRows));
+                     })) {
+        TryOpenNotStatus(label + "/S3 header count 10,000,000 is not rejected by the U1 ceiling",
+                         stem, st_ceiling, "SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
       }
     }
   }

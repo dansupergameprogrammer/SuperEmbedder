@@ -11,6 +11,7 @@
 
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -62,6 +63,119 @@ namespace {
 // encoder.cpp for the batch verb's own row ceiling).
 constexpr int64_t kMaxCrossDeviceDims = 131072;  // FORMAT.md: dims > 0 and <= 131,072
 constexpr int64_t kMaxBankRows = int64_t{1} << 28;  // FORMAT.md: count >= 0 and <= 2^28
+constexpr int64_t kMaxU1BankRows = 10'000'000;  // D-SLM6498: U1 reader ceiling
+
+bool IsJsonWhitespace(char c) {
+  return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+// Reads an ordinary top-level integer member without creating a JSON Value
+// tree. It intentionally declines malformed, escaped-key, or duplicate-key
+// input so json_lite remains the sole authority for those forms. The caller
+// then performs the full parse and reports its normal malformed-input status.
+bool TryReadTopLevelCount(const std::string& text, int64_t* out) {
+  size_t i = 0;
+  auto skip_ws = [&]() {
+    while (i < text.size() && IsJsonWhitespace(text[i])) ++i;
+  };
+  auto scan_string = [&](size_t* begin, size_t* end, bool* escaped) -> bool {
+    if (i >= text.size() || text[i++] != '"') return false;
+    *begin = i;
+    *escaped = false;
+    while (i < text.size()) {
+      const char c = text[i++];
+      if (c == '\\') {
+        *escaped = true;
+        if (i >= text.size()) return false;
+        ++i;
+      } else if (c == '"') {
+        *end = i - 1;
+        return true;
+      }
+    }
+    return false;
+  };
+  auto scan_value = [&]() -> bool {
+    size_t nesting = 0;
+    bool in_string = false;
+    bool escaped = false;
+    while (i < text.size()) {
+      const char c = text[i];
+      if (in_string) {
+        ++i;
+        if (escaped) escaped = false;
+        else if (c == '\\') escaped = true;
+        else if (c == '"') in_string = false;
+        continue;
+      }
+      if (c == '"') {
+        in_string = true;
+        ++i;
+      } else if (c == '{' || c == '[') {
+        ++nesting;
+        ++i;
+      } else if (c == '}' || c == ']') {
+        if (nesting == 0) return c == '}';
+        --nesting;
+        ++i;
+      } else if (nesting == 0 && c == ',') {
+        return true;
+      } else {
+        ++i;
+      }
+    }
+    return false;
+  };
+
+  skip_ws();
+  if (i >= text.size() || text[i++] != '{') return false;
+  bool found = false;
+  int64_t count = 0;
+  while (true) {
+    skip_ws();
+    if (i >= text.size()) return false;
+    if (text[i] == '}') {
+      ++i;
+      skip_ws();
+      if (i != text.size() || !found) return false;
+      *out = count;
+      return true;
+    }
+    size_t key_begin = 0, key_end = 0;
+    bool key_escaped = false;
+    if (!scan_string(&key_begin, &key_end, &key_escaped)) return false;
+    skip_ws();
+    if (i >= text.size() || text[i++] != ':') return false;
+    skip_ws();
+    const bool is_count = !key_escaped && text.compare(key_begin, key_end - key_begin, "count") == 0;
+    if (is_count) {
+      if (found) return false;
+      const char* first = text.data() + i;
+      const char* last = text.data() + text.size();
+      const auto parsed = std::from_chars(first, last, count);
+      if (parsed.ec != std::errc{} || parsed.ptr == first) return false;
+      i = static_cast<size_t>(parsed.ptr - text.data());
+      if (i < text.size() && !IsJsonWhitespace(text[i]) && text[i] != ',' && text[i] != '}') return false;
+      found = true;
+    } else if (!scan_value()) {
+      return false;
+    }
+    skip_ws();
+    if (i >= text.size()) return false;
+    if (text[i] == ',') {
+      ++i;
+      continue;
+    }
+    if (text[i] == '}') {
+      ++i;
+      skip_ws();
+      if (i != text.size() || !found) return false;
+      *out = count;
+      return true;
+    }
+    return false;
+  }
+}
 
 std::mutex& RegistryMutex() {
   static auto* mutex = new std::mutex();
@@ -168,8 +282,14 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
     const std::string bin_path = stem + ".wvbank.bin";
     const std::string manifest_path = stem + ".semb.json";
 
-    std::string header_text, bin_bytes, manifest_text;
+    std::string header_text;
     if (!ReadFileBytes(header_path, &header_text)) return SEMB_ARTIFACT_UNREADABLE;
+    int64_t header_count = 0;
+    if (TryReadTopLevelCount(header_text, &header_count) && header_count > kMaxU1BankRows) {
+      return SEMB_BANK_GEOMETRY_CEILING_EXCEEDED;
+    }
+
+    std::string bin_bytes, manifest_text;
     if (!ReadFileBytes(bin_path, &bin_bytes)) return SEMB_ARTIFACT_UNREADABLE;
     if (!ReadFileBytes(manifest_path, &manifest_text)) return SEMB_ARTIFACT_UNREADABLE;
 
@@ -217,7 +337,7 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
     // field here refuses with (SEMB_ARTIFACT_UNREADABLE); the plan's own
     // ordinal-31 row names only "dims > 131,072 or count > 2^28".
     if (dims <= 0 || count < 0) return SEMB_ARTIFACT_UNREADABLE;
-    if (dims > kMaxCrossDeviceDims || count > kMaxBankRows) {
+    if (dims > kMaxCrossDeviceDims || count > kMaxBankRows || count > kMaxU1BankRows) {
       return SEMB_BANK_GEOMETRY_CEILING_EXCEEDED;
     }
 
