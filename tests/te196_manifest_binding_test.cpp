@@ -432,8 +432,10 @@ int RunTe213Worker(const Args& a) {
   Verdict(peak != 0 && peak < bound, "TE213/" + a.te213_worker + " keeps peak below I3 bound",
           "peak=" + std::to_string(peak) + " header=" + std::to_string(header_bytes) + " bound=" + std::to_string(bound));
 #endif
+  const double median_seconds = MedianSeconds(elapsed);
+  Observed("TE213/" + a.te213_worker + " median seconds=" + std::to_string(median_seconds));
   std::ofstream result(fs::path(a.scratch) / (a.stem + "_te213_" + a.te213_worker + ".seconds"));
-  result << MedianSeconds(elapsed) << "\n";
+  result << median_seconds << "\n";
   fs::remove(header);
   return g_failures ? 1 : 0;
 }
@@ -448,7 +450,13 @@ void RunTe213Workers(const Args& a, const char* executable) {
       "--stem", a.stem.c_str(), "--te213-worker", tag, nullptr);
     Verdict(rc == 0, std::string("TE213/") + tag + " fresh-process worker", rc == 0 ? "exit 0" : "nonzero exit");
   }
-  auto seconds = [&](const char* tag) { std::ifstream in(fs::path(a.scratch) / (a.stem + "_te213_" + tag + ".seconds")); double v = 0; in >> v; fs::remove(fs::path(a.scratch) / (a.stem + "_te213_" + tag + ".seconds")); return v; };
+  auto seconds = [&](const char* tag) {
+    const fs::path result = fs::path(a.scratch) / (a.stem + "_te213_" + tag + ".seconds");
+    double value = 0;
+    { std::ifstream in(result); in >> value; }
+    fs::remove(result);
+    return value;
+  };
   const double k_small = seconds("k4096"), k_large = seconds("k16384");
   const double j_small = seconds("j500000"), j_large = seconds("j2000000");
   Verdict(k_small > 0 && k_large / k_small <= 8.0, "TE213/k I5 n log n midpoint threshold (4.4 vs 16)", "ratio=" + std::to_string(k_large / k_small));
