@@ -258,6 +258,13 @@ class ParserImpl {
     while (true) {
       SkipWs();
       std::string key = ParseString();
+      // JSON object member names are unique for every document this parser
+      // accepts. Keeping the first occurrence would make a consumer disagree
+      // with a last-member reader; reject the object before any caller can
+      // look a field up through Value::Find().
+      if (v.Has(key)) {
+        throw std::runtime_error("json_lite: duplicate object member '" + key + "'");
+      }
       SkipWs();
       Expect(':');
       Value val = ParseValue();

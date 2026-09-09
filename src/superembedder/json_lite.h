@@ -110,8 +110,8 @@ std::string Write(const Value& v);
 // (a caller at a validation boundary maps that to the ABI's own
 // SEMB_ARTIFACT_UNREADABLE / SEMB_MANIFEST_SCHEMA_UNSUPPORTED, never lets
 // the exception escape the library). "Malformed" includes every input
-// shape this reader refuses: bad structure, non-integer numbers, raw
-// control bytes, unpaired surrogates -- and an integer literal outside
+// shape this reader refuses: bad structure, duplicate object members,
+// non-integer numbers, raw control bytes, unpaired surrogates -- and an integer literal outside
 // int64 range (translated from std::stoll's own std::out_of_range at the
 // parse site, so the exception a caller catches is always the documented
 // type).

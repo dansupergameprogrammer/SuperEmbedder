@@ -414,6 +414,53 @@ int main(int argc, char** argv) {
   }
 
   // =========================================================================
+  // TE-202 S-1 -- JSON objects are unambiguous: every object member name is
+  // unique.  The product used to retain the first duplicate while the FORMAT
+  // reference reader retains the last, so every duplicate is malformed before
+  // header/manifest field lookup.  The good-triple control above is the
+  // unique-key must-accept.
+  // =========================================================================
+  {
+    const semb_status st_unreadable = ResolveStatus("SEMB_ARTIFACT_UNREADABLE");
+    struct DuplicateCase {
+      const char* suffix;
+      const char* description;
+      std::function<std::string(std::string)> manifest_edit;
+      std::function<std::string(std::string)> header_edit;
+    };
+    const std::vector<DuplicateCase> cases = {
+        {"header_metric", "header repeated metric cosine/l2", nullptr,
+         [](std::string header) {
+           return ReplaceOnce(header, "\"metric\": \"cosine\"",
+                              "\"metric\": \"cosine\", \"metric\": \"l2\"");
+         }},
+        {"header_dtype", "header repeated dtype", nullptr,
+         [](std::string header) {
+           return ReplaceOnce(header, "\"dtype\": \"float32\"",
+                              "\"dtype\": \"float32\", \"dtype\": \"float32\"");
+         }},
+        {"manifest_metric", "manifest repeated metric cosine/l2",
+         [](std::string manifest) {
+           return ReplaceOnce(manifest, "\"metric\": \"cosine\"",
+                              "\"metric\": \"cosine\", \"metric\": \"l2\"");
+         }, nullptr},
+        {"manifest_dtype", "manifest repeated dtype",
+         [](std::string manifest) {
+           return ReplaceOnce(manifest, "\"dtype\": \"float32\"",
+                              "\"dtype\": \"float32\", \"dtype\": \"float32\"");
+         }, nullptr},
+    };
+    for (const DuplicateCase& duplicate : cases) {
+      const fs::path stem = scratch / (a.stem + "_t_duplicate_" + duplicate.suffix);
+      if (CopyTriple(good_stem, stem, label + "/S1 " + duplicate.description,
+                     duplicate.manifest_edit, duplicate.header_edit)) {
+        TryOpenExpect(label + "/S1 " + duplicate.description + " -> SEMB_ARTIFACT_UNREADABLE",
+                      stem, st_unreadable, "SEMB_ARTIFACT_UNREADABLE");
+      }
+    }
+  }
+
+  // =========================================================================
   // TE-193 P-12 -- dims:0 and count:-1 are malformed header values, not
   // values over a format ceiling: they refuse SEMB_ARTIFACT_UNREADABLE, and
   // the ceiling status is reserved for dims > 131,072 / count > 2^28 (the
