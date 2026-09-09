@@ -3,8 +3,8 @@
 
 #include <cctype>
 #include <cstdio>
+#include <limits>
 #include <type_traits>
-#include <unordered_set>
 
 namespace semb::json {
 
@@ -266,6 +266,73 @@ class ParserImpl {
     }
   }
 
+  // Validate must remember every object member until the closing brace to
+  // reject a later duplicate, but it must not retain a decoded string per
+  // member. Each slot below is a four-byte offset to the member name's
+  // opening quote in s_. A probe re-decodes only the candidate already at
+  // that slot, so escaped spellings compare as their decoded names just as
+  // ParseString() does for the materializing path. The table stays at or
+  // below 50% load: after a grow its largest steady-state cost is 16 bytes
+  // per live member, and it falls toward 8 bytes per member before the next
+  // grow. The old and new tables coexist only while a grow rehashes.
+  static uint64_t HashDecodedMemberName(const std::string& name) {
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (unsigned char c : name) {
+      hash ^= c;
+      hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+  }
+
+  struct MemberNameOffsets {
+    std::vector<uint32_t> slots;
+    size_t live = 0;
+  };
+
+  std::string DecodeMemberNameAt(uint32_t offset) {
+    const size_t saved = i_;
+    i_ = offset;
+    try {
+      std::string decoded = ParseString();
+      i_ = saved;
+      return decoded;
+    } catch (...) {
+      i_ = saved;
+      throw;
+    }
+  }
+
+  void GrowMemberNameOffsets(MemberNameOffsets* offsets) {
+    std::vector<uint32_t> grown(offsets->slots.empty() ? 8 : offsets->slots.size() * 2, 0);
+    const size_t mask = grown.size() - 1;
+    for (uint32_t offset : offsets->slots) {
+      if (offset == 0) continue;
+      const size_t slot = static_cast<size_t>(HashDecodedMemberName(DecodeMemberNameAt(offset - 1))) & mask;
+      size_t probe = slot;
+      while (grown[probe] != 0) probe = (probe + 1) & mask;
+      grown[probe] = offset;
+    }
+    offsets->slots.swap(grown);
+  }
+
+  void RememberMemberName(MemberNameOffsets* offsets, const std::string& key, size_t key_offset) {
+    if (key_offset >= std::numeric_limits<uint32_t>::max()) {
+      throw std::runtime_error("json_lite: object member offset exceeds 32-bit range");
+    }
+    if (offsets->slots.empty() || (offsets->live + 1) * 2 > offsets->slots.size()) GrowMemberNameOffsets(offsets);
+
+    const size_t mask = offsets->slots.size() - 1;
+    size_t probe = static_cast<size_t>(HashDecodedMemberName(key)) & mask;
+    while (offsets->slots[probe] != 0) {
+      if (DecodeMemberNameAt(offsets->slots[probe] - 1) == key) {
+        throw std::runtime_error("json_lite: duplicate object member '" + key + "'");
+      }
+      probe = (probe + 1) & mask;
+    }
+    offsets->slots[probe] = static_cast<uint32_t>(key_offset + 1);
+    ++offsets->live;
+  }
+
   template <bool Build>
   Parsed<Build> ParseObject() {
     DepthGuard guard(this);
@@ -278,19 +345,18 @@ class ParserImpl {
       return empty;
     }
     RefuseWideContainer('}');
-    std::unordered_set<std::string> member_names;
+    MemberNameOffsets member_name_offsets;
     Parsed<Build> v;
     if constexpr (Build) v = Value::MakeObject();
     while (true) {
       SkipWs();
+      const size_t key_offset = i_;
       std::string key = ParseString();
       // JSON object member names are unique for every document this parser
       // accepts. Keeping the first occurrence would make a consumer disagree
       // with a last-member reader; reject the object before any caller can
       // look a field up through Value::Find().
-      if (!member_names.emplace(key).second) {
-        throw std::runtime_error("json_lite: duplicate object member '" + key + "'");
-      }
+      RememberMemberName(&member_name_offsets, key, key_offset);
       SkipWs();
       Expect(':');
       Parsed<Build> val = ParseValue<Build>();
