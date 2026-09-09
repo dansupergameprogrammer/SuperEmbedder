@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -26,6 +27,7 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <psapi.h>
+#include <process.h>
 #pragma comment(lib, "psapi.lib")
 #endif
 
@@ -77,7 +79,7 @@ semb_status ResolveStatus(const char* name) {
 }
 
 struct Args {
-  std::string model, tokenizer, scratch, stem = "te196";
+  std::string model, tokenizer, scratch, stem = "te196", te209_worker;
   unsigned dims = 0;
 };
 Args ParseArgs(int argc, char** argv) {
@@ -90,6 +92,7 @@ Args ParseArgs(int argc, char** argv) {
     else if (k == "--dims") { std::string v; next(&v); a.dims = static_cast<unsigned>(std::atoi(v.c_str())); }
     else if (k == "--scratch") next(&a.scratch);
     else if (k == "--stem") next(&a.stem);
+    else if (k == "--te209-worker") next(&a.te209_worker);
   }
   return a;
 }
@@ -242,6 +245,113 @@ void TryOpenExpectWithPeakBound(const std::string& cell, const fs::path& stem, s
 #endif
 }
 
+// TE-209 uses a fresh process for every resource cell. The process sees only
+// its generated header and the open under test, so PeakWorkingSetBytes() is
+// the cell's peak rather than a high-water mark inherited from another wide
+// construction. The over-ceiling boundary validates before it reads the bin
+// or manifest, so these workers need write only the header they exercise.
+constexpr size_t kTe209WideObjectMembers = 4'000'000;
+constexpr size_t kTe209DuplicateLastOtherMembers = 999'999;
+constexpr size_t kTe209MaxJsonNodes = 20'000'000;
+constexpr size_t kTe209StringBytes = 16 * 1024 * 1024;
+constexpr size_t kTe209MaxJsonDepth = 200;
+
+void WriteTe209Prefix(std::ofstream* out) {
+  *out << "{\"schemaVersion\":1,\"dims\":32,\"count\":10000001,\"metric\":\"cosine\",\"dtype\":\"float32\",\"hostile\":";
+}
+
+void WriteTe209Object(std::ofstream* out, size_t members, bool dense_names,
+                      bool escape_equivalent_last) {
+  *out << '{';
+  bool first = true;
+  auto member = [&](const std::string& name) {
+    if (!first) *out << ',';
+    first = false;
+    *out << '\"' << name << "\":0";
+  };
+  if (escape_equivalent_last) member("a");
+  for (size_t n = 0; n < members; ++n) {
+    member(dense_names ? std::to_string(n) : "k" + std::to_string(n));
+  }
+  if (escape_equivalent_last) {
+    *out << ",\"\\u0061\":0";
+  }
+  *out << "}}";
+}
+
+void WriteTe209Header(const fs::path& header, const std::string& worker) {
+  std::ofstream out(header, std::ios::binary);
+  if (!out) throw std::runtime_error("cannot create " + header.string());
+  WriteTe209Prefix(&out);
+  if (worker == "object") {
+    WriteTe209Object(&out, kTe209WideObjectMembers, false, false);
+  } else if (worker == "dense") {
+    WriteTe209Object(&out, kTe209WideObjectMembers, true, false);
+  } else if (worker == "escape_small") {
+    out << "{\"a\":0,\"\\u0061\":0}}";
+  } else if (worker == "escape_last") {
+    WriteTe209Object(&out, kTe209DuplicateLastOtherMembers, false, true);
+  } else if (worker == "object_budget") {
+    WriteTe209Object(&out, kTe209MaxJsonNodes + 1, true, false);
+  } else if (worker == "string") {
+    out << '\"';
+    for (size_t n = 0; n < kTe209StringBytes; ++n) out << 's';
+    out << "\"}";
+  } else if (worker == "depth") {
+    out << std::string(kTe209MaxJsonDepth - 1, '[') << '0'
+        << std::string(kTe209MaxJsonDepth - 1, ']') << '}';
+  } else {
+    throw std::runtime_error("unknown TE-209 worker: " + worker);
+  }
+  if (!out) throw std::runtime_error("cannot write " + header.string());
+}
+
+int RunTe209Worker(const Args& a) {
+  const fs::path header = fs::path(a.scratch) / (a.stem + "_te209_" + a.te209_worker + ".wvbank.json");
+  fs::remove(header);
+  try {
+    WriteTe209Header(header, a.te209_worker);
+  } catch (const std::exception& e) {
+    Verdict(false, "TE209/" + a.te209_worker + " fixture", e.what());
+    return 1;
+  }
+  const size_t header_bytes = static_cast<size_t>(fs::file_size(header));
+  const bool expect_unreadable = a.te209_worker == "escape_small" ||
+                                 a.te209_worker == "escape_last" ||
+                                 a.te209_worker == "object_budget";
+  const semb_status expected = ResolveStatus(expect_unreadable ? "SEMB_ARTIFACT_UNREADABLE"
+                                                                 : "SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
+  const fs::path stem = header.parent_path() / (a.stem + "_te209_" + a.te209_worker);
+  const std::string cell = "TE209/" + a.te209_worker;
+  TryOpenExpect(cell, stem, expected, expect_unreadable ? "SEMB_ARTIFACT_UNREADABLE"
+                                                         : "SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
+#if defined(_WIN32)
+  const size_t peak = PeakWorkingSetBytes();
+  const size_t bound = 4 * header_bytes + size_t{64} * 1024 * 1024;
+  Verdict(peak != 0 && peak < bound, cell + " keeps peak working set below 4 x header bytes + 64 MB",
+          "peak working set = " + std::to_string(peak) + " bytes; bound = " + std::to_string(bound) + " bytes");
+#endif
+  fs::remove(header);
+  return g_failures ? 1 : 0;
+}
+
+int RunTe209Workers(const Args& a, const char* executable) {
+#if defined(_WIN32)
+  for (const char* worker : {"object", "dense", "escape_small", "escape_last", "object_budget", "string", "depth"}) {
+    const int rc = _spawnl(_P_WAIT, executable, executable,
+                           "--model", a.model.c_str(), "--tokenizer", a.tokenizer.c_str(),
+                           "--dims", std::to_string(a.dims).c_str(), "--scratch", a.scratch.c_str(),
+                           "--stem", a.stem.c_str(), "--te209-worker", worker, nullptr);
+    Verdict(rc == 0, std::string("TE209/") + worker + " fresh-process worker", rc == 0 ? "exit 0" : "nonzero exit");
+  }
+#else
+  (void)a;
+  (void)executable;
+  Observed("TE209 fresh-process peak cells are Windows-only");
+#endif
+  return g_failures ? 1 : 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -250,6 +360,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "usage: %s --model <.sslm> --tokenizer <.sslm> --dims <n> --scratch <dir> [--stem <name>]\n", argv[0]);
     return 2;
   }
+  if (!a.te209_worker.empty()) return RunTe209Worker(a);
   fs::create_directories(a.scratch);
   const fs::path scratch(a.scratch);
   const std::string label = "mechanism";
@@ -802,6 +913,8 @@ int main(int argc, char** argv) {
             threw ? (runtime_type ? "std::runtime_error" : "a std::exception that is NOT std::runtime_error")
                   : "no exception thrown");
   }
+
+  RunTe209Workers(a, argv[0]);
 
   std::printf("\nte196_manifest_binding_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
   return g_failures ? 1 : 0;
