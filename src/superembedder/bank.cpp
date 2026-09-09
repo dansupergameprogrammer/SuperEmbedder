@@ -288,12 +288,13 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
     if (TryReadTopLevelCount(header_text, &header_count) && header_count > kMaxU1BankRows) {
       // The cheap scan establishes only that this text contains an ordinary
       // top-level integer count. Before that count can take the read-boundary
-      // refusal, parse this small header alone: json_lite remains the sole
-      // authority for malformed JSON and duplicate members in every object.
-      // Thus the scan changes no header status except that a parser-accepted
-      // over-ceiling header refuses before payload or manifest reads.
+      // refusal, validate the entire header with json_lite's own grammar and
+      // budgets without building a Value tree: headers are extensible and can
+      // carry wide per-row arrays or unknown members. Thus the scan changes no
+      // header status except that a parser-accepted over-ceiling header refuses
+      // before payload or manifest reads.
       try {
-        (void)semb::json::Parse(header_text);
+        semb::json::Validate(header_text);
       } catch (const std::exception&) {
         return SEMB_ARTIFACT_UNREADABLE;
       }
