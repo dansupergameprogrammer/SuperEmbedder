@@ -11,6 +11,8 @@
 //
 // USAGE: --model <.sslm> --tokenizer <.sslm> --dims <n> --scratch <dir>
 // [--stem <name>]
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -79,7 +81,7 @@ semb_status ResolveStatus(const char* name) {
 }
 
 struct Args {
-  std::string model, tokenizer, scratch, stem = "te196", te209_worker;
+  std::string model, tokenizer, scratch, stem = "te196", te209_worker, te213_worker;
   unsigned dims = 0;
 };
 Args ParseArgs(int argc, char** argv) {
@@ -93,6 +95,7 @@ Args ParseArgs(int argc, char** argv) {
     else if (k == "--scratch") next(&a.scratch);
     else if (k == "--stem") next(&a.stem);
     else if (k == "--te209-worker") next(&a.te209_worker);
+    else if (k == "--te213-worker") next(&a.te213_worker);
   }
   return a;
 }
@@ -352,6 +355,109 @@ int RunTe209Workers(const Args& a, const char* executable) {
   return g_failures ? 1 : 0;
 }
 
+uint64_t Fnv1a(const std::string& name) {
+  uint64_t hash = UINT64_C(14695981039346656037);
+  for (unsigned char c : name) { hash ^= c; hash *= UINT64_C(1099511628211); }
+  return hash;
+}
+
+bool AlphaNum(char c) { return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
+
+template <typename Emit>
+void EmitLow14Colliders(size_t count, Emit emit) {
+  constexpr char alphabet[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  constexpr size_t alphabet_size = sizeof(alphabet) - 1;
+  constexpr uint64_t mask = (UINT64_C(1) << 14) - 1;
+  constexpr uint64_t prime = UINT64_C(1099511628211);
+  uint64_t inverse = 1;
+  for (int n = 0; n < 14; ++n) inverse = (inverse * (2 - ((prime & mask) * inverse))) & mask;
+  const uint64_t wanted_before_last = (inverse * (Fnv1a("") & mask)) & mask;
+  size_t emitted = 0;
+  for (size_t a = 0; a < alphabet_size && emitted < count; ++a) for (size_t b = 0; b < alphabet_size && emitted < count; ++b)
+    for (size_t c = 0; c < alphabet_size && emitted < count; ++c) for (size_t d = 0; d < alphabet_size && emitted < count; ++d) {
+      std::string prefix{alphabet[a], alphabet[b], alphabet[c], alphabet[d]};
+      const char last = static_cast<char>((Fnv1a(prefix) & mask) ^ wanted_before_last);
+      if (AlphaNum(last)) emit(prefix + last), ++emitted;
+    }
+  if (emitted != count) throw std::runtime_error("TE213 collider generator exhausted its printable population");
+}
+
+void WriteTe213Header(const fs::path& header, size_t members, bool colliders) {
+  std::ofstream out(header, std::ios::binary);
+  if (!out) throw std::runtime_error("cannot create " + header.string());
+  WriteTe209Prefix(&out);
+  out << '{';
+  bool first = true;
+  auto emit = [&](const std::string& name) { if (!first) out << ','; first = false; out << '"' << name << "\":0"; };
+  if (colliders) EmitLow14Colliders(members, emit);
+  else for (size_t n = 0; n < members; ++n) emit("k" + std::to_string(n));
+  out << "}}";
+  if (!out) throw std::runtime_error("cannot write " + header.string());
+}
+
+double MedianSeconds(std::vector<double> values) {
+  std::sort(values.begin(), values.end());
+  return values[values.size() / 2];
+}
+
+int RunTe213Worker(const Args& a) {
+  const bool colliders = a.te213_worker == "k4096" || a.te213_worker == "k16384";
+  const size_t members = a.te213_worker == "k4096" ? 4096 : a.te213_worker == "k16384" ? 16384 :
+                         a.te213_worker == "j500000" ? 500000 : a.te213_worker == "j2000000" ? 2000000 : 0;
+  if (members == 0) { Verdict(false, "TE213 worker", "unknown worker " + a.te213_worker); return 1; }
+  fs::create_directories(a.scratch);
+  const fs::path header = fs::path(a.scratch) / (a.stem + "_te213_" + a.te213_worker + ".wvbank.json");
+  try { WriteTe213Header(header, members, colliders); }
+  catch (const std::exception& e) { Verdict(false, "TE213/" + a.te213_worker + " fixture", e.what()); return 1; }
+  try { semb::json::Validate(ReadFileBytes(header)); }
+  catch (const std::exception& e) { Verdict(false, "TE213/" + a.te213_worker + " fixture validates", e.what()); return 1; }
+  const size_t header_bytes = static_cast<size_t>(fs::file_size(header));
+  std::vector<double> elapsed;
+  for (int run = 0; run != 3; ++run) {
+    semb_bank bank = nullptr;
+    const auto start = std::chrono::steady_clock::now();
+    fs::path stem_path = header;
+    stem_path.replace_extension();
+    stem_path.replace_extension();
+    const std::string stem = stem_path.string();
+    const semb_status status = semb_bank_open(stem.c_str(), stem.size(), &bank);
+    elapsed.push_back(std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+    Verdict(status == ResolveStatus("SEMB_BANK_GEOMETRY_CEILING_EXCEEDED"), "TE213/" + a.te213_worker + " ceiling", Name(status));
+    Verdict(bank == nullptr, "TE213/" + a.te213_worker + " leaves *out == NULL", bank ? "NOT NULL" : "confirmed");
+    if (bank) semb_bank_close(bank);
+  }
+#if defined(_WIN32)
+  const size_t peak = PeakWorkingSetBytes();
+  const size_t bound = 4 * header_bytes + size_t{64} * 1024 * 1024;
+  Verdict(peak != 0 && peak < bound, "TE213/" + a.te213_worker + " keeps peak below I3 bound",
+          "peak=" + std::to_string(peak) + " header=" + std::to_string(header_bytes) + " bound=" + std::to_string(bound));
+#endif
+  std::ofstream result(fs::path(a.scratch) / (a.stem + "_te213_" + a.te213_worker + ".seconds"));
+  result << MedianSeconds(elapsed) << "\n";
+  fs::remove(header);
+  return g_failures ? 1 : 0;
+}
+
+void RunTe213Workers(const Args& a, const char* executable) {
+#if defined(_WIN32)
+  const fs::path worker = fs::path(executable).parent_path() / "te213_manifest_binding_testseam_worker.exe";
+  Verdict(fs::exists(worker), "TE213 seam worker exists", worker.string());
+  for (const char* tag : {"k4096", "k16384", "j500000", "j2000000"}) {
+    const int rc = _spawnl(_P_WAIT, worker.string().c_str(), worker.string().c_str(), "--model", a.model.c_str(),
+      "--tokenizer", a.tokenizer.c_str(), "--dims", std::to_string(a.dims).c_str(), "--scratch", a.scratch.c_str(),
+      "--stem", a.stem.c_str(), "--te213-worker", tag, nullptr);
+    Verdict(rc == 0, std::string("TE213/") + tag + " fresh-process worker", rc == 0 ? "exit 0" : "nonzero exit");
+  }
+  auto seconds = [&](const char* tag) { std::ifstream in(fs::path(a.scratch) / (a.stem + "_te213_" + tag + ".seconds")); double v = 0; in >> v; fs::remove(fs::path(a.scratch) / (a.stem + "_te213_" + tag + ".seconds")); return v; };
+  const double k_small = seconds("k4096"), k_large = seconds("k16384");
+  const double j_small = seconds("j500000"), j_large = seconds("j2000000");
+  Verdict(k_small > 0 && k_large / k_small <= 8.0, "TE213/k I5 n log n midpoint threshold (4.4 vs 16)", "ratio=" + std::to_string(k_large / k_small));
+  Verdict(j_small > 0 && j_large / j_small <= 8.0, "TE213/j I5 equal-hash decoded-run sort threshold", "ratio=" + std::to_string(j_large / j_small));
+#else
+  (void)a; (void)executable; Observed("TE213 fresh-process I5 cells are Windows-only");
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -361,6 +467,7 @@ int main(int argc, char** argv) {
     return 2;
   }
   if (!a.te209_worker.empty()) return RunTe209Worker(a);
+  if (!a.te213_worker.empty()) return RunTe213Worker(a);
   fs::create_directories(a.scratch);
   const fs::path scratch(a.scratch);
   const std::string label = "mechanism";
@@ -914,7 +1021,35 @@ int main(int argc, char** argv) {
                   : "no exception thrown");
   }
 
+  // TE-213 M-1: absolute offsets are size_t, so the original parser language
+  // has no 32-bit byte-position refusal. The host may not be able to commit
+  // this four-gigabyte construction; that is a named skip, not a smaller
+  // surrogate that cannot exercise the old refusal.
+  {
+    const uint64_t quote_offset = uint64_t{UINT32_MAX} + 16;
+    if (quote_offset > (std::numeric_limits<size_t>::max)()) {
+      Observed("TE213/l offset language SKIPPED: size_t cannot represent UINT32_MAX + 16");
+    } else {
+      try {
+        std::string document;
+        document.resize(static_cast<size_t>(quote_offset), ' ');
+        document.replace(0, 7, "{\"a\":0,");
+        document += "\"b\":1}";
+        semb::json::Validate(document);
+        const semb::json::Value parsed = semb::json::Parse(document);
+        Verdict(parsed.IsObject() && parsed.Has("a") && parsed.Has("b"),
+                "TE213/l Parse accepts member quote at UINT32_MAX + 16", "accepted");
+        Verdict(true, "TE213/l Validate accepts member quote at UINT32_MAX + 16", "accepted");
+      } catch (const std::bad_alloc&) {
+        Observed("TE213/l offset language SKIPPED: host could not allocate UINT32_MAX + 16 bytes");
+      } catch (const std::exception& e) {
+        Verdict(false, "TE213/l Parse and Validate accept member quote at UINT32_MAX + 16", e.what());
+      }
+    }
+  }
+
   RunTe209Workers(a, argv[0]);
+  RunTe213Workers(a, argv[0]);
 
   std::printf("\nte196_manifest_binding_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
   return g_failures ? 1 : 0;

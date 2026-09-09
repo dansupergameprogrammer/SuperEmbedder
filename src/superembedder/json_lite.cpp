@@ -3,6 +3,7 @@
 
 #include <cctype>
 #include <cstdio>
+#include <algorithm>
 #include <limits>
 #include <type_traits>
 
@@ -259,37 +260,42 @@ class ParserImpl {
   // sibling is materialized, a container whose direct children alone would
   // exceed the remaining node budget (see the kMaxJsonNodes comment above
   // for why the per-value charge alone cannot bound memory on this face).
-  void RefuseWideContainer(char close) {
+  size_t RefuseWideContainer(char close) {
     size_t children = 0;
     if (CountDirectChildren(close, &children) && node_count_ + children > kMaxJsonNodes) {
       throw std::runtime_error("json_lite: node budget exceeded");
     }
+    return children;
   }
 
-  // Validate must remember every object member until the closing brace to
-  // reject a later duplicate, but it must not retain a decoded string per
-  // member. Each slot below is a four-byte offset to the member name's
-  // opening quote in s_. A probe re-decodes only the candidate already at
-  // that slot, so escaped spellings compare as their decoded names just as
-  // ParseString() does for the materializing path. The table stays at or
-  // below 50% load: after a grow its largest steady-state cost is 16 bytes
-  // per live member, and it falls toward 8 bytes per member before the next
-  // grow. The old and new tables coexist only while a grow rehashes.
+  // Validate remembers a fixed-size record for every object member until the
+  // closing brace, then sorts by the decoded-name hash. Sorting supplies the
+  // worst-case bound: each member is re-decoded at most once, only in its
+  // equal-hash run, and that run is itself sorted by decoded text before a
+  // duplicate is refused. A deterministic hash only improves the average;
+  // it is not relied upon for the bound.
   static uint64_t HashDecodedMemberName(const std::string& name) {
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+    (void)name;
+    return 0;
+#else
     uint64_t hash = UINT64_C(14695981039346656037);
     for (unsigned char c : name) {
       hash ^= c;
       hash *= UINT64_C(1099511628211);
     }
     return hash;
+#endif
   }
 
-  struct MemberNameOffsets {
-    std::vector<uint32_t> slots;
-    size_t live = 0;
+  struct MemberNameRecord {
+    uint64_t hash;
+    size_t offset;
   };
 
-  std::string DecodeMemberNameAt(uint32_t offset) {
+  static_assert(sizeof(MemberNameRecord) == 16, "member name records stay fixed at 16 bytes");
+
+  std::string DecodeMemberNameAt(size_t offset) {
     const size_t saved = i_;
     i_ = offset;
     try {
@@ -302,35 +308,30 @@ class ParserImpl {
     }
   }
 
-  void GrowMemberNameOffsets(MemberNameOffsets* offsets) {
-    std::vector<uint32_t> grown(offsets->slots.empty() ? 8 : offsets->slots.size() * 2, 0);
-    const size_t mask = grown.size() - 1;
-    for (uint32_t offset : offsets->slots) {
-      if (offset == 0) continue;
-      const size_t slot = static_cast<size_t>(HashDecodedMemberName(DecodeMemberNameAt(offset - 1))) & mask;
-      size_t probe = slot;
-      while (grown[probe] != 0) probe = (probe + 1) & mask;
-      grown[probe] = offset;
-    }
-    offsets->slots.swap(grown);
+  void RememberMemberName(std::vector<MemberNameRecord>* records, const std::string& key, size_t key_offset) {
+    records->push_back({HashDecodedMemberName(key), key_offset});
   }
 
-  void RememberMemberName(MemberNameOffsets* offsets, const std::string& key, size_t key_offset) {
-    if (key_offset >= std::numeric_limits<uint32_t>::max()) {
-      throw std::runtime_error("json_lite: object member offset exceeds 32-bit range");
-    }
-    if (offsets->slots.empty() || (offsets->live + 1) * 2 > offsets->slots.size()) GrowMemberNameOffsets(offsets);
-
-    const size_t mask = offsets->slots.size() - 1;
-    size_t probe = static_cast<size_t>(HashDecodedMemberName(key)) & mask;
-    while (offsets->slots[probe] != 0) {
-      if (DecodeMemberNameAt(offsets->slots[probe] - 1) == key) {
-        throw std::runtime_error("json_lite: duplicate object member '" + key + "'");
+  void RefuseDuplicateMemberNames(std::vector<MemberNameRecord>* records) {
+    std::sort(records->begin(), records->end(), [](const MemberNameRecord& a, const MemberNameRecord& b) {
+      return a.hash < b.hash;
+    });
+    for (size_t first = 0; first < records->size();) {
+      size_t last = first + 1;
+      while (last < records->size() && (*records)[last].hash == (*records)[first].hash) ++last;
+      if (last - first > 1) {
+        std::vector<std::string> names;
+        names.reserve(last - first);
+        for (size_t n = first; n < last; ++n) names.push_back(DecodeMemberNameAt((*records)[n].offset));
+        std::sort(names.begin(), names.end());
+        for (size_t n = 1; n < names.size(); ++n) {
+          if (names[n - 1] == names[n]) {
+            throw std::runtime_error("json_lite: duplicate object member '" + names[n] + "'");
+          }
+        }
       }
-      probe = (probe + 1) & mask;
+      first = last;
     }
-    offsets->slots[probe] = static_cast<uint32_t>(key_offset + 1);
-    ++offsets->live;
   }
 
   template <bool Build>
@@ -344,8 +345,9 @@ class ParserImpl {
       if constexpr (Build) empty = Value::MakeObject();
       return empty;
     }
-    RefuseWideContainer('}');
-    MemberNameOffsets member_name_offsets;
+    const size_t direct_members = RefuseWideContainer('}');
+    std::vector<MemberNameRecord> member_name_records;
+    member_name_records.reserve(direct_members);
     Parsed<Build> v;
     if constexpr (Build) v = Value::MakeObject();
     while (true) {
@@ -356,7 +358,7 @@ class ParserImpl {
       // accepts. Keeping the first occurrence would make a consumer disagree
       // with a last-member reader; reject the object before any caller can
       // look a field up through Value::Find().
-      RememberMemberName(&member_name_offsets, key, key_offset);
+      RememberMemberName(&member_name_records, key, key_offset);
       SkipWs();
       Expect(':');
       Parsed<Build> val = ParseValue<Build>();
@@ -364,7 +366,10 @@ class ParserImpl {
       SkipWs();
       const char c = Next();
       if (c == ',') continue;
-      if (c == '}') break;
+      if (c == '}') {
+        RefuseDuplicateMemberNames(&member_name_records);
+        break;
+      }
       throw std::runtime_error("json_lite: malformed object");
     }
     return v;

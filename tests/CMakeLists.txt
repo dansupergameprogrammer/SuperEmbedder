@@ -588,6 +588,12 @@ function(semb_add_workspace_tests)
   add_executable(u1_workspace_seam_test EXCLUDE_FROM_ALL "${_semb_test_dir}/u1_workspace_seam_test.cpp")
   target_link_libraries(u1_workspace_seam_test PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
   target_include_directories(u1_workspace_seam_test PRIVATE "${_semb_test_dir}")
+  # TE-213: a private worker for te196's equal-hash I5 cell. It is invoked
+  # only by the ordinary te196 driver and is never registered as a test.
+  add_executable(te213_manifest_binding_testseam_worker EXCLUDE_FROM_ALL "${_semb_test_dir}/te196_manifest_binding_test.cpp")
+  target_link_libraries(te213_manifest_binding_testseam_worker PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
+  target_include_directories(te213_manifest_binding_testseam_worker PRIVATE "${_semb_test_dir}" "${CMAKE_SOURCE_DIR}/src/superembedder")
+  add_dependencies(te196_manifest_binding_test te213_manifest_binding_testseam_worker)
   # TE-145 (U1 slice 2): the seam-observable batch cells (C4's no-forward-ran
   # proof, C26's two races, C48, C49, C50) and the real W-B witness leg both
   # need the identical testseam wiring this function already builds for
@@ -605,7 +611,7 @@ function(semb_add_workspace_tests)
   target_include_directories(w_b_corpus_witness_test PRIVATE "${_semb_test_dir}")
   set_target_properties(superembedder_testseam PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
-  set_target_properties(u1_workspace_seam_test u1_batch_workspace_test w_b_corpus_witness_test PROPERTIES
+  set_target_properties(u1_workspace_seam_test u1_batch_workspace_test w_b_corpus_witness_test te213_manifest_binding_testseam_worker PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
   # Explicit diagnostic configurations compile generated fault copies only into
   # the noninstalled seam target. The production source/target is unchanged.
