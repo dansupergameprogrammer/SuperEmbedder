@@ -117,6 +117,11 @@ std::string Write(const Value& v);
 // type).
 Value Parse(const std::string& text);
 
+// Validates exactly the JSON language and resource budgets Parse() accepts,
+// without constructing a Value tree.  Validation boundaries that need only
+// json_lite's refusal authority use this entry point before declining input.
+void Validate(const std::string& text);
+
 }  // namespace semb::json
 
 #endif  // SUPEREMBEDDER_JSON_LITE_H

@@ -3,6 +3,8 @@
 
 #include <cctype>
 #include <cstdio>
+#include <type_traits>
+#include <unordered_set>
 
 namespace semb::json {
 
@@ -108,14 +110,27 @@ class ParserImpl {
   explicit ParserImpl(const std::string& text) : s_(text) {}
 
   Value Parse() {
+    return ParseDocument<true>();
+  }
+
+  void Validate() {
+    (void)ParseDocument<false>();
+  }
+
+ private:
+  struct Validated {};
+  template <bool Build>
+  using Parsed = std::conditional_t<Build, Value, Validated>;
+
+  template <bool Build>
+  Parsed<Build> ParseDocument() {
     SkipWs();
-    Value v = ParseValue();
+    Parsed<Build> v = ParseValue<Build>();
     SkipWs();
     if (i_ != s_.size()) throw std::runtime_error("json_lite: trailing content after top-level value");
     return v;
   }
 
- private:
   const std::string& s_;
   size_t i_ = 0;
   int depth_ = 0;
@@ -176,19 +191,25 @@ class ParserImpl {
     return false;
   }
 
-  Value ParseValue() {
+  template <bool Build>
+  Parsed<Build> ParseValue() {
     ChargeNode();
     SkipWs();
     const char c = Peek();
-    if (c == '{') return ParseObject();
-    if (c == '[') return ParseArray();
-    if (c == '"') return Value::MakeString(ParseString());
-    if (c == 't' || c == 'f') return ParseBool();
+    if (c == '{') return ParseObject<Build>();
+    if (c == '[') return ParseArray<Build>();
+    if (c == '"') {
+      std::string value = ParseString();
+      if constexpr (Build) return Value::MakeString(std::move(value));
+      else return {};
+    }
+    if (c == 't' || c == 'f') return ParseBool<Build>();
     if (c == 'n') {
       if (!TryLiteral("null")) throw std::runtime_error("json_lite: malformed literal");
-      return Value();
+      if constexpr (Build) return Value();
+      else return {};
     }
-    return ParseNumber();
+    return ParseNumber<Build>();
   }
 
   // TE-193 P-6: counts the DIRECT children of the container whose opening
@@ -245,16 +266,21 @@ class ParserImpl {
     }
   }
 
-  Value ParseObject() {
+  template <bool Build>
+  Parsed<Build> ParseObject() {
     DepthGuard guard(this);
     Expect('{');
-    Value v = Value::MakeObject();
     SkipWs();
     if (Peek() == '}') {
       ++i_;
-      return v;
+      Parsed<Build> empty;
+      if constexpr (Build) empty = Value::MakeObject();
+      return empty;
     }
     RefuseWideContainer('}');
+    std::unordered_set<std::string> member_names;
+    Parsed<Build> v;
+    if constexpr (Build) v = Value::MakeObject();
     while (true) {
       SkipWs();
       std::string key = ParseString();
@@ -262,13 +288,13 @@ class ParserImpl {
       // accepts. Keeping the first occurrence would make a consumer disagree
       // with a last-member reader; reject the object before any caller can
       // look a field up through Value::Find().
-      if (v.Has(key)) {
+      if (!member_names.emplace(key).second) {
         throw std::runtime_error("json_lite: duplicate object member '" + key + "'");
       }
       SkipWs();
       Expect(':');
-      Value val = ParseValue();
-      v.as_object.emplace_back(std::move(key), std::move(val));
+      Parsed<Build> val = ParseValue<Build>();
+      if constexpr (Build) v.as_object.emplace_back(std::move(key), std::move(val));
       SkipWs();
       const char c = Next();
       if (c == ',') continue;
@@ -278,18 +304,23 @@ class ParserImpl {
     return v;
   }
 
-  Value ParseArray() {
+  template <bool Build>
+  Parsed<Build> ParseArray() {
     DepthGuard guard(this);
     Expect('[');
-    Value v = Value::MakeArray();
     SkipWs();
     if (Peek() == ']') {
       ++i_;
-      return v;
+      Parsed<Build> empty;
+      if constexpr (Build) empty = Value::MakeArray();
+      return empty;
     }
     RefuseWideContainer(']');
+    Parsed<Build> v;
+    if constexpr (Build) v = Value::MakeArray();
     while (true) {
-      v.as_array.push_back(ParseValue());
+      Parsed<Build> element = ParseValue<Build>();
+      if constexpr (Build) v.as_array.push_back(std::move(element));
       SkipWs();
       const char c = Next();
       if (c == ',') continue;
@@ -403,23 +434,33 @@ class ParserImpl {
     return out;
   }
 
-  Value ParseBool() {
+  template <bool Build>
+  Parsed<Build> ParseBool() {
     if (TryLiteral("true")) {
-      Value v;
-      v.kind = Kind::kBool;
-      v.as_bool = true;
-      return v;
+      if constexpr (Build) {
+        Value v;
+        v.kind = Kind::kBool;
+        v.as_bool = true;
+        return v;
+      } else {
+        return {};
+      }
     }
     if (TryLiteral("false")) {
-      Value v;
-      v.kind = Kind::kBool;
-      v.as_bool = false;
-      return v;
+      if constexpr (Build) {
+        Value v;
+        v.kind = Kind::kBool;
+        v.as_bool = false;
+        return v;
+      } else {
+        return {};
+      }
     }
     throw std::runtime_error("json_lite: malformed literal");
   }
 
-  Value ParseNumber() {
+  template <bool Build>
+  Parsed<Build> ParseNumber() {
     const size_t start = i_;
     if (i_ < s_.size() && s_[i_] == '-') ++i_;
     bool any_digit = false;
@@ -451,7 +492,8 @@ class ParserImpl {
     } catch (const std::out_of_range&) {
       throw std::runtime_error("json_lite: integer out of int64 range");
     }
-    return Value::MakeInt(parsed);
+    if constexpr (Build) return Value::MakeInt(parsed);
+    else return {};
   }
 };
 
@@ -466,6 +508,11 @@ std::string Write(const Value& v) {
 Value Parse(const std::string& text) {
   ParserImpl p(text);
   return p.Parse();
+}
+
+void Validate(const std::string& text) {
+  ParserImpl p(text);
+  p.Validate();
 }
 
 }  // namespace semb::json
