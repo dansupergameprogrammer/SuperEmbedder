@@ -213,20 +213,6 @@ void TryOpenExpect(const std::string& cell, const fs::path& stem, semb_status ex
   if (bank) semb_bank_close(bank);  // never reached on a correct refusal; drains defensively
 }
 
-// The in-ceiling row control deliberately owns no 10,000,000-row payload.
-// Its only assertion is therefore that the reader's U1 ceiling does not
-// reject the boundary value; a later payload validation may return another
-// status. The output handle is still required to stay null on that later
-// refusal, and is closed defensively if a future fixture supplies a payload.
-void TryOpenNotStatus(const std::string& cell, const fs::path& stem, semb_status forbidden,
-                      const std::string& forbidden_name) {
-  const std::string stem_str = stem.string();
-  semb_bank bank = nullptr;
-  const semb_status s = semb_bank_open(stem_str.c_str(), stem_str.size(), &bank);
-  Verdict(s != forbidden, cell, std::string(Name(s)) + " (must not be " + forbidden_name + ")");
-  if (bank) semb_bank_close(bank);
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -541,15 +527,17 @@ int main(int argc, char** argv) {
   }
 
   // =========================================================================
-  // TE-202 S-3 -- U1 admits at most 10,000,000 rows.  The over-ceiling
+  // TE-202 S-3 / TE-205 Minor -- U1 admits at most 10,000,000 rows.  The over-ceiling
   // construction changes only the header count of a good triple, so a reader
   // that checks at the boundary refuses without materializing a JSON tree or
   // reaching payload-pair validation. The boundary control has no matching
-  // payload; it proves only that the ceiling itself admits 10,000,000.
+  // payload; it proves the count passes the U1 ceiling and reaches the
+  // subsequent payload-size validation, which returns SEMB_BANK_SIZE_MISMATCH.
   // =========================================================================
   {
     constexpr int64_t kU1MaxBankRows = 10'000'000;
     const semb_status st_ceiling = ResolveStatus("SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
+    const semb_status st_size_mismatch = ResolveStatus("SEMB_BANK_SIZE_MISMATCH");
     const std::string count_field = "\"count\": 2";
     {
       const fs::path stem = scratch / (a.stem + "_t_u1_rows_over");
@@ -577,8 +565,9 @@ int main(int argc, char** argv) {
                        return ReplaceOnce(header, count_field,
                                           "\"count\": " + std::to_string(kU1MaxBankRows));
                      })) {
-        TryOpenNotStatus(label + "/S3 header count 10,000,000 is not rejected by the U1 ceiling",
-                         stem, st_ceiling, "SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
+        TryOpenExpect(label + "/TE205 Minor count 10,000,000 passes U1 ceiling and reaches payload-size validation "
+                             "-> SEMB_BANK_SIZE_MISMATCH",
+                      stem, st_size_mismatch, "SEMB_BANK_SIZE_MISMATCH");
       }
     }
   }
