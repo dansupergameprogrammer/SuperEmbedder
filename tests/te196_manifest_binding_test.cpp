@@ -364,7 +364,7 @@ uint64_t Fnv1a(const std::string& name) {
 bool AlphaNum(char c) { return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
 
 template <typename Emit>
-void EmitLow14Colliders(size_t count, Emit emit) {
+size_t EmitLow14Colliders(size_t count, Emit emit) {
   constexpr char alphabet[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
   constexpr size_t alphabet_size = sizeof(alphabet) - 1;
   constexpr uint64_t mask = (UINT64_C(1) << 14) - 1;
@@ -376,23 +376,33 @@ void EmitLow14Colliders(size_t count, Emit emit) {
   for (size_t a = 0; a < alphabet_size && emitted < count; ++a) for (size_t b = 0; b < alphabet_size && emitted < count; ++b)
     for (size_t c = 0; c < alphabet_size && emitted < count; ++c) for (size_t d = 0; d < alphabet_size && emitted < count; ++d) {
       std::string prefix{alphabet[a], alphabet[b], alphabet[c], alphabet[d]};
-      const char last = static_cast<char>((Fnv1a(prefix) & mask) ^ wanted_before_last);
-      if (AlphaNum(last)) emit(prefix + last), ++emitted;
+      const uint64_t last_value = (Fnv1a(prefix) & mask) ^ wanted_before_last;
+      if (last_value < 256 && AlphaNum(static_cast<char>(last_value))) {
+        const std::string name = prefix + static_cast<char>(last_value);
+        if ((Fnv1a(name) & mask) != (Fnv1a("") & mask)) {
+          throw std::runtime_error("TE213 collider generator emitted a non-collider");
+        }
+        emit(name);
+        ++emitted;
+      }
     }
   if (emitted != count) throw std::runtime_error("TE213 collider generator exhausted its printable population");
+  return emitted;
 }
 
-void WriteTe213Header(const fs::path& header, size_t members, bool colliders) {
+size_t WriteTe213Header(const fs::path& header, size_t members, bool colliders) {
   std::ofstream out(header, std::ios::binary);
   if (!out) throw std::runtime_error("cannot create " + header.string());
   WriteTe209Prefix(&out);
   out << '{';
   bool first = true;
   auto emit = [&](const std::string& name) { if (!first) out << ','; first = false; out << '"' << name << "\":0"; };
-  if (colliders) EmitLow14Colliders(members, emit);
+  size_t collider_count = 0;
+  if (colliders) collider_count = EmitLow14Colliders(members, emit);
   else for (size_t n = 0; n < members; ++n) emit("k" + std::to_string(n));
   out << "}}";
   if (!out) throw std::runtime_error("cannot write " + header.string());
+  return collider_count;
 }
 
 double MedianSeconds(std::vector<double> values) {
@@ -407,8 +417,13 @@ int RunTe213Worker(const Args& a) {
   if (members == 0) { Verdict(false, "TE213 worker", "unknown worker " + a.te213_worker); return 1; }
   fs::create_directories(a.scratch);
   const fs::path header = fs::path(a.scratch) / (a.stem + "_te213_" + a.te213_worker + ".wvbank.json");
-  try { WriteTe213Header(header, members, colliders); }
+  size_t collider_count = 0;
+  try { collider_count = WriteTe213Header(header, members, colliders); }
   catch (const std::exception& e) { Verdict(false, "TE213/" + a.te213_worker + " fixture", e.what()); return 1; }
+  if (colliders) {
+    Verdict(collider_count == members, "TE213/" + a.te213_worker + " asserts every emitted name shares low 14 FNV bits",
+            "colliders=" + std::to_string(collider_count));
+  }
   try { semb::json::Validate(ReadFileBytes(header)); }
   catch (const std::exception& e) { Verdict(false, "TE213/" + a.te213_worker + " fixture validates", e.what()); return 1; }
   const size_t header_bytes = static_cast<size_t>(fs::file_size(header));
@@ -445,7 +460,8 @@ void RunTe213Workers(const Args& a, const char* executable) {
   const fs::path worker = fs::path(executable).parent_path() / "te213_manifest_binding_testseam_worker.exe";
   Verdict(fs::exists(worker), "TE213 seam worker exists", worker.string());
   for (const char* tag : {"k4096", "k16384", "j500000", "j2000000"}) {
-    const int rc = _spawnl(_P_WAIT, worker.string().c_str(), worker.string().c_str(), "--model", a.model.c_str(),
+    const std::string worker_path = tag[0] == 'j' ? worker.string() : executable;
+    const int rc = _spawnl(_P_WAIT, worker_path.c_str(), worker_path.c_str(), "--model", a.model.c_str(),
       "--tokenizer", a.tokenizer.c_str(), "--dims", std::to_string(a.dims).c_str(), "--scratch", a.scratch.c_str(),
       "--stem", a.stem.c_str(), "--te213-worker", tag, nullptr);
     Verdict(rc == 0, std::string("TE213/") + tag + " fresh-process worker", rc == 0 ? "exit 0" : "nonzero exit");
