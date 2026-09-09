@@ -136,7 +136,9 @@ struct Statuses {
   int32_t ok, null_argument, invalid_handle, corpus_empty, document_id_duplicate,
       fingerprint_mismatch, manifest_schema_unsupported, bank_size_mismatch,
       artifact_sha_mismatch, adapter_id_mismatch, ps_version_label_mismatch,
-      context_cap_exceeded;
+      context_cap_exceeded, bank_ids_count_mismatch, bank_nonfinite_row,
+      bank_zero_norm_row, bank_geometry_ceiling_exceeded,
+      bank_metric_dtype_unsupported, bank_digest_mismatch, artifact_unreadable;
 };
 Statuses ResolveStatuses() {
   using semb_contract::StatusByName;
@@ -153,6 +155,19 @@ Statuses ResolveStatuses() {
   s.adapter_id_mismatch = StatusByName("SEMB_ADAPTER_ID_MISMATCH");
   s.ps_version_label_mismatch = StatusByName("SEMB_PS_VERSION_LABEL_MISMATCH");
   s.context_cap_exceeded = StatusByName("SEMB_CONTEXT_CAP_EXCEEDED");
+  // TE-183 (D-SLM6410), ordinals 28-31: the four FORMAT.md sec 1 obligations
+  // cell 2's tamper constructions drove by value only, unpinned, until now.
+  s.bank_ids_count_mismatch = StatusByName("SEMB_BANK_IDS_COUNT_MISMATCH");
+  s.bank_nonfinite_row = StatusByName("SEMB_BANK_NONFINITE_ROW");
+  s.bank_zero_norm_row = StatusByName("SEMB_BANK_ZERO_NORM_ROW");
+  s.bank_geometry_ceiling_exceeded = StatusByName("SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
+  // TE-192 (D-SLM6467 F2/F8), ordinal 32: unknown metric/dtype.
+  s.bank_metric_dtype_unsupported = StatusByName("SEMB_BANK_METRIC_DTYPE_UNSUPPORTED");
+  // TE-192 (D-SLM6467 F3/F8), ordinal 33: a manifest digest (row_digest, or
+  // corpus_digest's self-consistency against its own witness copy)
+  // disagreeing with what it is checked against.
+  s.bank_digest_mismatch = StatusByName("SEMB_BANK_DIGEST_MISMATCH");
+  s.artifact_unreadable = StatusByName("SEMB_ARTIFACT_UNREADABLE");
   return s;
 }
 
@@ -335,6 +350,23 @@ std::string ReplaceOnce(std::string s, const std::string& from, const std::strin
   return s.substr(0, pos) + to + s.substr(pos + from.size());
 }
 
+// The manifest's own "corpus_digest" key appears TWICE in a good triple's
+// text -- once inside provenance.witness (the witness pass's own copy) and
+// once at the top level (D-SLM6409(b): the two are the SAME value by
+// construction) -- and when both copies still carry the identical value
+// (as a good triple's do), `ReplaceOnce` on the bare key/value pair finds
+// the FIRST (witness) occurrence, not the top-level one this construction
+// means to tamper. `ReplaceLast` finds the LAST occurrence instead, so a
+// caller can target the top-level field specifically while leaving the
+// witness copy untouched -- which is the whole point of the construction
+// (assert open catches the two disagreeing, not merely that the field
+// changed).
+std::string ReplaceLast(std::string s, const std::string& from, const std::string& to) {
+  auto pos = s.rfind(from);
+  if (pos == std::string::npos) throw std::runtime_error("ReplaceLast: '" + from + "' not found");
+  return s.substr(0, pos) + to + s.substr(pos + from.size());
+}
+
 bool DirEmptyOfTriple(const fs::path& stem) {
   return !FileExists(fs::path(stem.string() + ".wvbank.json")) &&
          !FileExists(fs::path(stem.string() + ".wvbank.bin")) &&
@@ -452,6 +484,53 @@ int main(int argc, char** argv) {
       bool tok_counts_ok = manifest.as_object.count("per_row_token_counts") &&
                             manifest["per_row_token_counts"].arr().size() == wb_docs.size();
       Verdict(tok_counts_ok, label + "/cell1 per_row_token_counts has one entry per row, row order", "");
+
+      // TE-187 bare cell 4 (row 5(b), D-SLM6409(b)): this bake's own act of
+      // encoding is its own witness pass -- provenance.witness.corpus_digest
+      // and the top-level corpus_digest are the SAME value BY CONSTRUCTION
+      // on a legitimately baked manifest. (The refusal side -- a manifest
+      // whose two copies disagree -- is TE-192 item 2's own
+      // "corpus_digest_binding" construction in cell 2.)
+      {
+        const std::string witness_corpus_digest = manifest["provenance"]["witness"]["corpus_digest"].s();
+        const std::string top_level_corpus_digest = manifest["corpus_digest"].s();
+        Verdict(!witness_corpus_digest.empty() && witness_corpus_digest == top_level_corpus_digest,
+                label + "/cell1 provenance.witness.corpus_digest equals the top-level corpus_digest "
+                        "(D-SLM6409(b): this bake's own encoding is its own witness pass)",
+                "witness=" + witness_corpus_digest.substr(0, 16) + "... top_level=" +
+                    top_level_corpus_digest.substr(0, 16) + "...");
+      }
+
+      // TE-187 bare cell 5 (row 5(c), D-SLM6409(c)): through Slice 4,
+      // object_code_sha, engine_object_code_sha, and machine_tier (the
+      // top-level field; provenance.witness.cpu_tier carries the same
+      // convention) still carry the pending-sentinel convention rather
+      // than a computed value -- a guard-vitality claim about what must
+      // NOT YET be true, violated by any one of the three carrying a
+      // computed value ahead of U2. semb_source_sha is explicitly excluded
+      // -- its own circularity is deferred to Slice 7 (D-SLM6443 item 2)
+      // -- never added to this cell's scope until that slice.
+      {
+        auto is_pending_sentinel = [](const std::string& v) {
+          return v.rfind("SEMB-", 0) == 0 && v.find("-PENDING-") != std::string::npos;
+        };
+        const std::string object_code_sha = manifest["provenance"]["object_code_sha"].s();
+        const std::string engine_object_code_sha = manifest["provenance"]["engine_object_code_sha"].s();
+        const std::string machine_tier = manifest["machine_tier"].s();
+        const std::string witness_cpu_tier = manifest["provenance"]["witness"]["cpu_tier"].s();
+        Verdict(is_pending_sentinel(object_code_sha),
+                label + "/cell1 provenance.object_code_sha still carries the pending-sentinel convention "
+                        "(D-SLM6409(c), not yet computed through Slice 4)", object_code_sha);
+        Verdict(is_pending_sentinel(engine_object_code_sha),
+                label + "/cell1 provenance.engine_object_code_sha still carries the pending-sentinel convention "
+                        "(D-SLM6409(c), not yet computed through Slice 4)", engine_object_code_sha);
+        Verdict(is_pending_sentinel(machine_tier),
+                label + "/cell1 the top-level machine_tier still carries the pending-sentinel convention "
+                        "(D-SLM6409(c), not yet computed through Slice 4)", machine_tier);
+        Verdict(is_pending_sentinel(witness_cpu_tier),
+                label + "/cell1 provenance.witness.cpu_tier still carries the pending-sentinel convention "
+                        "(D-SLM6409(c), not yet computed through Slice 4)", witness_cpu_tier);
+      }
     } else if (bake_cap_refused) {
       Missing(label + "/cell1 header/payload/manifest pins, payload identity, SuperFAISS must-accept",
               "this open handle's own context_cap is smaller than an uncut WB document (D-SLM6411 item c); "
@@ -480,6 +559,39 @@ int main(int argc, char** argv) {
       Verdict(DirEmptyOfTriple(refuse_stem),
               label + "/cell1 refused bake writes NONE of the three sibling files, not even a partial one",
               DirEmptyOfTriple(refuse_stem) ? "confirmed absent" : "a file was left behind");
+      semb_encoder_close(enc);
+    }
+  }
+
+  // TE-187 bare cell 3 (row 3), D-SLM6440's own fix (TE-184 item 3, built
+  // ad hoc in that round's own build record since tests/** was barred to
+  // that seat -- this is the registration TE-187 row 3 names as still
+  // owed): a missing OUTPUT directory refuses SEMB_ARTIFACT_UNREADABLE,
+  // never the generic engine-refused catch-all.
+  {
+    semb_encoder enc = Open(a);
+    if (enc) {
+      DocSet nodir_arena;
+      std::vector<semb_document> nodir_docs = {nodir_arena.Add("n0", "a single small document")};
+      const fs::path nodir_parent = scratch / (a.stem + "_nonexistent_parent");
+      const fs::path nodir_stem = nodir_parent / "out";
+      // The parent directory itself must not exist -- not merely be empty
+      // -- this is the "missing" half of D-SLM6440's own "missing or
+      // unwritable" rule; removed rather than assumed absent, so a prior
+      // run's leftovers cannot silently pass this construction.
+      fs::remove_all(nodir_parent);
+      Verdict(!fs::exists(nodir_parent),
+              label + "/cell1 (setup) the output path's own parent directory does not exist",
+              fs::exists(nodir_parent) ? "EXISTS (setup defect)" : "confirmed absent");
+      const std::string stem_str = nodir_stem.string();
+      const semb_status ns = semb_bake_to_path(enc, nodir_docs.data(), nodir_docs.size(), stem_str.c_str(), stem_str.size());
+      Verdict(ns == st.artifact_unreadable,
+              label + "/cell1 bake into a non-existent parent directory -> SEMB_ARTIFACT_UNREADABLE, not the "
+                      "generic engine-refused catch-all (TE-187 row 3, D-SLM6440)",
+              Name(ns));
+      Verdict(!fs::exists(nodir_parent),
+              label + "/cell1 the refused bake did not create the missing parent directory either",
+              fs::exists(nodir_parent) ? "the directory now exists (defect)" : "confirmed still absent");
       semb_encoder_close(enc);
     }
   }
@@ -597,25 +709,39 @@ int main(int argc, char** argv) {
     {
       fs::path stem = scratch / (a.stem + "_t_ids_missing");
       if (CopyTriple(good_stem, stem, label + "/cell2 ids array missing entirely", nullptr, [](std::string header) {
+            // "ids" is written last (confirmed at source, encoder.cpp's own
+            // header.Set() order and the baked header's own byte layout), so
+            // removing it must also remove the preceding ", " -- leaving it
+            // in place drops a dangling trailing comma before the closing
+            // brace, which is a JSON SYNTAX error, not the "ids missing"
+            // semantic this construction names: it made semb_bank_open's own
+            // json parse throw and refuse SEMB_ARTIFACT_UNREADABLE before the
+            // ids-cardinality check this construction targets ever ran.
             json_mini::Parser p(header);
             json_mini::Value v = p.Parse();
             const auto& ids = v["ids"];
-            std::string quoted = "\"ids\": [";
+            std::string quoted = ", \"ids\": [";
             for (size_t i = 0; i < ids.arr().size(); ++i) quoted += (i ? ", " : "") + ("\"" + ids.arr()[i].s() + "\"");
             quoted += "]";
             return ReplaceOnce(header, quoted, "");
           })) {
-        try_open_expect("ids array missing entirely -- asserted a refusal, no status this round names it "
-                         "(routed as a finding)", stem, -1, "");
+        try_open_expect("ids array missing entirely -> SEMB_BANK_IDS_COUNT_MISMATCH (TE-183, D-SLM6410)",
+                         stem, st.bank_ids_count_mismatch, "SEMB_BANK_IDS_COUNT_MISMATCH");
       }
     }
     // ids array: short (one fewer entry than count).
     {
       fs::path stem = scratch / (a.stem + "_t_ids_short");
       if (CopyTriple(good_stem, stem, label + "/cell2 ids array short by one", nullptr,
-                     [](std::string header) { return ReplaceOnce(header, "\"g1\"", ""); })) {
-        try_open_expect("ids array short by one -- asserted a refusal, no status this round names it "
-                         "(routed as a finding)", stem, -1, "");
+                     // Same JSON-syntax hazard as "ids array missing
+                     // entirely" just above: "g1" is the array's LAST
+                     // element, so removing only the token leaves a
+                     // dangling ", " before the closing "]" -- a syntax
+                     // error, not a short array. Removing the leading ", "
+                     // too leaves a syntactically valid one-element array.
+                     [](std::string header) { return ReplaceOnce(header, ", \"g1\"", ""); })) {
+        try_open_expect("ids array short by one -> SEMB_BANK_IDS_COUNT_MISMATCH (TE-183, D-SLM6410)",
+                         stem, st.bank_ids_count_mismatch, "SEMB_BANK_IDS_COUNT_MISMATCH");
       }
     }
     // ids array: duplicated (both entries the same id).
@@ -638,8 +764,8 @@ int main(int argc, char** argv) {
             }
             return bin;
           })) {
-        try_open_expect("a non-finite row value -- asserted a refusal, no status this round names it "
-                         "(routed as a finding)", stem, -1, "");
+        try_open_expect("a non-finite row value -> SEMB_BANK_NONFINITE_ROW (TE-183, D-SLM6410)",
+                         stem, st.bank_nonfinite_row, "SEMB_BANK_NONFINITE_ROW");
       }
     }
     // A zero-norm row (metric cosine). D-SLM6411 item (b): the construction
@@ -655,8 +781,8 @@ int main(int argc, char** argv) {
                        std::fill(bin.begin(), bin.begin() + std::min<size_t>(bin.size(), static_cast<size_t>(dims) * 4), '\0');
                        return bin;
                      })) {
-        try_open_expect("a zero-norm row under cosine (zeroed at the pair's own dims) -- asserted a refusal, "
-                         "no status this round names it (routed as a finding)", stem, -1, "");
+        try_open_expect("a zero-norm row under cosine (zeroed at the pair's own dims) -> SEMB_BANK_ZERO_NORM_ROW "
+                         "(TE-183, D-SLM6410)", stem, st.bank_zero_norm_row, "SEMB_BANK_ZERO_NORM_ROW");
       }
     }
     // Header geometry over the ceilings -- dims over 131,072, on the header
@@ -666,8 +792,9 @@ int main(int argc, char** argv) {
       if (CopyTriple(good_stem, stem, label + "/cell2 dims over 131,072", nullptr,
                      [&](std::string header) { return ReplaceOnce(header, "\"dims\": " + std::to_string(a.dims),
                                                                     "\"dims\": 999999999"); })) {
-        try_open_expect("dims over 131,072 refused on the header alone -- asserted a refusal, no status this "
-                         "round names it (routed as a finding)", stem, -1, "");
+        try_open_expect("dims over 131,072 refused on the header alone -> SEMB_BANK_GEOMETRY_CEILING_EXCEEDED "
+                         "(TE-183, D-SLM6410)", stem, st.bank_geometry_ceiling_exceeded,
+                         "SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
       }
     }
     // count over 2^28, on the header alone.
@@ -675,8 +802,163 @@ int main(int argc, char** argv) {
       fs::path stem = scratch / (a.stem + "_t_count_ceiling");
       if (CopyTriple(good_stem, stem, label + "/cell2 count over 2^28", nullptr,
                      [](std::string header) { return ReplaceOnce(header, "\"count\": 2", "\"count\": 999999999"); })) {
-        try_open_expect("count over 2^28 refused on the header alone -- asserted a refusal, no status this "
-                         "round names it (routed as a finding)", stem, -1, "");
+        try_open_expect("count over 2^28 refused on the header alone -> SEMB_BANK_GEOMETRY_CEILING_EXCEEDED "
+                         "(TE-183, D-SLM6410)", stem, st.bank_geometry_ceiling_exceeded,
+                         "SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
+      }
+    }
+    // Unknown metric (F2, D-SLM6467/D-SLM6472): FORMAT.md sec 1's own
+    // admitted set is {"dot", "cosine", "l2"}; a value outside that set is
+    // this round's own SEMB_BANK_METRIC_DTYPE_UNSUPPORTED (32).
+    {
+      fs::path stem = scratch / (a.stem + "_t_metric_unknown");
+      if (CopyTriple(good_stem, stem, label + "/cell2 unknown metric", nullptr,
+                     [](std::string header) { return ReplaceOnce(header, "\"metric\": \"cosine\"",
+                                                                    "\"metric\": \"unknown\""); })) {
+        try_open_expect("unknown metric -> SEMB_BANK_METRIC_DTYPE_UNSUPPORTED (F2, D-SLM6467)", stem,
+                         st.bank_metric_dtype_unsupported, "SEMB_BANK_METRIC_DTYPE_UNSUPPORTED");
+      }
+    }
+    // Unknown dtype (F2, D-SLM6467/D-SLM6472): FORMAT.md sec 1's own
+    // admitted dtype is "float32" alone.
+    {
+      fs::path stem = scratch / (a.stem + "_t_dtype_unknown");
+      if (CopyTriple(good_stem, stem, label + "/cell2 unknown dtype", nullptr,
+                     [](std::string header) { return ReplaceOnce(header, "\"dtype\": \"float32\"",
+                                                                    "\"dtype\": \"garbage\""); })) {
+        try_open_expect("unknown dtype -> SEMB_BANK_METRIC_DTYPE_UNSUPPORTED (F2, D-SLM6467)", stem,
+                         st.bank_metric_dtype_unsupported, "SEMB_BANK_METRIC_DTYPE_UNSUPPORTED");
+      }
+    }
+    // F3/F8 (D-SLM6467, D-SLM6472): one mutation-pinned refusal per
+    // relationship TE-191's semb_bank_open now cross-checks between the
+    // manifest and its paired header/payload, or the manifest's own
+    // internal fields -- each construction mutates ONE field alone in a
+    // copy of the good triple, so cell 6's self-consistency claim is the
+    // handle's own (checked at open), never the test's own recomputation.
+    // count -> SEMB_BANK_SIZE_MISMATCH. The good triple is always 2
+    // documents (g0, g1) on both legs, mechanism and product -- "count": 2
+    // is a safe literal here, unlike dims below.
+    {
+      fs::path stem = scratch / (a.stem + "_t_manifest_count");
+      if (CopyTriple(good_stem, stem, label + "/cell2 manifest count disagrees with the header",
+                     [](std::string m) { return ReplaceOnce(m, "\"count\": 2", "\"count\": 3"); })) {
+        try_open_expect("manifest count disagrees with the header -> SEMB_BANK_SIZE_MISMATCH (F3, D-SLM6467)", stem,
+                         st.bank_size_mismatch, "SEMB_BANK_SIZE_MISMATCH");
+      }
+    }
+    // dims -> SEMB_BANK_SIZE_MISMATCH. dims varies by leg (32 mechanism,
+    // 1024 product), so the tamper is built from a.dims rather than a literal.
+    {
+      fs::path stem = scratch / (a.stem + "_t_manifest_dims");
+      if (CopyTriple(good_stem, stem, label + "/cell2 manifest dims disagrees with the header",
+                     [dims = a.dims](std::string m) {
+                       return ReplaceOnce(m, "\"dims\": " + std::to_string(dims),
+                                          "\"dims\": " + std::to_string(dims + 1));
+                     })) {
+        try_open_expect("manifest dims disagrees with the header -> SEMB_BANK_SIZE_MISMATCH (F3, D-SLM6467)", stem,
+                         st.bank_size_mismatch, "SEMB_BANK_SIZE_MISMATCH");
+      }
+    }
+    // per_row_token_counts cardinality -> SEMB_BANK_SIZE_MISMATCH (the same
+    // cardinality obligation ids already carries at the header level,
+    // reused here at the manifest level). Built generically from the
+    // parsed array so it holds at any document count, not just 2.
+    {
+      fs::path stem = scratch / (a.stem + "_t_manifest_token_counts_cardinality");
+      if (CopyTriple(good_stem, stem, label + "/cell2 per_row_token_counts short by one", [](std::string m) {
+            json_mini::Parser p(m);
+            json_mini::Value v = p.Parse();
+            const auto& counts = v["per_row_token_counts"];
+            std::string full = "\"per_row_token_counts\": [";
+            for (size_t i = 0; i < counts.arr().size(); ++i) full += (i ? ", " : "") + std::to_string(counts.arr()[i].i());
+            full += "]";
+            std::string shortened = "\"per_row_token_counts\": [";
+            for (size_t i = 0; i + 1 < counts.arr().size(); ++i) shortened += (i ? ", " : "") + std::to_string(counts.arr()[i].i());
+            shortened += "]";
+            return ReplaceOnce(m, full, shortened);
+          })) {
+        try_open_expect("per_row_token_counts short by one -> SEMB_BANK_SIZE_MISMATCH (F3, D-SLM6467)", stem,
+                         st.bank_size_mismatch, "SEMB_BANK_SIZE_MISMATCH");
+      }
+    }
+    // row_digest -> SEMB_BANK_DIGEST_MISMATCH: recomputed over the payload
+    // just read; a manifest whose own copy disagrees is refused.
+    {
+      fs::path stem = scratch / (a.stem + "_t_manifest_row_digest");
+      if (CopyTriple(good_stem, stem, label + "/cell2 manifest row_digest disagrees with the payload", [](std::string m) {
+            json_mini::Parser p(m);
+            json_mini::Value v = p.Parse();
+            const std::string real = v["row_digest"].s();
+            std::string tampered = real;
+            tampered[0] = (tampered[0] == '0') ? '1' : '0';
+            return ReplaceOnce(m, "\"row_digest\": \"" + real + "\"", "\"row_digest\": \"" + tampered + "\"");
+          })) {
+        try_open_expect("manifest row_digest disagrees with the payload -> SEMB_BANK_DIGEST_MISMATCH (F3, D-SLM6467)",
+                         stem, st.bank_digest_mismatch, "SEMB_BANK_DIGEST_MISMATCH");
+      }
+    }
+    // corpus_digest's own binding -> SEMB_BANK_DIGEST_MISMATCH: the
+    // top-level corpus_digest and provenance.witness.corpus_digest are the
+    // SAME value by construction (D-SLM6409(b)); this tampers the
+    // TOP-LEVEL copy alone (ReplaceLast -- the key appears twice in the
+    // text, witness's own copy first) and leaves the witness copy
+    // untouched, so open's own binding check -- not a plain "the field
+    // changed" check -- is what this construction exercises.
+    {
+      fs::path stem = scratch / (a.stem + "_t_manifest_corpus_digest_binding");
+      if (CopyTriple(good_stem, stem, label + "/cell2 top-level corpus_digest disagrees with its own witness copy",
+                     [](std::string m) {
+                       json_mini::Parser p(m);
+                       json_mini::Value v = p.Parse();
+                       const std::string real = v["corpus_digest"].s();  // the top-level copy
+                       std::string tampered = real;
+                       tampered[0] = (tampered[0] == '0') ? '1' : '0';
+                       return ReplaceLast(m, "\"corpus_digest\": \"" + real + "\"",
+                                          "\"corpus_digest\": \"" + tampered + "\"");
+                     })) {
+        try_open_expect("top-level corpus_digest disagrees with its own witness copy -> SEMB_BANK_DIGEST_MISMATCH "
+                         "(F3, D-SLM6467)", stem, st.bank_digest_mismatch, "SEMB_BANK_DIGEST_MISMATCH");
+      }
+    }
+    // label:engine_path_id -> SEMB_ADAPTER_ID_MISMATCH (reused: open checks
+    // this label against this BUILD's own compiled semb_adapter_self_id(),
+    // a free handle-less accessor, not a caller-supplied encoder). The
+    // real value is read back from the manifest rather than hardcoded, so
+    // this construction holds whatever this build's own compiled identity is.
+    {
+      fs::path stem = scratch / (a.stem + "_t_manifest_label_engine_path_id");
+      if (CopyTriple(good_stem, stem,
+                     label + "/cell2 label:engine_path_id disagrees with this build's own compiled identity",
+                     [](std::string m) {
+                       json_mini::Parser p(m);
+                       json_mini::Value v = p.Parse();
+                       const std::string real = v["label:engine_path_id"].s();
+                       return ReplaceOnce(m, "\"label:engine_path_id\": \"" + real + "\"",
+                                          "\"label:engine_path_id\": \"" + real + "_tampered\"");
+                     })) {
+        try_open_expect("label:engine_path_id disagrees with this build's own compiled identity -> "
+                         "SEMB_ADAPTER_ID_MISMATCH (F3, D-SLM6467)", stem, st.adapter_id_mismatch,
+                         "SEMB_ADAPTER_ID_MISMATCH");
+      }
+    }
+    // label:ps_version -> SEMB_PS_VERSION_LABEL_MISMATCH (reused: open
+    // checks this label against this build's own compiled
+    // semb_ps_n_version_label()/semb_ps1_version_label()).
+    {
+      fs::path stem = scratch / (a.stem + "_t_manifest_label_ps_version");
+      if (CopyTriple(good_stem, stem,
+                     label + "/cell2 label:ps_version disagrees with this build's own compiled identity",
+                     [](std::string m) {
+                       json_mini::Parser p(m);
+                       json_mini::Value v = p.Parse();
+                       const std::string real = v["label:ps_version"].s();
+                       return ReplaceOnce(m, "\"label:ps_version\": \"" + real + "\"",
+                                          "\"label:ps_version\": \"" + real + "_tampered\"");
+                     })) {
+        try_open_expect("label:ps_version disagrees with this build's own compiled identity -> "
+                         "SEMB_PS_VERSION_LABEL_MISMATCH (F3, D-SLM6467)", stem, st.ps_version_label_mismatch,
+                         "SEMB_PS_VERSION_LABEL_MISMATCH");
       }
     }
   }
