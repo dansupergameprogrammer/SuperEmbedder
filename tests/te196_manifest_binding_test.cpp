@@ -169,6 +169,17 @@ std::string ReplaceOnce(std::string s, const std::string& from, const std::strin
   return s.substr(0, pos) + to + s.substr(pos + from.size());
 }
 
+std::string WideIntegerArrayMember(const std::string& name, size_t values) {
+  std::string member = ", \"" + name + "\": [";
+  member.reserve(member.size() + values * 2 + 2);
+  for (size_t i = 0; i < values; ++i) {
+    if (i) member += ',';
+    member += '0';
+  }
+  member += "]}";
+  return member;
+}
+
 // Removes one complete string-valued object member without leaving an invalid
 // comma behind.  The construction deliberately removes the field rather than
 // changing its value: this is the required-field presence class.
@@ -211,6 +222,24 @@ void TryOpenExpect(const std::string& cell, const fs::path& stem, semb_status ex
   Verdict(s == expect, cell, std::string(Name(s)) + " (expected " + expect_name + ")");
   Verdict(bank == nullptr, cell + " leaves *out == NULL", bank == nullptr ? "confirmed" : "NOT NULL");
   if (bank) semb_bank_close(bank);  // never reached on a correct refusal; drains defensively
+}
+
+void TryOpenExpectWithPeakBound(const std::string& cell, const fs::path& stem, semb_status expect,
+                                const std::string& expect_name, size_t header_bytes) {
+  const std::string stem_str = stem.string();
+  semb_bank bank = nullptr;
+  const semb_status s = semb_bank_open(stem_str.c_str(), stem_str.size(), &bank);
+  Verdict(s == expect, cell, std::string(Name(s)) + " (expected " + expect_name + ")");
+  Verdict(bank == nullptr, cell + " leaves *out == NULL", bank == nullptr ? "confirmed" : "NOT NULL");
+  if (bank) semb_bank_close(bank);
+#if defined(_WIN32)
+  const size_t peak = PeakWorkingSetBytes();
+  const size_t bound = 4 * header_bytes + size_t{64} * 1024 * 1024;
+  Verdict(peak != 0 && peak < bound, cell + " keeps peak working set below 4 x header bytes + 64 MB",
+          "peak working set = " + std::to_string(peak) + " bytes; bound = " + std::to_string(bound) + " bytes");
+#else
+  Observed(cell + " peak working set not measured on this platform (no bound asserted)");
+#endif
 }
 
 }  // namespace
@@ -490,6 +519,116 @@ int main(int argc, char** argv) {
   }
 
   // =========================================================================
+  // TE-207 -- the U1 read-boundary ceiling composes json_lite's complete
+  // malformed-input authority with status parity, no tree construction, and
+  // null output.  These small malformed forms run before the wide cells so
+  // their Windows process-peak bounds grade their own headers rather than a
+  // preceding wide construction.
+  // =========================================================================
+  {
+    constexpr int64_t kU1MaxBankRows = 10'000'000;
+    constexpr size_t kJsonLiteMaxDepth = 200;
+    const semb_status st_unreadable = ResolveStatus("SEMB_ARTIFACT_UNREADABLE");
+    const std::string count_field = "\"count\": 2";
+    struct MalformedCase {
+      const char* suffix;
+      const char* description;
+      std::function<std::string(std::string)> edit;
+    };
+    const std::vector<MalformedCase> cases = {
+        {"raw_control", "raw control byte inside an unknown string",
+         [count_field](std::string header) {
+           header = ReplaceOnce(std::move(header), count_field, "\"count\": 10000001");
+           return ReplaceOnce(std::move(header), "}", ", \"hostile\": \"raw\ncontrol\"}");
+         }},
+        {"unpaired_surrogate", "unpaired surrogate escape inside an unknown string",
+         [count_field](std::string header) {
+           header = ReplaceOnce(std::move(header), count_field, "\"count\": 10000001");
+           return ReplaceOnce(std::move(header), "}", ", \"hostile\": \"\\uD800\"}");
+         }},
+        {"non_integer", "non-integer number inside an unknown member",
+         [count_field](std::string header) {
+           header = ReplaceOnce(std::move(header), count_field, "\"count\": 10000001");
+           return ReplaceOnce(std::move(header), "}", ", \"hostile\": 1.5}");
+         }},
+        {"depth_201", "one level over json_lite's nesting budget",
+         [count_field](std::string header) {
+           header = ReplaceOnce(std::move(header), count_field, "\"count\": 10000001");
+           std::string member = ", \"hostile\": ";
+           member.append(kJsonLiteMaxDepth + 1, '[');
+           member += '0';
+           member.append(kJsonLiteMaxDepth + 1, ']');
+           member += '}';
+           return ReplaceOnce(std::move(header), "}", member);
+         }},
+    };
+    for (const MalformedCase& malformed : cases) {
+      const fs::path stem = scratch / (a.stem + "_t_te207_" + malformed.suffix);
+      if (CopyTriple(good_stem, stem, label + "/TE207 " + malformed.description, nullptr, malformed.edit)) {
+        TryOpenExpectWithPeakBound(label + "/TE207 over-ceiling count plus " + malformed.description +
+                                       " -> SEMB_ARTIFACT_UNREADABLE",
+                                   stem, st_unreadable, "SEMB_ARTIFACT_UNREADABLE",
+                                   static_cast<size_t>(fs::file_size(stem.string() + ".wvbank.json")));
+      }
+    }
+  }
+
+  // =========================================================================
+  // TE-207 -- parser-valid wide members and nested duplicate keys compose
+  // with the U1 ceiling.  The 8,000,000-value member is below json_lite's
+  // 20,000,000-node budget, so only an actual validate-only pass can return
+  // the ceiling without materializing a Value tree.  The parity control is
+  // deliberately last: its count is at the ceiling and therefore exercises
+  // the scan-less path, which materializes before reporting size mismatch.
+  // =========================================================================
+  {
+    constexpr size_t kWideValues = 8'000'000;
+    constexpr size_t kJsonLiteMaxNodes = 20'000'000;
+    const semb_status st_ceiling = ResolveStatus("SEMB_BANK_GEOMETRY_CEILING_EXCEEDED");
+    const semb_status st_unreadable = ResolveStatus("SEMB_ARTIFACT_UNREADABLE");
+    const std::string count_field = "\"count\": 2";
+    {
+      const fs::path stem = scratch / (a.stem + "_t_te207_nested_duplicate");
+      if (CopyTriple(good_stem, stem, label + "/TE207 nested duplicate plus count 10,000,001", nullptr,
+                     [count_field](std::string header) {
+                       header = ReplaceOnce(std::move(header), count_field, "\"count\": 10000001");
+                       return ReplaceOnce(std::move(header), "}",
+                                          ", \"hostile\": {\"nested\": 1, \"nested\": 2}}");
+                     })) {
+        TryOpenExpect(label + "/TE207 nested duplicate plus count 10,000,001 -> SEMB_ARTIFACT_UNREADABLE",
+                      stem, st_unreadable, "SEMB_ARTIFACT_UNREADABLE");
+      }
+    }
+    {
+      const fs::path stem = scratch / (a.stem + "_t_te207_admitted_wide");
+      if (CopyTriple(good_stem, stem, label + "/TE207 admitted 8,000,000-value member plus count 10,000,001", nullptr,
+                     [count_field](std::string header) {
+                       header = ReplaceOnce(std::move(header), count_field, "\"count\": 10000001");
+                       return ReplaceOnce(std::move(header), "}", WideIntegerArrayMember("hostile", kWideValues));
+                     })) {
+        TryOpenExpectWithPeakBound(label + "/TE207 admitted 8,000,000-value member plus count 10,000,001 "
+                                       "-> SEMB_BANK_GEOMETRY_CEILING_EXCEEDED",
+                                   stem, st_ceiling, "SEMB_BANK_GEOMETRY_CEILING_EXCEEDED",
+                                   static_cast<size_t>(fs::file_size(stem.string() + ".wvbank.json")));
+      }
+    }
+    {
+      const fs::path stem = scratch / (a.stem + "_t_te207_budget_plus_one");
+      if (CopyTriple(good_stem, stem, label + "/TE207 budget-plus-one member plus count 10,000,001", nullptr,
+                     [count_field](std::string header) {
+                       header = ReplaceOnce(std::move(header), count_field, "\"count\": 10000001");
+                       return ReplaceOnce(std::move(header), "}",
+                                          WideIntegerArrayMember("hostile", kJsonLiteMaxNodes + 1));
+                     })) {
+        TryOpenExpectWithPeakBound(label + "/TE207 budget-plus-one member plus count 10,000,001 "
+                                       "-> SEMB_ARTIFACT_UNREADABLE",
+                                   stem, st_unreadable, "SEMB_ARTIFACT_UNREADABLE",
+                                   static_cast<size_t>(fs::file_size(stem.string() + ".wvbank.json")));
+      }
+    }
+  }
+
+  // =========================================================================
   // TE-193 P-12 -- dims:0 and count:-1 are malformed header values, not
   // values over a format ceiling: they refuse SEMB_ARTIFACT_UNREADABLE, and
   // the ceiling status is reserved for dims > 131,072 / count > 2^28 (the
@@ -616,6 +755,27 @@ int main(int argc, char** argv) {
       Observed(label + "/P6 peak working set not measured on this platform (no bound asserted; "
                       "the refusal itself is asserted above)");
 #endif
+    }
+  }
+
+  // The parity control runs after the legacy ceiling-memory controls: its
+  // accepted count deliberately follows the scan-less materializing path,
+  // so its peak must not become the old controls' process-lifetime reading.
+  {
+    constexpr int64_t kU1MaxBankRows = 10'000'000;
+    constexpr size_t kWideValues = 8'000'000;
+    const semb_status st_size_mismatch = ResolveStatus("SEMB_BANK_SIZE_MISMATCH");
+    const std::string count_field = "\"count\": 2";
+    const fs::path stem = scratch / (a.stem + "_t_te207_parity");
+    if (CopyTriple(good_stem, stem, label + "/TE207 parity control count 10,000,000 with admitted wide member", nullptr,
+                   [count_field](std::string header) {
+                     header = ReplaceOnce(std::move(header), count_field,
+                                          "\"count\": " + std::to_string(kU1MaxBankRows));
+                     return ReplaceOnce(std::move(header), "}", WideIntegerArrayMember("hostile", kWideValues));
+                   })) {
+      TryOpenExpect(label + "/TE207 parity control (not openability): count 10,000,000 with admitted wide member "
+                         "-> SEMB_BANK_SIZE_MISMATCH",
+                    stem, st_size_mismatch, "SEMB_BANK_SIZE_MISMATCH");
     }
   }
 
