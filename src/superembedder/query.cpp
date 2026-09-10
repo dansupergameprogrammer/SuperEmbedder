@@ -1,6 +1,7 @@
 #include "superembedder/semb.h"
 
 #include "query_internal.h"
+#include "semb_wq_population.h"
 
 #include <array>
 #include <atomic>
@@ -49,17 +50,9 @@ namespace {
 
 using semb::kQueryPrefix;
 
-// The committed W-Q population: five uncapped join strings and one dedicated
-// truncation-order string. The digest is intentionally built in this TU so a
-// change to query composition rotates witness_sha during encoder open.
-constexpr const char* kJoinQueries[] = {
-    "temperature", "  leading and trailing whitespace query  ",
-    "MixedCASE Query With Numbers 42", "unicode café façade 日本語 query",
-    "<|endoftext|> embedded literal in the middle of a query"};
-constexpr char kTruncationQueryLead[] =
-    "A long committed query string for the truncation-order leg, four hundred distinct tokens long so "
-    "any witness-internal cap set below its own length forces a real cut: ";
-constexpr size_t kWitnessQueryContentCap = 96;
+// These values are generated from the configure-verified committed fixture.
+// The truncation cap travels beside that population in its manifest.
+constexpr size_t kWitnessQueryContentCap = semb::kWqTruncationContentCap;
 
 std::string ComposeQuery(std::string_view text) {
   std::string composed;
@@ -69,17 +62,33 @@ std::string ComposeQuery(std::string_view text) {
   return composed;
 }
 
-std::string BuildTruncationQuery() {
-  std::string query(kTruncationQueryLead);
-  for (unsigned i = 1; i <= 400; ++i) {
-    query.append("term-");
-    if (i < 10) query.append("000");
-    else if (i < 100) query.append("00");
-    else if (i < 1000) query.append("0");
-    query.append(std::to_string(i));
-    if (i != 400) query.push_back(' ');
+bool ParseCommittedTexts(std::string_view jsonl, std::vector<std::string_view>* out) {
+  if (!out) return false;
+  out->clear();
+  size_t line_start = 0;
+  while (line_start < jsonl.size()) {
+    const size_t line_end = jsonl.find('\n', line_start);
+    const std::string_view line = jsonl.substr(
+        line_start, (line_end == std::string_view::npos ? jsonl.size() : line_end) - line_start);
+    if (!line.empty()) {
+      constexpr std::string_view kTextKey = "\"text\": \"";
+      const size_t text_start = line.find(kTextKey);
+      if (text_start == std::string_view::npos || line.size() < 2 ||
+          line.substr(line.size() - 2) != "\"}") return false;
+      const size_t value_start = text_start + kTextKey.size();
+      if (value_start > line.size() - 2) return false;
+      out->push_back(line.substr(value_start, line.size() - 2 - value_start));
+    }
+    if (line_end == std::string_view::npos) break;
+    line_start = line_end + 1;
   }
-  return query;
+  return true;
+}
+
+std::string BuildTruncationQuery() {
+  std::vector<std::string_view> queries;
+  if (!ParseCommittedTexts(semb::kWqTruncationJsonl, &queries) || queries.size() != 1) return {};
+  return std::string(queries.front());
 }
 
 void UpdateU64(superslm::Sha256* hash, uint64_t value) {
@@ -143,9 +152,12 @@ class QueryLease {
 
 bool semb_compute_wq_digest(semb_encoder_s* encoder, std::array<uint8_t, 32>* out_digest) {
   if (!encoder || !out_digest) return false;
+  std::vector<std::string_view> join_queries;
+  if (!ParseCommittedTexts(semb::kWqJoinJsonl, &join_queries) || join_queries.size() != 5) return false;
+  if (BuildTruncationQuery().empty()) return false;
   superslm::Sha256 hash;
-  UpdateU64(&hash, sizeof(kJoinQueries) / sizeof(kJoinQueries[0]) + 1);
-  for (const char* query : kJoinQueries) {
+  UpdateU64(&hash, join_queries.size() + 1);
+  for (std::string_view query : join_queries) {
     if (!HashWitnessPosition(encoder, query, std::numeric_limits<size_t>::max(), &hash)) return false;
   }
   if (!HashWitnessPosition(encoder, BuildTruncationQuery(), kWitnessQueryContentCap, &hash)) return false;
