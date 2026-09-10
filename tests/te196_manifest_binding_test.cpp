@@ -659,15 +659,17 @@ void RunTe215SlopeWorkers(const Args& a, const char* executable) {
 #endif
 }
 
-// TE-217 (o)/(p): I3's grammar-minimum and transient-term populations.  The
+// TE-217 (o)/(p): I3's grammar-minimum and transient-term populations. The
 // compact object repeats the legal empty member name, so each retained member
 // costs the grammar minimum of five bytes ("":0, apart from the final comma).
-// The long-name pair holds only two records, making decoded comparator and
-// adjacent-walk temporaries the whole variable term.
+// The long-name family holds only two records, making decoded comparator and
+// adjacent-walk temporaries the whole variable term. TE-219 uses three sizes:
+// its two interval slopes grade the source-derived 2.75x transient bound.
 constexpr size_t kTe217Compact4M = 4'000'000;
 constexpr size_t kTe217Compact16M = 16'000'000;
 constexpr size_t kTe217LongName4MiB = size_t{4} * 1024 * 1024;
 constexpr size_t kTe217LongName16MiB = size_t{16} * 1024 * 1024;
+constexpr size_t kTe217LongName32MiB = size_t{32} * 1024 * 1024;
 
 void WriteTe217CompactHeader(const fs::path& header, size_t members) {
   std::ofstream out(header, std::ios::binary);
@@ -705,6 +707,7 @@ int RunTe217Worker(const Args& a) {
     else if (tag == "empty16000000") WriteTe217CompactHeader(header, kTe217Compact16M);
     else if (tag == "long4194304") WriteTe217LongNameHeader(header, kTe217LongName4MiB);
     else if (tag == "long16777216") WriteTe217LongNameHeader(header, kTe217LongName16MiB);
+    else if (tag == "long33554432") WriteTe217LongNameHeader(header, kTe217LongName32MiB);
     else throw std::runtime_error("unknown TE-217 worker: " + tag);
   } catch (const std::exception& e) {
     Verdict(false, "TE217/" + tag + " fixture", e.what());
@@ -745,8 +748,30 @@ void RunTe217SlopeWorkers(const Args& a, const char* executable) {
   spawn("empty4000000"); spawn("empty16000000");
   assert_slope("(o) repeated-empty-name object (4,000,000 / 16,000,000)",
                read_measure("empty4000000"), read_measure("empty16000000"));
-  spawn("long4194304"); spawn("long16777216");
-  assert_slope("(p) two shared 4 MiB / 16 MiB names", read_measure("long4194304"), read_measure("long16777216"));
+  auto assert_transient_slope = [&](const std::string& interval, const Measurement& lo, const Measurement& hi) {
+    const bool grows = hi.header_bytes > lo.header_bytes && hi.peak >= lo.peak;
+    const size_t peak_growth = grows ? hi.peak - lo.peak : 0;
+    const size_t header_growth = grows ? hi.header_bytes - lo.header_bytes : 0;
+    // B = 1 header buffer + 2 decoded buffers * (1.5 capacity/name) *
+    // (1/2 header/name) + 0.25 stated allocator margin = 2.75. Cross-
+    // multiplication preserves the exact 11/4 boundary.
+    const bool ok = grows && 4 * peak_growth <= 11 * header_growth;
+    Verdict(ok, "TE217 (p) two shared names " + interval +
+                    " transient slope <= B=2.75 x header growth "
+                    "(1 + 2 x 1.5 x 0.5 + 0.25)",
+            "peak(small)=" + std::to_string(lo.peak) + " header(small)=" + std::to_string(lo.header_bytes) +
+            " peak(large)=" + std::to_string(hi.peak) + " header(large)=" + std::to_string(hi.header_bytes) +
+            " peak growth=" + std::to_string(peak_growth) + " 2.75 x header growth=" +
+            std::to_string((11 * header_growth) / 4));
+  };
+  spawn("long4194304");
+  const Measurement long4 = read_measure("long4194304");
+  spawn("long16777216");
+  const Measurement long16 = read_measure("long16777216");
+  assert_transient_slope("(4 MiB / 16 MiB)", long4, long16);
+  spawn("long33554432");
+  const Measurement long32 = read_measure("long33554432");
+  assert_transient_slope("(16 MiB / 32 MiB)", long16, long32);
 #else
   (void)a; (void)executable;
   Observed("TE217 fresh-process slope cells are Windows-only");
