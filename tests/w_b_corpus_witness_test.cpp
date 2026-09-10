@@ -931,11 +931,12 @@ int main(int argc, char** argv) {
     // include/superembedder/wb_digest_abi.h's own header comment names).
     constexpr char kTag[] = "SEMBP001";
     static_assert(sizeof(kTag) - 1 == 8, "SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE is 8");
-    // The two U1 pending-sentinel literals ComputeProvisionalFingerprint
-    // hashes until W-Q and the certified-build set exist (this section's
-    // own header comment states why these two constants, and only these,
-    // are read from encoder.cpp rather than derived from the plan).
-    constexpr char kWqPendingSentinel[] = "SEMB-W-Q-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
+    // W-Q is a live third witness leg at this product tip. This test cannot
+    // independently recompute the enclosing fingerprint until the product
+    // declares its diagnostic accessor in a private witness ABI header:
+    // semb_wq_digest exists only as an undeclared query-handle-scoped symbol.
+    // Do not preserve the retired pending sentinel as an oracle; it makes the
+    // correct three-leg fingerprint fail while proving nothing about W-B.
     constexpr char kCertificationPendingSentinel[] =
         "SEMB-CERTIFIED-BUILDS-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
     // sec 2.1's own literal, verbatim (confirmed against the plan, not
@@ -979,48 +980,10 @@ int main(int argc, char** argv) {
         semb_wa_digest(wa);
         uint8_t wb[32];
         const semb_status swb = semb_wb_digest(enc, wb);
-        uint8_t wq[32];
-        sha256(kWqPendingSentinel, sizeof(kWqPendingSentinel) - 1, wq);
-        uint8_t witness_sha[32];
-        {
-          std::vector<uint8_t> buf;
-          buf.insert(buf.end(), wa, wa + 32);
-          buf.insert(buf.end(), wb, wb + 32);
-          buf.insert(buf.end(), wq, wq + 32);
-          sha256(buf.data(), buf.size(), witness_sha);
-        }
-        uint8_t certification_epoch[32];
-        sha256(kCertificationPendingSentinel, sizeof(kCertificationPendingSentinel) - 1, certification_epoch);
-
-        uint8_t inner[32];
-        {
-          std::vector<uint8_t> buf(kTag, kTag + sizeof(kTag) - 1);
-          update_field(&buf, model_sha);
-          update_field(&buf, tokenizer_sha);
-          update_field(&buf, template_sha256);
-          update_field(&buf, witness_sha);
-          update_field(&buf, certification_epoch);
-          sha256(buf.data(), buf.size(), inner);
-        }
-        uint8_t expected[32];
-        std::memcpy(expected, kTag, sizeof(kTag) - 1);
-        std::memcpy(expected + (sizeof(kTag) - 1), inner, 32 - (sizeof(kTag) - 1));
-
-        char text_buf[] = "a document encoded to read the emitted fingerprint";
-        std::vector<uint8_t> row(static_cast<size_t>(a.dims) * sizeof(float) + 16);
-        auto p = reinterpret_cast<uintptr_t>(row.data());
-        float* aligned = reinterpret_cast<float*>((p + 15) & ~uintptr_t(15));
-        size_t req = 0;
-        semb_fingerprint fp{};
-        fp.struct_size = sizeof(fp);
-        const semb_status se = semb_encode(enc, text_buf, sizeof(text_buf) - 1, aligned,
-                                            static_cast<size_t>(a.dims) * sizeof(float), &req, &fp);
-
-        Verdict(Is(swb, "SEMB_OK") && Is(se, "SEMB_OK") && std::memcmp(expected, fp.digest, 32) == 0,
-                "(fingerprint) the emitted semb_fingerprint equals the five-field composition "
-                "recomputed independently from sec 3.3/sec 4.4b (achievement claim: witness_sha's "
-                "W-B component is the REAL semb_wb_digest(enc,...) value, not kWbPendingSentinel)",
-                std::string(Name(se)) + " expected=" + Hex(expected) + " actual=" + Hex(fp.digest));
+        Missing("(fingerprint) the emitted semb_fingerprint equals the independent three-leg witness composition",
+                "requires a product-declared private witness ABI for semb_wq_digest; the current "
+                "query-handle-scoped, undeclared symbol cannot be called without adding a test-owned "
+                "declaration, and the bank comparison would remain circular. Routed to the builder.");
         semb_encoder_close(enc);
       }
     }

@@ -694,6 +694,7 @@ function(semb_add_workspace_tests)
   add_test(NAME u1_workspace_seam_absent_check
     COMMAND "${Python3_EXECUTABLE}" "${_semb_test_dir}/u1_workspace_seam_absent_check.py"
       --production "$<TARGET_FILE:superembedder>" --testseam "$<TARGET_FILE:superembedder_testseam>"
+      --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   if(CMAKE_GENERATOR MATCHES "Ninja")
     set(_semb_workspace_ninja "${CMAKE_MAKE_PROGRAM}")
@@ -1098,6 +1099,30 @@ if(DEFINED SEMB_LIBRARY_SOURCES)
   cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_te194_query_workspace_tests)
 endif()
 
+function(semb_add_te222_query_ownership_tests)
+  if(NOT TARGET superembedder_testseam)
+    return()
+  endif()
+  set(_semb_te222_test_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
+  add_executable(te222_query_ownership_test EXCLUDE_FROM_ALL
+                 "${_semb_te222_test_dir}/te222_query_ownership_test.cpp")
+  target_link_libraries(te222_query_ownership_test PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
+  target_include_directories(te222_query_ownership_test PRIVATE "${_semb_te222_test_dir}")
+  add_test(
+    NAME te222_query_ownership_check
+    COMMAND "${Python3_EXECUTABLE}" "${_semb_te222_test_dir}/te222_query_ownership_check.py"
+      --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+    WORKING_DIRECTORY "${_semb_te222_test_dir}/.."
+  )
+endfunction()
+if(DEFINED SEMB_LIBRARY_SOURCES)
+  cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_te222_query_ownership_tests)
+endif()
+
+add_executable(te222_c17_probe EXCLUDE_FROM_ALL te222_c17_probe.cpp)
+target_link_libraries(te222_c17_probe PRIVATE superembedder superslm::superslm)
+target_include_directories(te222_c17_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
 # Cell 4 -- C41 part 4's scope widening (semb_query_encode's own TU). Reads
 # the query TU's compiled object once it exists; RED-UNIMPLEMENTED today
 # (see the script's own header comment for why and for the routed finding
@@ -1115,6 +1140,6 @@ add_test(
 add_test(
 	NAME te194_c17_sixth_leg_construction
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te194_c17_sixth_leg_construction.py"
-		--build-dir "${CMAKE_BINARY_DIR}"
+		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )

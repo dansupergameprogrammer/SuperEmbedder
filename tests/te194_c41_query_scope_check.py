@@ -44,11 +44,10 @@ into the underlying script's own INFRASTRUCTURE FAIL exit(1), because a
 missing TU is this cell's own EXPECTED state today, not an authoring
 defect in this scan.
 
-Exit codes: 0 always, once the RED-UNIMPLEMENTED state is confirmed and
-printed (an uncommissioned/not-yet-buildable cell is not this driver's own
-failure); 1 only if the underlying scan's own machinery raises for a reason
-OTHER than "no compiled object for this TU" (an authoring-time defect in
-this script itself, never in the quarantined reading).
+Exit codes: 0 only after the object is found and the quarantined scan has
+completed. A missing object, candidate TU, or disassembler is infrastructure
+failure: quarantine protects a completed reading, never a runner that read
+nothing.
 """
 from __future__ import annotations
 
@@ -78,28 +77,14 @@ def main(argv: list) -> int:
           "invoking c41_part4_object_code_scan.py's own scan/classify machinery unchanged:")
 
     if not objdump or not Path(objdump).exists():
-        print("[MISSING PREREQUISITE] C41-part4-query-scope: no llvm-objdump found -- same non-failing "
-              "convention the base scan uses for this prerequisite.")
-        return 0
+        print("[FAIL] C41-part4-query-scope: no llvm-objdump found; the scan runner did not execute")
+        return 1
 
-    obj = c41.find_object(build_dir, QUERY_TU_CANDIDATE.replace(".cpp", ""))
+    obj = c41.find_object(build_dir, QUERY_TU_CANDIDATE)
     if obj is None:
-        print(f"[RED-UNIMPLEMENTED] C41-part4-query-scope: no compiled object found for "
-              f"'{QUERY_TU_CANDIDATE}' under {build_dir} -- semb_query_encode does not exist at this "
-              "branch's own tip, so there is no TU to widen the scan's scope with yet. ROUTED FINDING: "
-              f"'{QUERY_TU_CANDIDATE}' is this script's own best-guess candidate name (this project's "
-              "bank.cpp naming convention applied to the query verbs), not a grounded fact -- the "
-              "builder's round should confirm or correct it, and this script's own QUERY_TU_CANDIDATE "
-              "constant is the one line that needs editing if the name differs.")
-        print("[DISPOSITION] C41 part 4's full-scope closure (all three vector-emitting entry points, "
-              "sec 3.3's entry-point crossing table) is therefore NOT reached this round -- the existing "
-              "scan's own scope (encoder.cpp, ps1_pool.cpp, ps_n_pool.cpp, wa_digest.cpp) already covers "
-              "semb_encode/semb_encode_batch (Slices 0-2); the query entry point's own coverage is owed "
-              "to whichever round adds its TU. Filed as a finding for the builder, per this round's own "
-              "cell 4 text (\"the scan's scope now covers semb_query_encode's translation units\") -- "
-              "stated as an obligation this script positions to discharge the moment the TU exists, not "
-              "as a claim already discharged.")
-        return 0
+        print(f"[FAIL] C41-part4-query-scope: no compiled object found for '{QUERY_TU_CANDIDATE}' "
+              f"under {build_dir}; the runner did not execute")
+        return 1
 
     # NOT REACHED TODAY. Written for the round that finds the object present:
     # re-uses the base scan's own classify()/disassemble()/scan_object() over
@@ -109,9 +94,9 @@ def main(argv: list) -> int:
     print(f"[OBSERVED] {QUERY_TU_CANDIDATE} -> {obj}  matches={len(matches)}")
     for line in matches[:50]:
         print(f"    {line}")
-    print("  DISPOSITION: reading filed as QUARANTINED (StandardsDocument.md sec 5.4), the identical "
-          "quarantine the base scan's own C41 part 4 reading carries -- this widening does not change "
-          "that disposition, it only widens what is quarantined.")
+    print("  DISPOSITION: reading filed as QUARANTINED (StandardsDocument.md sec 5.4). The base scan "
+          "already derives query.cpp from SEMB_LIBRARY_SOURCES; this driver independently proves the "
+          "query object is discoverable and runs the same classifier over it.")
     return 0
 
 

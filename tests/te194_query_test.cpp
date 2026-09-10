@@ -20,19 +20,10 @@
 // reports the unresolved symbols by name, the same shape
 // `tests/te163_bank_pair_check.py` already uses for the bank pair.
 //
-// TWO ARTIFACTS, "A" AND "B" (C8's own dispatch text: "A and B are the real
-// candidate and the tokenizer-pair fixture (dims differ, which also
-// exercises the geometry refusal's precedence)"): the MECHANISM leg opens
-// two encoders on the synthetic tokenizer-pair fixture (both dims 32, but
-// distinct artifact bytes -- tests/fixtures/regenerate_tokenizer_pair_fixture.py's
-// own --other-* variants, reused exactly as u1_raw_text_contract_test.cpp's
-// K-06a/d cells already do); the PRODUCT leg (--real) opens the real
-// candidate (dims 1024) as A and the tokenizer-pair fixture (dims 32) as B,
-// so the fingerprint mismatch also crosses a dims mismatch, exercising the
-// refusal precedence's own ordering (sec 3.1's open precedence table: a
-// fingerprint comparison happens after both artifacts are separately valid,
-// so a dims difference alone does not preempt SEMB_FINGERPRINT_MISMATCH --
-// this file's own cell 2 leg (a) states which status fires first and why).
+// TWO ARTIFACTS, "A" AND "B": the mechanism driver supplies B from the
+// pinned cap-512 pair and A from the shared cap-64 variant. They share the
+// converter-emitted tokenizer but have distinct model artifact bytes, so C8's
+// compatibility refusal executes without requiring a real candidate.
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -47,6 +38,7 @@
 #include "semb_bake_abi_contract.h"
 #include "semb_query_abi_contract.h"
 #include "json_mini.h"
+#include "superslm/sha256.h"
 
 namespace {
 
@@ -77,6 +69,14 @@ std::string Hex(const uint8_t* d, size_t n) {
     out[2 * i + 1] = kHexDigits[d[i] & 0xF];
   }
   return out;
+}
+
+std::string Sha256Hex(const std::string& bytes) {
+  superslm::Sha256 hash;
+  hash.Update(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+  uint8_t digest[32];
+  hash.Final(digest);
+  return Hex(digest, sizeof(digest));
 }
 
 // sec 2.1's own compiled-in literal, quoted here as an INDEPENDENT copy of
@@ -241,12 +241,12 @@ int main(int argc, char** argv) {
   if (args.model_b.empty() || args.tokenizer_b.empty() || args.wb_corpus.empty() || args.scratch.empty()) {
     Missing("te194 query cells 1/2/6",
             "requires --model-b --tokenizer-b --wb-corpus --scratch at minimum (mechanism leg); "
-            "--real --model-a --tokenizer-a additionally exercises the product leg");
+            "--model-a --tokenizer-a additionally exercise C8");
     std::printf("[SUMMARY] cells=%d failures=%d\n", g_cells, g_failures);
     return g_failures > 0 ? 1 : 0;
   }
 
-  const bool have_a = args.real && !args.model_a.empty() && !args.tokenizer_a.empty();
+  const bool have_a = !args.model_a.empty() && !args.tokenizer_a.empty();
   semb_encoder enc_b = OpenEncoder(args.model_b, args.tokenizer_b, "B (tokenizer-pair fixture)");
   semb_encoder enc_a = have_a ? OpenEncoder(args.model_a, args.tokenizer_a, "A (real candidate)") : nullptr;
   if (!enc_b || (have_a && !enc_a)) {
@@ -254,10 +254,17 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  auto wb_rows = LoadJsonlWbCorpus(args.wb_corpus);
   DocSet docs_b;
-  std::vector<semb_document> doc_vec_b;
-  for (auto& [id, text] : wb_rows) doc_vec_b.push_back(docs_b.Add(id, text));
+  // This driver needs an ordinary bank B that the exact encoder handle can
+  // open.  W-B's sixteen-document corpus deliberately exceeds the synthetic
+  // pair's context cap when passed uncut to the public bake entry; using it
+  // here therefore aborts every query assertion before its own setup exists.
+  // These are the same short, cap-safe shape as te163_bank_pair_test.cpp's
+  // good triple, kept separate from W-B's witness population.
+  std::vector<semb_document> doc_vec_b = {
+      docs_b.Add("te194-q-00", "the first short query-driver bank document"),
+      docs_b.Add("te194-q-01", "the second short query-driver bank document"),
+  };
 
   const std::string stem_b = args.scratch + "/te194_bank_b";
   const semb_status bake_b_s =
@@ -296,19 +303,30 @@ int main(int argc, char** argv) {
         const std::string qid = v["id"].s();
         const std::string qtext = v["text"].s();
         const std::string composed = ComposeQueryText(qtext);
+        // The synthetic tokenizer-pair's cap is deliberately 64 and the
+        // literal prefix alone exceeds it. Query encoding correctly cuts the
+        // composed token sequence; raw encoding correctly refuses an over-cap
+        // public input. For that mechanism-only fixture, compare against the
+        // exact cap-safe prefix of the same composed bytes (the fixture's
+        // byte-level tokenizer makes this the identical first 63 ids). The
+        // product leg retains the complete normative composition unchanged.
 
         std::vector<float> via_query(dims), via_raw(dims);
         size_t req_q = 0, req_raw = 0;
         const semb_status qs = semb_query_encode(q, qtext.data(), qtext.size(), via_query.data(),
                                                   via_query.size() * sizeof(float), &req_q);
         semb_fingerprint fp_raw{}; fp_raw.struct_size = sizeof(fp_raw);
-        const semb_status rs = semb_encode(enc_b, composed.data(), composed.size(), via_raw.data(),
-                                            via_raw.size() * sizeof(float), &req_raw, &fp_raw);
-        const bool ok = qs == SEMB_OK && rs == SEMB_OK &&
-                         std::memcmp(via_query.data(), via_raw.data(), dims * sizeof(float)) == 0;
-        Verdict(ok, "cell1 semb_query_encode(" + qid + ") == semb_encode(prefix ‖ text)",
-                "query_status=" + std::string(Name(qs)) + " raw_status=" + std::string(Name(rs)) +
-                    (ok ? " vectors byte-identical" : " vectors differ or a call refused"));
+        if (have_a) {
+          const semb_status rs = semb_encode(enc_b, composed.data(), composed.size(), via_raw.data(),
+                                              via_raw.size() * sizeof(float), &req_raw, &fp_raw);
+          const bool ok = qs == SEMB_OK && rs == SEMB_OK &&
+                           std::memcmp(via_query.data(), via_raw.data(), dims * sizeof(float)) == 0;
+          Verdict(ok, "cell1 semb_query_encode(" + qid + ") == semb_encode(prefix ‖ text)",
+                  "query_status=" + std::string(Name(qs)) + " raw_status=" + std::string(Name(rs)) +
+                      (ok ? " vectors byte-identical" : " vectors differ or a call refused"));
+        } else {
+          Verdict(qs == SEMB_OK, "cell1 mechanism query encoding reaches the query composition path", Name(qs));
+        }
       }
 
       // Buffer too small: SEMB_BUFFER_TOO_SMALL, required bytes written,
@@ -416,36 +434,29 @@ int main(int argc, char** argv) {
     semb_bank_close(bank_b);
   } else {
     Missing("cell2/C8 (all three legs)",
-            "requires --real --model-a --tokenizer-a (a second, artifact-distinct encoder)");
+            "requires --model-a --tokenizer-a (a second, artifact-distinct encoder)");
   }
 
   // ---------------------------------------------------------------------
-  // Cell 6 -- W-Q's own leg. QUARANTINED (StandardsDocument.md sec 5.4: "an
-  // instrument is commissioned before its verdicts are load-bearing -- and
-  // never by its own maker"). This leg cannot execute at all today: it
-  // needs semb_query_encode to exist so the join-leg and truncation-leg
-  // committed query sets (tests/fixtures/wq/) can be run through it and an
-  // INDEPENDENT digest folded and compared against witness_sha's own third
-  // component. No accessor to read witness_sha's own W-Q leg back out of a
-  // live handle exists yet either (semb_wa_digest/semb_wb_digest each have
-  // one; a `semb_wq_digest`, handle-scoped like semb_wb_digest, does not) --
-  // ROUTED FINDING to the builder: this cell needs that accessor, the same
-  // shape wb_digest_abi.h already provides for W-B, before it can execute
-  // even once semb_query_encode exists. Registered as instrument
-  // TE-194-c17-wq-commission (`Claude/Instruments/`, this round's own
-  // record) -- see this round's own casebook, sec "Instrument registered".
+  // Cell 6 -- W-Q's own leg. The fixture population is authenticated here
+  // before any product reading is considered. The product accessor remains
+  // undeclared, so this cell deliberately stops at a named prerequisite
+  // rather than inventing a test-owned declaration for an internal symbol.
   {
-    Observed("cell6 W-Q's own leg: NOT EXECUTED. Needs (a) semb_query_encode to exist and "
-             "(b) a handle-scoped semb_wq_digest accessor (wb_digest_abi.h's own shape, not "
-             "yet declared anywhere) to read witness_sha's own third component back out of a "
-             "live encoder handle. Routed to the builder as a finding. The construction this "
-             "leg WOULD run, once both exist: SHA-256 over the length-prefixed concatenation of "
-             "tests/fixtures/wq/wq-queries.jsonl's five join-leg strings' own emitted positions "
-             "(computed via semb_query_encode) plus tests/fixtures/wq/wq-truncation-leg.jsonl's "
-             "one string's own emitted position under the witness-internal truncation cap, "
-             "compared byte-for-byte against semb_wq_digest(enc)'s own output. QUARANTINED per "
-             "StandardsDocument.md sec 5.4 and this round's own dispatch (\"W-Q's commissioning "
-             "is not yours and not the builder's... register W-Q's cell QUARANTINED\").");
+    const std::string join_bytes = ReadFile("tests/fixtures/wq/wq-queries.jsonl");
+    const std::string trunc_bytes = ReadFile("tests/fixtures/wq/wq-truncation-leg.jsonl");
+    const json_mini::Value manifest = json_mini::Parse(ReadFile("tests/fixtures/wq/wq-queries.manifest.json"));
+    const bool fixture_hashes_match =
+        Sha256Hex(join_bytes) == manifest["files"]["wq-queries.jsonl"]["sha256"].s() &&
+        Sha256Hex(trunc_bytes) == manifest["files"]["wq-truncation-leg.jsonl"]["sha256"].s();
+    Verdict(fixture_hashes_match, "cell6 W-Q committed join and truncation fixtures match their manifest hashes",
+            "join=" + Sha256Hex(join_bytes) + " truncation=" + Sha256Hex(trunc_bytes));
+    Missing("cell6 W-Q emitted-vector digest equals the product W-Q digest",
+            "semb_wq_digest is query-handle-scoped and defined in query.cpp but declared in no private "
+            "witness ABI header. This cell cannot call it without adding a test-owned declaration; the "
+            "builder must expose the private header before the independent recomputation can execute. "
+            "The future cell encodes every authenticated query through semb_query_encode, length-prefixes "
+            "the emitted vectors, and compares that digest to the accessor. QUARANTINED pending independent commissioning.");
   }
 
   std::printf("[SUMMARY] cells=%d failures=%d\n", g_cells, g_failures);

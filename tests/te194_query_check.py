@@ -8,15 +8,11 @@ against semb_query_open/semb_query_encode/semb_query_close/semb_fingerprint_of,
 undefined at this branch's own base 21b1735), so this driver builds it on
 demand and reports an unresolved symbol as RED-UNIMPLEMENTED BY NAME.
 
-WHAT IT RUNS: MECHANISM (always) -- artifact B is the synthetic tokenizer-pair
-fixture (tests/fixtures/regenerate_tokenizer_pair_fixture.py), baked against
-tests/fixtures/wb/wb-corpus.jsonl (the committed sixteen-document W-B
-corpus, reused here as a small, already-committed bake source -- this cell
-needs A bank to open, not W-B's own witness properties). PRODUCT (when
---model-a/--tokenizer-a name the real candidate artifact and its
-converter-emitted tokenizer, with --real): artifact A is the real
-candidate, exercising cell 2's own C8 legs (which need two artifact-distinct
-encoders).
+WHAT IT RUNS: MECHANISM (always) -- B is the pinned cap-512 C17 pair and A
+is the synthetic cap-64 variant, so C8 executes on two artifact-distinct,
+accepted synthetic encoders. The bank uses two short test documents, not the
+uncut W-B corpus that cannot bake under B's context cap. An optional caller
+model/tokenizer replaces A for an additional product reading.
 
 Exit codes: 0 every evaluated cell PASS, MISSING PREREQUISITE, or
 RED-UNIMPLEMENTED; 1 any FAIL or an unresolved-symbol build that turns out
@@ -34,6 +30,9 @@ from typing import List, Optional, Tuple
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import u1_raw_text_cells_check as u1raw  # noqa: E402  (sibling module, reused for ensure_pair(), per this tree's own convention)
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 FROZEN_SYMBOLS = ["semb_query_open", "semb_query_encode", "semb_query_close", "semb_fingerprint_of"]
 LEG_TIMEOUT_S_MECHANISM = 900
@@ -116,19 +115,33 @@ def main(argv: List[str]) -> int:
 
     pair_dir = REPO_ROOT / "build" / "_scratch" / "u1_pair"
     u1raw.ensure_pair(pair_dir)
-    model_b = pair_dir / "u1_pair_model.sslm"
-    tokenizer_b = pair_dir / "u1_pair_tokenizer.sslm"
+    model_a = pair_dir / "u1_pair_model.sslm"
+    tokenizer_a = pair_dir / "u1_pair_tokenizer.sslm"
+    pair_a = REPO_ROOT / "build" / "_scratch" / "te222_c17_pair"
+    model_b = pair_a / "u1_pair_model.sslm"
+    tokenizer_b = pair_a / "u1_pair_tokenizer.sslm"
+    if not model_b.exists() or not tokenizer_b.exists():
+        fixture = REPO_ROOT / "tests" / "fixtures" / "wq" / "regenerate_c17_highcap_pair_fixture.py"
+        made = subprocess.run([sys.executable, str(fixture), "--lock", "superslm.lock",
+                               "--out-dir", str(pair_a)], cwd=REPO_ROOT, capture_output=True,
+                              text=True, errors="replace")
+        if made.returncode or not model_b.exists() or not tokenizer_b.exists():
+            table.add("mechanism C8 fixture", "FAIL", (made.stdout + made.stderr)[-2000:])
+            return 1
 
     scratch = build_dir / "_scratch" / "te194_query"
     scratch.mkdir(parents=True, exist_ok=True)
     wb_corpus = REPO_ROOT / "tests" / "fixtures" / "wb" / "wb-corpus.jsonl"
 
     mech_args = ["--model-b", str(model_b), "--tokenizer-b", str(tokenizer_b),
+                 "--model-a", str(model_a), "--tokenizer-a", str(tokenizer_a),
                  "--wb-corpus", str(wb_corpus), "--scratch", str(scratch)]
     run_target(table, args.cmake_executable, build_dir, mech_args, "mechanism", LEG_TIMEOUT_S_MECHANISM)
 
     if args.model and args.tokenizer:
-        prod_args = mech_args + ["--real", "--model-a", args.model, "--tokenizer-a", args.tokenizer]
+        prod_args = ["--model-b", str(model_b), "--tokenizer-b", str(tokenizer_b),
+                     "--model-a", args.model, "--tokenizer-a", args.tokenizer,
+                     "--wb-corpus", str(wb_corpus), "--scratch", str(scratch)]
         run_target(table, args.cmake_executable, build_dir, prod_args, "product", LEG_TIMEOUT_S_PRODUCT)
     else:
         table.add("product (C8's three legs)", "MISSING PREREQUISITE",
