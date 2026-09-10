@@ -415,64 +415,21 @@ semb_encoder Open(const Args& a) {
   return enc;
 }
 
-// §4.4b/c's independent W-Q route. The only input is committed fixture data
-// and the public query API; no test-owned declaration reaches the product's
-// private W-Q digest. Each emitted vector has an explicit u64 LE byte-length.
-bool ComputePlanWqDigest(semb_encoder enc, unsigned dims, uint8_t out[32], std::string* why) {
-  const char id[] = "wq-bank";
-  const char text[] = "cap-safe independent W-Q bank document";
-  semb_document doc{};
-  doc.struct_size = sizeof(doc); doc.id = id; doc.id_len = sizeof(id) - 1;
-  doc.utf8 = text; doc.utf8_len = sizeof(text) - 1;
-  const std::string stem = "build/_scratch/te222_wq_fingerprint";
-  const semb_status baked = semb_bake_to_path(enc, &doc, 1, stem.c_str(), stem.size());
-  if (!Is(baked, "SEMB_OK")) { *why = "bake=" + std::string(Name(baked)); return false; }
-  semb_bank bank = nullptr;
-  const semb_status bank_s = semb_bank_open(stem.c_str(), stem.size(), &bank);
-  semb_query query = nullptr;
-  const semb_status query_s = Is(bank_s, "SEMB_OK") ? semb_query_open(enc, bank, &query) : bank_s;
-  if (!query) {
-    if (bank) semb_bank_close(bank);
-    *why = "bank=" + std::string(Name(bank_s)) + " query=" + Name(query_s);
-    return false;
-  }
-  std::vector<std::string> queries;
-  for (const char* path : {"tests/fixtures/wq/wq-queries.jsonl", "tests/fixtures/wq/wq-truncation-leg.jsonl"}) {
-    std::ifstream f(path);
-    std::string line;
-    if (!f) { *why = std::string("cannot open ") + path; semb_query_close(query); semb_bank_close(bank); return false; }
-    while (std::getline(f, line)) if (!line.empty()) queries.push_back(json_mini::Parse(line)["text"].s());
-  }
-  if (queries.size() != 6) {
-    *why = "committed W-Q population count=" + std::to_string(queries.size());
-    semb_query_close(query); semb_bank_close(bank); return false;
-  }
-  auto update_u64 = [](superslm::Sha256* h, uint64_t v) {
-    uint8_t b[8]; for (size_t i = 0; i < 8; ++i) b[i] = static_cast<uint8_t>(v >> (8 * i)); h->Update(b, sizeof(b));
-  };
-  superslm::Sha256 hash;
-  update_u64(&hash, queries.size());
-  bool ok = true;
-  for (const std::string& q : queries) {
-    std::vector<uint8_t> storage(static_cast<size_t>(dims) * sizeof(float) + 16);
-    float* vector = reinterpret_cast<float*>((reinterpret_cast<uintptr_t>(storage.data()) + 15) & ~uintptr_t(15));
-    size_t required = 0;
-    const semb_status s = semb_query_encode(query, q.data(), q.size(), vector,
-                                             static_cast<size_t>(dims) * sizeof(float), &required);
-    if (!Is(s, "SEMB_OK") || required != static_cast<size_t>(dims) * sizeof(float)) {
-      *why = "semb_query_encode=" + std::string(Name(s)) + " required=" + std::to_string(required);
-      ok = false; break;
-    }
-    update_u64(&hash, required);
-    hash.Update(reinterpret_cast<const uint8_t*>(vector), required);
-  }
-  if (ok) hash.Final(out);
-  semb_query_close(query);
-  semb_bank_close(bank);
-  return ok;
-}
-
 }  // namespace
+
+// The product's encoder-scoped W-Q witness digest accessor (TE-224 M-1,
+// include/superembedder/wq_digest_abi.h), declared in this TU's own
+// contract types for the (fingerprint) cell below, at file scope because
+// MSVC rejects a function-local linkage specification (C2598, executed
+// against TE-228): including the product header in this TU would pull
+// superembedder/semb.h's own typedefs over this suite's independent
+// semb_public_abi_contract.h types -- the duplicate-definition conflict
+// include/superembedder/wb_digest_abi.h's own header comment names
+// (executed against TE-228: four redefinition errors) -- and the
+// declaration's own types are layout-identical across both typedef sets,
+// the same convention tests/semb_wb_witness_abi_contract.h establishes
+// for semb_wb_digest.
+extern "C" semb_status semb_wq_digest(semb_encoder enc, uint8_t out_digest[32]);
 
 int main(int argc, char** argv) {
   const Args a = ParseArgs(argc, argv);
@@ -954,10 +911,12 @@ int main(int argc, char** argv) {
   //                           -- wa_digest is semb_wa_digest()'s own output;
   //                           wb_digest is semb_wb_digest(enc, ...)'s own
   //                           output (the same accessor property (a), above,
-  //                           pins); wq_digest is SHA-256 of the U1 pending
-  //                           placeholder sentinel W-Q hashes until it lands
-  //                           (post Ask 5/E0b, sec 4.4b's own "what a
-  //                           witness cannot reach" list)
+  //                           pins); wq_digest is semb_wq_digest(enc, ...)'s
+  //                           own output (TE-224 M-1, the encoder-scoped
+  //                           diagnostic accessor, declared in-cell in this
+  //                           TU's own contract types) -- W-Q's leg folds
+  //                           from the product's own accessor exactly the
+  //                           way W-B's does (TE-228)
   //   certification_epoch   = SHA-256 of the U1 pending placeholder sentinel
   //                           certification_epoch hashes until
   //                           docs/certified-builds.json exists (sec 3.3's
@@ -971,12 +930,11 @@ int main(int argc, char** argv) {
   // where `tag` is `SEMB_FINGERPRINT_PROVISIONAL_TAG` ("SEMBP001",
   // `include/superembedder/semb.h`'s own PUBLIC macro -- U1's raw-text
   // slice marks every fingerprint provisional this way, by design, until
-  // the certified derivation replaces it). The two pending-sentinel byte
-  // strings are the ONLY constants this cell reads from
-  // `src/superembedder/encoder.cpp` rather than from the plan:
-  // `kWqPendingSentinel` and `kCertificationPendingSentinel` are private
-  // literals with no public accessor, and an equality oracle cannot be
-  // built without their exact bytes -- read once, at authoring time, and
+  // the certified derivation replaces it). The one pending-sentinel byte
+  // string this cell reads from `src/superembedder/encoder.cpp` rather
+  // than from the plan is `kCertificationPendingSentinel` -- a private
+  // literal with no public accessor, and an equality oracle cannot be
+  // built without its exact bytes -- read once, at authoring time, and
   // NOT the source of this cell's composition ARITHMETIC (the field order,
   // the length-prefixing, the hashing scheme), which comes from the plan
   // and the review's F-4. The mutation-proof below (this round's own
@@ -992,9 +950,9 @@ int main(int argc, char** argv) {
     // include/superembedder/wb_digest_abi.h's own header comment names).
     constexpr char kTag[] = "SEMBP001";
     static_assert(sizeof(kTag) - 1 == 8, "SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE is 8");
-    // W-Q is independently recomputed through the committed fixture population
-    // and public query verb below.  A private diagnostic accessor is neither
-    // needed nor used for this five-field comparison.
+    // W-Q's leg comes from the product's encoder-scoped accessor below,
+    // declared in this TU's own contract types -- the same standing the W-B
+    // leg has through semb_wb_digest in this same composition (TE-228).
     constexpr char kCertificationPendingSentinel[] =
         "SEMB-CERTIFIED-BUILDS-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
     // sec 2.1's own literal, verbatim (confirmed against the plan, not
@@ -1039,11 +997,11 @@ int main(int argc, char** argv) {
         uint8_t wb[32];
         const semb_status swb = semb_wb_digest(enc, wb);
         uint8_t wq[32]{};
-        std::string wq_why;
-        const bool wq_ok = ComputePlanWqDigest(enc, a.dims, wq, &wq_why);
+        const semb_status swq = semb_wq_digest(enc, wq);
         uint8_t expected[32]{}, actual[32]{};
         bool composed = false;
-        if (wq_ok && Is(swb, "SEMB_OK")) {
+        std::string wq_why;
+        if (Is(swq, "SEMB_OK") && Is(swb, "SEMB_OK")) {
           uint8_t witness_sha[32], certification_epoch[32], inner[32];
           std::vector<uint8_t> witness;
           witness.insert(witness.end(), wa, wa + 32);
@@ -1080,7 +1038,7 @@ int main(int argc, char** argv) {
           wq_why += " raw=" + std::string(Name(se)) + " expected=" + Hex(expected) +
                     " actual=" + Hex(actual);
         } else {
-          wq_why = "wb=" + std::string(Name(swb)) + " " + wq_why;
+          wq_why = "wq=" + std::string(Name(swq)) + " wb=" + std::string(Name(swb));
         }
         Verdict(composed, "(fingerprint) semb_fingerprint equals the independently-recomputed five-field composition",
                 wq_why);

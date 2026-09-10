@@ -81,24 +81,28 @@ std::string Sha256Hex(const std::string& bytes) {
   return Hex(digest, sizeof(digest));
 }
 
-// §4.4b/c's public, independent W-Q construction: its two committed JSONL
-// populations go through semb_query_encode itself. The fixed-width emitted
-// vectors are length-prefixed (u64 LE) so this stream has an explicit
-// boundary independent of a particular hidden size. A public caller cannot
-// select the product's private witness cap; that is deliberately visible in
-// the final fingerprint comparison rather than hidden behind an accessor.
-bool ComputePlanWqDigest(semb_query query, uint32_t dims, uint8_t out[32], std::string* why) {
+// The join leg ALONE of §4.4b/c's public W-Q construction: the five
+// committed join rows through semb_query_encode itself, in the same
+// length-prefixed stream shape the product's own W-Q computation uses --
+// u64(count) first, then each emitted vector's u64(byte_count) || bytes.
+// OBSERVED machinery only (TE-228), never a verdict: the join rows are
+// uncapped by construction, so the public verb's emitted vectors are
+// recomputable; the committed truncation row is capped at the manifest's
+// truncation_content_cap inside the product's witness construction, a cap
+// the public verb has no parameter for, so that row is NOT recomputable
+// here. Cell 6 prints this digest beside semb_wq_digest's own so a later
+// seat commissioning W-Q has both numbers.
+bool ComputePlanWqJoinDigest(semb_query query, uint32_t dims, uint8_t out[32], std::string* why) {
   std::vector<std::string> queries;
-  for (const char* path : {"tests/fixtures/wq/wq-queries.jsonl",
-                           "tests/fixtures/wq/wq-truncation-leg.jsonl"}) {
-    std::ifstream f(path);
-    if (!f) { *why = std::string("cannot open ") + path; return false; }
+  {
+    std::ifstream f("tests/fixtures/wq/wq-queries.jsonl");
+    if (!f) { *why = "cannot open tests/fixtures/wq/wq-queries.jsonl"; return false; }
     std::string line;
     while (std::getline(f, line)) {
       if (!line.empty()) queries.push_back(json_mini::Parse(line)["text"].s());
     }
   }
-  if (queries.size() != 6) { *why = "committed W-Q population count is " + std::to_string(queries.size()); return false; }
+  if (queries.size() != 5) { *why = "committed W-Q join population count is " + std::to_string(queries.size()); return false; }
   auto update_u64 = [](superslm::Sha256* h, uint64_t v) {
     uint8_t b[8];
     for (size_t i = 0; i < sizeof(b); ++i) b[i] = static_cast<uint8_t>(v >> (8 * i));
@@ -272,6 +276,20 @@ semb_encoder OpenEncoder(const std::string& model, const std::string& tokenizer,
 }
 
 }  // namespace
+
+// The product's encoder-scoped W-Q witness digest accessor (TE-224 M-1,
+// include/superembedder/wq_digest_abi.h), declared in this TU's own
+// contract types for cell 6, at file scope because MSVC rejects a
+// function-local linkage specification (C2598, executed against TE-228):
+// including the product header in this TU would pull
+// superembedder/semb.h's own typedefs over this suite's independent
+// semb_public_abi_contract.h types -- the duplicate-definition conflict
+// include/superembedder/wb_digest_abi.h's own header comment names
+// (executed against TE-228: four redefinition errors) -- and the
+// declaration's own types are layout-identical across both typedef sets,
+// the same convention tests/semb_wb_witness_abi_contract.h establishes
+// for semb_wb_digest.
+extern "C" semb_status semb_wq_digest(semb_encoder enc, uint8_t out_digest[32]);
 
 int main(int argc, char** argv) {
   Args args = ParseArgs(argc, argv);
@@ -471,9 +489,17 @@ int main(int argc, char** argv) {
   }
 
   // ---------------------------------------------------------------------
-  // Cell 6 -- W-Q's own leg. The public query route supplies the independent
-  // reading; the missing private accessor is only a separately named
-  // diagnostic comparison, never a reason to hollow out this composition.
+  // Cell 6 -- W-Q's own leg (TE-228): the W-Q digest comes from the
+  // product's encoder-scoped accessor, semb_wq_digest, the same standing
+  // the W-B leg has always had through semb_wb_digest. The cell's
+  // achievement claim is that the COMPOSITION is right -- witness_sha folds
+  // the real accessor values and the five fields compose to the emitted
+  // fingerprint -- not that the test re-derives W-Q from scratch. The
+  // committed truncation row is capped at the manifest's
+  // truncation_content_cap inside the product's witness construction, and
+  // the public query verb has no cap parameter, so no public recomputation
+  // of that row exists; the join leg is uncapped and recomputable, and its
+  // recomputation is kept as an OBSERVED line only -- never a verdict.
   {
     const std::string join_bytes = ReadFile("tests/fixtures/wq/wq-queries.jsonl");
     const std::string trunc_bytes = ReadFile("tests/fixtures/wq/wq-truncation-leg.jsonl");
@@ -483,15 +509,34 @@ int main(int argc, char** argv) {
         Sha256Hex(trunc_bytes) == manifest["files"]["wq-truncation-leg.jsonl"]["sha256"].s();
     Verdict(fixture_hashes_match, "cell6 W-Q committed join and truncation fixtures match their manifest hashes",
             "join=" + Sha256Hex(join_bytes) + " truncation=" + Sha256Hex(trunc_bytes));
+
+    uint8_t wq[32]{};
+    const semb_status wq_s = semb_wq_digest(enc_b, wq);
+
+    // The join leg, recomputed independently through the public verb and
+    // printed beside the accessor's digest as an OBSERVED pair: the
+    // accessor's value covers the full six-row population including the
+    // capped truncation row; the join recomputation covers the five rows a
+    // public caller can reproduce.
     semb_bank bank = nullptr;
     const semb_status bank_s = semb_bank_open(stem_b.c_str(), stem_b.size(), &bank);
     semb_query query = nullptr;
     const semb_status query_s = bank_s == SEMB_OK ? semb_query_open(enc_b, bank, &query) : bank_s;
     uint32_t dims = 0;
     semb_encoder_dims(enc_b, &dims);
-    uint8_t wq[32]{};
+    uint8_t wq_join[32]{};
+    std::string join_why;
+    const bool join_ok = query && ComputePlanWqJoinDigest(query, dims, wq_join, &join_why);
+    if (join_ok) {
+      Observed("cell6 W-Q accessor digest (semb_wq_digest, full six-row population incl. the capped "
+               "truncation row) = " + Hex(wq, 32) + "; join-leg-only recomputation via semb_query_encode "
+               "(five committed join rows, uncapped) = " + Hex(wq_join, 32));
+    } else {
+      Observed("cell6 W-Q accessor digest (semb_wq_digest) = " + Hex(wq, 32) +
+               "; join-leg recomputation unavailable: bank=" + Name(bank_s) + " query=" + Name(query_s) +
+               (join_why.empty() ? "" : " " + join_why));
+    }
     std::string why;
-    const bool wq_ok = query && ComputePlanWqDigest(query, dims, wq, &why);
 
     const std::string model_bytes = ReadFile(args.model_b);
     const std::string tokenizer_bytes = ReadFile(args.tokenizer_b);
@@ -512,7 +557,7 @@ int main(int argc, char** argv) {
     const semb_status wb_s = semb_wb_digest(enc_b, wb);
     uint8_t expected[32]{}, actual[32]{};
     bool composed = false;
-    if (wq_ok && wb_s == SEMB_OK && !model_bytes.empty() && !tokenizer_bytes.empty()) {
+    if (wq_s == SEMB_OK && wb_s == SEMB_OK && !model_bytes.empty() && !tokenizer_bytes.empty()) {
       uint8_t witness[32], epoch[32], inner[32];
       std::vector<uint8_t> witness_stream;
       witness_stream.insert(witness_stream.end(), wa, wa + 32);
@@ -537,12 +582,13 @@ int main(int argc, char** argv) {
                                              static_cast<size_t>(dims) * sizeof(float), &required, &fp);
       std::memcpy(actual, fp.digest, sizeof(actual));
       composed = raw_s == SEMB_OK && std::memcmp(expected, actual, sizeof(expected)) == 0;
-      why = std::string("raw=") + Name(raw_s) + " expected=" + Hex(expected, 32) + " actual=" + Hex(actual, 32);
+      why = std::string("wq=") + Name(wq_s) + " wb=" + Name(wb_s) + " raw=" + Name(raw_s) +
+            " expected=" + Hex(expected, 32) + " actual=" + Hex(actual, 32);
     } else {
-      why = "bank=" + std::string(Name(bank_s)) + " query=" + Name(query_s) + " wb=" + Name(wb_s) + " " + why;
+      why = "wq=" + std::string(Name(wq_s)) + " wb=" + Name(wb_s);
+      if (model_bytes.empty() || tokenizer_bytes.empty()) why += " model/tokenizer artifact bytes unreadable";
     }
-    Verdict(composed, "cell6 plan W-Q recomputation folds into the emitted five-field fingerprint", why);
-    Missing("cell6 direct product W-Q accessor comparison", "semb_wq_digest remains query-handle-scoped and undeclared in a private witness ABI; builder must expose that diagnostic accessor. This does not block the public independent recomputation above. QUARANTINED.");
+    Verdict(composed, "cell6 W-Q accessor digest folds into the emitted five-field fingerprint", why);
     if (query) semb_query_close(query);
     if (bank) semb_bank_close(bank);
   }
