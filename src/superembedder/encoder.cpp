@@ -8,6 +8,7 @@
 #include "superembedder/seam_abi.h"
 #include "superembedder/witness_abi.h"
 #include "superembedder/wb_digest_abi.h"
+#include "superembedder/wq_digest_abi.h"
 #include "superembedder/bake_abi.h"
 #include "superembedder/manifest_labels_abi.h"
 #include "superembedder/version.h"
@@ -1050,6 +1051,15 @@ extern "C" semb_status semb_wb_digest(semb_encoder enc, uint8_t out_digest[32]) 
   if (!lease.get()) return SEMB_INVALID_HANDLE;
   if (!out_digest) return SEMB_NULL_ARGUMENT;
   std::memcpy(out_digest, lease.get()->wb_digest.data(), lease.get()->wb_digest.size());
+  return SEMB_OK;
+}
+
+extern "C" semb_status semb_wq_digest(semb_encoder enc, uint8_t out_digest[32]) {
+  if (!enc) return SEMB_NULL_ARGUMENT;
+  HandleLease lease(enc);
+  if (!lease.get()) return SEMB_INVALID_HANDLE;
+  if (!out_digest) return SEMB_NULL_ARGUMENT;
+  std::memcpy(out_digest, lease.get()->wq_digest.data(), lease.get()->wq_digest.size());
   return SEMB_OK;
 }
 

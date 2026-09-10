@@ -23,7 +23,6 @@ extern "C" semb_status semb_bank_release_query(semb_bank bank);
 namespace semb {
 semb_status EncoderManifestFingerprint(semb_encoder enc, uint8_t out[32]);
 semb_status EncoderAbiFingerprint(semb_encoder enc, uint8_t out[32]);
-semb_status EncoderWqDigest(semb_encoder enc, uint8_t out[32]);
 semb_status EncoderAcquireQuery(semb_encoder enc);
 semb_status EncoderReleaseQuery(semb_encoder enc);
 semb_status EncoderDims(semb_encoder enc, uint32_t* out_dims);
