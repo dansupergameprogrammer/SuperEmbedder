@@ -1015,3 +1015,106 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te196_manifest_binding_check.py" ${_semb_te196_args}
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+
+# TE-194 (U1 slice 5): the query path / real W-Q witness leg red suite
+# (Claude/Bach/briefs/te194-slice5-red.md) -- cells 1, 2, 4, 5, 6, plus the
+# fingerprint-rotation fixed point. Appended as ONE CONTIGUOUS BLOCK per
+# this round's own Writable contract, so the merge with TE-192's own append
+# (a sibling block, same convention) is a single ordered concatenation.
+# ---------------------------------------------------------------------------
+
+# Cells 1, 2, 6 -- links plain `superembedder` (no K-15 seam needed: cell
+# 1's bank-in-use leg and C8's three legs are all sequential constructions).
+# Undefined at link at this branch's own base 21b1735 (semb_query_open,
+# semb_query_encode, semb_query_close, semb_fingerprint_of do not exist) --
+# EXCLUDE_FROM_ALL; tests/te194_query_check.py builds it on demand and
+# reports the unresolved symbol(s) by name, the identical shape
+# tests/te163_bank_pair_check.py already uses.
+add_executable(te194_query_test EXCLUDE_FROM_ALL te194_query_test.cpp)
+target_link_libraries(te194_query_test PRIVATE superembedder superslm::superslm)
+target_include_directories(te194_query_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_test(
+	NAME te194_query_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te194_query_check.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+		--model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+	set_tests_properties(te194_query_check PROPERTIES LABELS "real_artifact")
+endif()
+
+# The fixed-point fingerprint-rotation cell -- UNLIKE the rest of this
+# round's own suite, this one needs no symbol Slice 5 adds (semb_encoder_open,
+# semb_bake_to_path already exist), so it is NOT EXCLUDE_FROM_ALL and is
+# registered as an ordinary, always-built real-artifact ctest -- it bakes the
+# real 239-document corpus and asserts the resulting encoder_fingerprint
+# DIFFERS from the sentinel-based hex this round's own dispatch names,
+# which is FALSE (and therefore red) until Slice 5's build wires W-Q into
+# witness_sha. Needs the real candidate artifact; labeled real_artifact and
+# skipped (via the same STREQUAL guard the suite already uses throughout)
+# when SEMB_C12B_MODEL/SEMB_U1_TOKENIZER are not configured.
+add_executable(te194_fingerprint_rotation_test te194_fingerprint_rotation_test.cpp)
+target_link_libraries(te194_fingerprint_rotation_test PRIVATE superembedder superslm::superslm)
+target_include_directories(te194_fingerprint_rotation_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+	set(_semb_te194_fp_scratch "${CMAKE_BINARY_DIR}/_scratch/te194_fp_rotation")
+	file(MAKE_DIRECTORY "${_semb_te194_fp_scratch}")
+	add_test(
+		NAME te194_fingerprint_rotation_check
+		COMMAND "$<TARGET_FILE:te194_fingerprint_rotation_test>"
+			--model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
+			--corpus-239 "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/corpus-239.jsonl"
+			--scratch "${_semb_te194_fp_scratch}"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+	set_tests_properties(te194_fingerprint_rotation_check PROPERTIES LABELS "real_artifact" TIMEOUT 600)
+endif()
+
+# Cell 3 / C26's remaining two races -- needs the K-15 seam
+# (`superembedder_testseam`), so this target's own registration is DEFERRED
+# to run AFTER semb_add_workspace_tests() (tests/CMakeLists.txt's own
+# earlier `cmake_language(DEFER DIRECTORY ... CALL semb_add_workspace_tests)`)
+# has created that target -- deferred calls run in the order they were
+# scheduled, and this one is scheduled later in the same file, so
+# superembedder_testseam exists by the time this function body runs.
+function(semb_add_te194_query_workspace_tests)
+  if(NOT TARGET superembedder_testseam)
+    return()  # semb_add_workspace_tests() itself only runs when SEMB_LIBRARY_SOURCES is defined
+  endif()
+  set(_semb_te194_test_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
+  add_executable(te194_query_workspace_test EXCLUDE_FROM_ALL "${_semb_te194_test_dir}/te194_query_workspace_test.cpp")
+  target_link_libraries(te194_query_workspace_test PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
+  target_include_directories(te194_query_workspace_test PRIVATE "${_semb_te194_test_dir}")
+  add_test(
+    NAME te194_query_workspace_check
+    COMMAND "${Python3_EXECUTABLE}" "${_semb_te194_test_dir}/te194_query_workspace_check.py"
+      --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+    WORKING_DIRECTORY "${_semb_te194_test_dir}/.."
+  )
+endfunction()
+if(DEFINED SEMB_LIBRARY_SOURCES)
+  cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_te194_query_workspace_tests)
+endif()
+
+# Cell 4 -- C41 part 4's scope widening (semb_query_encode's own TU). Reads
+# the query TU's compiled object once it exists; RED-UNIMPLEMENTED today
+# (see the script's own header comment for why and for the routed finding
+# on the candidate TU name).
+add_test(
+	NAME te194_c41_query_scope_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te194_c41_query_scope_check.py"
+		--build-dir "${CMAKE_BINARY_DIR}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# Cell 5 -- C17's sixth leg / W-Q's own composition-drift construction.
+# QUARANTINED instrument (TE-194-c17-wq-sixth-leg); always red-unimplemented
+# today (see the script's own header comment).
+add_test(
+	NAME te194_c17_sixth_leg_construction
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te194_c17_sixth_leg_construction.py"
+		--build-dir "${CMAKE_BINARY_DIR}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
