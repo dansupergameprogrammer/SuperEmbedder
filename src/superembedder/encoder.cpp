@@ -77,6 +77,11 @@ struct semb_encoder_s {
   std::array<uint8_t, 32> manifest_certification_epoch{};
   std::array<uint8_t, 32> manifest_fingerprint{};
   std::atomic<uint32_t> active_calls{0};
+  // A query is a library-owned child handle.  It retains the encoder for
+  // its full lifetime, independently of an encode call currently in flight.
+  // `semb_encoder_close` refuses while this count is nonzero and frees
+  // nothing, so a successful close can never poison a live query.
+  uint32_t live_queries = 0;
   // TE-165 (N-1, D-SLM6383; D-SLM6390 item 4): false from construction
   // until the fingerprint and wb_digest above are both written. The
   // registry lookup (FindReadyHandleLocked, below) refuses any handle
@@ -960,6 +965,7 @@ extern "C" semb_status semb_encoder_close(semb_encoder enc) {
     if (found->second->active_calls.load(std::memory_order_acquire) != 0) {
       return SEMB_HANDLE_IN_USE;
     }
+    if (found->second->live_queries != 0) return SEMB_HANDLE_IN_USE;
     closing = std::move(found->second);
     Registry().erase(found);
   }
@@ -1049,6 +1055,25 @@ extern "C" semb_status semb_wb_digest(semb_encoder enc, uint8_t out_digest[32]) 
 }
 
 namespace semb {
+
+semb_status EncoderAcquireQuery(semb_encoder enc) {
+  if (!enc) return SEMB_NULL_ARGUMENT;
+  std::lock_guard<std::mutex> lock(RegistryMutex());
+  const auto found = FindReadyHandleLocked(enc);
+  if (found == Registry().end()) return SEMB_INVALID_HANDLE;
+  ++found->second->live_queries;
+  return SEMB_OK;
+}
+
+semb_status EncoderReleaseQuery(semb_encoder enc) {
+  if (!enc) return SEMB_NULL_ARGUMENT;
+  std::lock_guard<std::mutex> lock(RegistryMutex());
+  const auto found = FindReadyHandleLocked(enc);
+  if (found == Registry().end()) return SEMB_INVALID_HANDLE;
+  if (found->second->live_queries == 0) return SEMB_INVALID_HANDLE;
+  --found->second->live_queries;
+  return SEMB_OK;
+}
 
 semb_status EncoderManifestFingerprint(semb_encoder enc, uint8_t out[32]) {
   if (!enc || !out) return SEMB_NULL_ARGUMENT;

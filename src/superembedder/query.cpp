@@ -23,6 +23,8 @@ namespace semb {
 semb_status EncoderManifestFingerprint(semb_encoder enc, uint8_t out[32]);
 semb_status EncoderAbiFingerprint(semb_encoder enc, uint8_t out[32]);
 semb_status EncoderWqDigest(semb_encoder enc, uint8_t out[32]);
+semb_status EncoderAcquireQuery(semb_encoder enc);
+semb_status EncoderReleaseQuery(semb_encoder enc);
 semb_status EncoderDims(semb_encoder enc, uint32_t* out_dims);
 bool EncoderValidUtf8(const char* data, size_t size);
 semb_status EncodeQueryComposedForWitness(semb_encoder_s* encoder,
@@ -37,7 +39,6 @@ semb_status EncodeQueryComposed(semb_encoder enc, std::string_view composed,
 struct semb_query_opaque {
   semb_encoder encoder = nullptr;
   semb_bank bank = nullptr;
-  std::array<uint8_t, 32> wq_digest{};
   std::atomic<uint32_t> active_calls{0};
 };
 
@@ -156,24 +157,23 @@ extern "C" semb_status semb_query_open(semb_encoder enc, semb_bank bank, semb_qu
   uint8_t fingerprint[32];
   const semb_status fingerprint_status = semb::EncoderManifestFingerprint(enc, fingerprint);
   if (fingerprint_status != SEMB_OK) return fingerprint_status;
+  const semb_status encoder_status = semb::EncoderAcquireQuery(enc);
+  if (encoder_status != SEMB_OK) return encoder_status;
   const semb_status bank_status = semb_bank_acquire_query(bank, fingerprint);
-  if (bank_status != SEMB_OK) return bank_status;
-  uint8_t wq[32];
-  const semb_status wq_status = semb::EncoderWqDigest(enc, wq);
-  if (wq_status != SEMB_OK) {
-    (void)semb_bank_release_query(bank);
-    return wq_status;
+  if (bank_status != SEMB_OK) {
+    (void)semb::EncoderReleaseQuery(enc);
+    return bank_status;
   }
   try {
     auto query = std::make_unique<semb_query_opaque>();
     query->encoder = enc;
     query->bank = bank;
-    std::memcpy(query->wq_digest.data(), wq, 32);
     semb_query cookie = nullptr;
     {
       std::lock_guard<std::mutex> lock(RegistryMutex());
       if (!AllocateCookie(&cookie)) {
         (void)semb_bank_release_query(bank);
+        (void)semb::EncoderReleaseQuery(enc);
         return SEMB_ALLOCATION_FAILED;
       }
       Registry().emplace(cookie, std::move(query));
@@ -182,6 +182,7 @@ extern "C" semb_status semb_query_open(semb_encoder enc, semb_bank bank, semb_qu
     return SEMB_OK;
   } catch (const std::bad_alloc&) {
     (void)semb_bank_release_query(bank);
+    (void)semb::EncoderReleaseQuery(enc);
     return SEMB_ALLOCATION_FAILED;
   }
 }
@@ -233,7 +234,8 @@ extern "C" semb_status semb_query_close(semb_query q) {
     Registry().erase(found);
   }
   const semb_status released = semb_bank_release_query(closing->bank);
-  return released == SEMB_OK ? SEMB_OK : released;
+  const semb_status encoder_released = semb::EncoderReleaseQuery(closing->encoder);
+  return released != SEMB_OK ? released : encoder_released;
 }
 
 extern "C" semb_status semb_fingerprint_of(semb_encoder enc, semb_fingerprint* out) {
@@ -242,12 +244,4 @@ extern "C" semb_status semb_fingerprint_of(semb_encoder enc, semb_fingerprint* o
   // The ABI form is intentionally tagged. Query open uses the separate
   // untagged accessor above, never this consumer-facing value.
   return semb::EncoderAbiFingerprint(enc, out->digest);
-}
-
-extern "C" semb_status semb_wq_digest(semb_query q, uint8_t out_digest[32]) {
-  if (!q || !out_digest) return SEMB_NULL_ARGUMENT;
-  QueryLease lease(q);
-  if (!lease.get()) return lease.found() ? SEMB_HANDLE_IN_USE : SEMB_INVALID_HANDLE;
-  std::memcpy(out_digest, lease.get()->wq_digest.data(), 32);
-  return SEMB_OK;
 }
