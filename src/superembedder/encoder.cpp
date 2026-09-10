@@ -101,8 +101,6 @@ struct semb_encoder_s {
 
 namespace {
 
-constexpr char kQueryPrefix[] =
-    "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:";
 constexpr char kCanonicalEndToken[] = "<|endoftext|>";
 // W-B's own sentinel retired, TE-147: ComputeProvisionalFingerprint now
 // takes a real, handle-derived wb_digest (ComputeWbDigest, below) instead
@@ -319,8 +317,9 @@ semb_status MapInterimStatus(SembInterimStatus status, SembWaPoolStatus dequanti
 std::array<uint8_t, 32> ComputeTemplateDigest() {
   superslm::Sha256 hash;
   UpdateU64(&hash, 0);  // PS-N has no document frame.
-  UpdateU64(&hash, sizeof(kQueryPrefix) - 1);
-  hash.Update(reinterpret_cast<const uint8_t*>(kQueryPrefix), sizeof(kQueryPrefix) - 1);
+  const size_t query_prefix_bytes = std::strlen(semb::kQueryPrefix);
+  UpdateU64(&hash, query_prefix_bytes);
+  hash.Update(reinterpret_cast<const uint8_t*>(semb::kQueryPrefix), query_prefix_bytes);
   std::array<uint8_t, 32> out{};
   hash.Final(out.data());
   return out;

@@ -36,6 +36,9 @@ semb_status EncodeQueryComposed(semb_encoder enc, std::string_view composed,
                                 std::vector<float>* out_vector);
 }  // namespace semb
 
+const char semb::kQueryPrefix[] =
+    "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:";
+
 struct semb_query_opaque {
   semb_encoder encoder = nullptr;
   semb_bank bank = nullptr;
@@ -44,8 +47,7 @@ struct semb_query_opaque {
 
 namespace {
 
-constexpr char kQueryPrefix[] =
-    "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:";
+using semb::kQueryPrefix;
 
 // The committed W-Q population: five uncapped join strings and one dedicated
 // truncation-order string. The digest is intentionally built in this TU so a
