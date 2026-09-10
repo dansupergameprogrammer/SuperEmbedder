@@ -81,7 +81,7 @@ semb_status ResolveStatus(const char* name) {
 }
 
 struct Args {
-  std::string model, tokenizer, scratch, stem = "te196", te209_worker, te213_worker;
+  std::string model, tokenizer, scratch, stem = "te196", te209_worker, te213_worker, te215_worker;
   unsigned dims = 0;
 };
 Args ParseArgs(int argc, char** argv) {
@@ -96,6 +96,7 @@ Args ParseArgs(int argc, char** argv) {
     else if (k == "--stem") next(&a.stem);
     else if (k == "--te209-worker") next(&a.te209_worker);
     else if (k == "--te213-worker") next(&a.te213_worker);
+    else if (k == "--te215-worker") next(&a.te215_worker);
   }
   return a;
 }
@@ -410,10 +411,31 @@ double MedianSeconds(std::vector<double> values) {
   return values[values.size() / 2];
 }
 
+// TE-215 (m)/(n): a peak+header pair written beside the existing ".seconds"
+// timing file so a fresh-process worker's memory reading survives past its
+// own process exit for the parent to read back and compare across sizes --
+// additive instrumentation; it changes no worker's tested population,
+// assertion, or printed cell name.
+void WriteMeasureFile(const fs::path& path, size_t peak, size_t header_bytes) {
+  std::ofstream out(path);
+  out << peak << "\n" << header_bytes << "\n";
+}
+struct Measurement { size_t peak = 0; size_t header_bytes = 0; };
+Measurement ReadMeasureFile(const fs::path& path) {
+  Measurement m;
+  {
+    std::ifstream in(path);
+    in >> m.peak >> m.header_bytes;
+  }
+  fs::remove(path);
+  return m;
+}
+
 int RunTe213Worker(const Args& a) {
   const bool colliders = a.te213_worker == "k4096" || a.te213_worker == "k16384";
   const size_t members = a.te213_worker == "k4096" ? 4096 : a.te213_worker == "k16384" ? 16384 :
-                         a.te213_worker == "j500000" ? 500000 : a.te213_worker == "j2000000" ? 2000000 : 0;
+                         a.te213_worker == "j500000" ? 500000 : a.te213_worker == "j2000000" ? 2000000 :
+                         a.te213_worker == "j8000000" ? 8000000 : 0;
   if (members == 0) { Verdict(false, "TE213 worker", "unknown worker " + a.te213_worker); return 1; }
   fs::create_directories(a.scratch);
   const fs::path header = fs::path(a.scratch) / (a.stem + "_te213_" + a.te213_worker + ".wvbank.json");
@@ -446,6 +468,7 @@ int RunTe213Worker(const Args& a) {
   const size_t bound = 4 * header_bytes + size_t{64} * 1024 * 1024;
   Verdict(peak != 0 && peak < bound, "TE213/" + a.te213_worker + " keeps peak below I3 bound",
           "peak=" + std::to_string(peak) + " header=" + std::to_string(header_bytes) + " bound=" + std::to_string(bound));
+  WriteMeasureFile(fs::path(a.scratch) / (a.stem + "_te213_" + a.te213_worker + ".measure"), peak, header_bytes);
 #endif
   const double median_seconds = MedianSeconds(elapsed);
   Observed("TE213/" + a.te213_worker + " median seconds=" + std::to_string(median_seconds));
@@ -482,6 +505,159 @@ void RunTe213Workers(const Args& a, const char* executable) {
 #endif
 }
 
+// =========================================================================
+// TE-215 (n) -- the slope form of I3: across two sizes of one population
+// family, peak grows by at most four times the header's growth. Four
+// families, each a fresh-process pair: the ordinary unique-key object (the
+// (f) worker at 1,000,000 and 4,000,000), the admitted wide array (TE-207's
+// (a) worker at 2,000,000 and 8,000,000), the single string (the (i) worker
+// at 4 MiB and 16 MiB), and the equal-hash run (the (j) and (m) workers at
+// 2,000,000 and 8,000,000). Every point also asserts its own status, null
+// output, and I3 point bound -- the slope is graded in addition to the
+// point, never instead of it.
+// =========================================================================
+constexpr size_t kTe215Obj1M = 1'000'000;
+constexpr size_t kTe215Obj4M = 4'000'000;      // TE-209's (f) population, restated for the slope row
+constexpr size_t kTe215Arr2M = 2'000'000;
+constexpr size_t kTe215Arr8M = 8'000'000;      // TE-207's (a) population, restated for the slope row
+constexpr size_t kTe215Str4MiB = size_t{4} * 1024 * 1024;
+constexpr size_t kTe215Str16MiB = size_t{16} * 1024 * 1024;  // TE-209's (i) population, restated
+
+void WriteTe215ObjHeader(const fs::path& header, size_t members) {
+  std::ofstream out(header, std::ios::binary);
+  if (!out) throw std::runtime_error("cannot create " + header.string());
+  WriteTe209Prefix(&out);
+  WriteTe209Object(&out, members, /*dense_names=*/false, /*escape_equivalent_last=*/false);
+  if (!out) throw std::runtime_error("cannot write " + header.string());
+}
+
+void WriteTe215ArrHeader(const fs::path& header, size_t values) {
+  std::ofstream out(header, std::ios::binary);
+  if (!out) throw std::runtime_error("cannot create " + header.string());
+  WriteTe209Prefix(&out);
+  out << '[';
+  for (size_t i = 0; i < values; ++i) {
+    if (i) out << ',';
+    out << '0';
+  }
+  out << "]}";
+  if (!out) throw std::runtime_error("cannot write " + header.string());
+}
+
+void WriteTe215StrHeader(const fs::path& header, size_t bytes) {
+  std::ofstream out(header, std::ios::binary);
+  if (!out) throw std::runtime_error("cannot create " + header.string());
+  WriteTe209Prefix(&out);
+  out << '"';
+  for (size_t i = 0; i < bytes; ++i) out << 's';
+  out << "\"}";
+  if (!out) throw std::runtime_error("cannot write " + header.string());
+}
+
+int RunTe215Worker(const Args& a) {
+  const std::string& tag = a.te215_worker;
+  fs::create_directories(a.scratch);
+  const fs::path stem = fs::path(a.scratch) / (a.stem + "_te215_" + tag);
+  const fs::path header(stem.string() + ".wvbank.json");
+  fs::remove(header);
+  try {
+    if (tag == "obj1000000") WriteTe215ObjHeader(header, kTe215Obj1M);
+    else if (tag == "obj4000000") WriteTe215ObjHeader(header, kTe215Obj4M);
+    else if (tag == "arr2000000") WriteTe215ArrHeader(header, kTe215Arr2M);
+    else if (tag == "arr8000000") WriteTe215ArrHeader(header, kTe215Arr8M);
+    else if (tag == "str4194304") WriteTe215StrHeader(header, kTe215Str4MiB);
+    else if (tag == "str16777216") WriteTe215StrHeader(header, kTe215Str16MiB);
+    else throw std::runtime_error("unknown TE-215 worker: " + tag);
+  } catch (const std::exception& e) {
+    Verdict(false, "TE215/n " + tag + " fixture", e.what());
+    return 1;
+  }
+  const size_t header_bytes = static_cast<size_t>(fs::file_size(header));
+  TryOpenExpectWithPeakBound("TE215/n " + tag, stem, ResolveStatus("SEMB_BANK_GEOMETRY_CEILING_EXCEEDED"),
+                             "SEMB_BANK_GEOMETRY_CEILING_EXCEEDED", header_bytes);
+#if defined(_WIN32)
+  WriteMeasureFile(fs::path(a.scratch) / (a.stem + "_te215_" + tag + ".measure"), PeakWorkingSetBytes(), header_bytes);
+#endif
+  fs::remove(header);
+  return g_failures ? 1 : 0;
+}
+
+void RunTe215SlopeWorkers(const Args& a, const char* executable) {
+#if defined(_WIN32)
+  auto spawn = [&](const char* tag) {
+    const int rc = _spawnl(_P_WAIT, executable, executable, "--model", a.model.c_str(), "--tokenizer", a.tokenizer.c_str(),
+      "--dims", std::to_string(a.dims).c_str(), "--scratch", a.scratch.c_str(), "--stem", a.stem.c_str(),
+      "--te215-worker", tag, nullptr);
+    Verdict(rc == 0, std::string("TE215/n ") + tag + " fresh-process worker", rc == 0 ? "exit 0" : "nonzero exit");
+  };
+  auto read_te215_measure = [&](const char* tag) {
+    return ReadMeasureFile(fs::path(a.scratch) / (a.stem + "_te215_" + tag + ".measure"));
+  };
+  // Parameters are named lo_point/hi_point rather than small/large: <windows.h>
+  // (pulled in transitively for _WIN32) macro-defines "small" to "char" (an
+  // MIDL/RPC compatibility macro), which corrupts a parameter literally named
+  // small into a type token and fails to compile.
+  auto assert_slope = [&](const std::string& family, const Measurement& lo_point, const Measurement& hi_point) {
+    const bool grows = hi_point.header_bytes > lo_point.header_bytes && hi_point.peak >= lo_point.peak;
+    const size_t peak_growth = grows ? hi_point.peak - lo_point.peak : 0;
+    const size_t header_growth = grows ? hi_point.header_bytes - lo_point.header_bytes : 0;
+    const bool ok = grows && peak_growth <= 4 * header_growth;
+    Verdict(ok, "TE215/n " + family + " slope: peak(large) - peak(small) <= 4 x (header(large) - header(small))",
+            "peak(small)=" + std::to_string(lo_point.peak) + " header(small)=" + std::to_string(lo_point.header_bytes) +
+            " peak(large)=" + std::to_string(hi_point.peak) + " header(large)=" + std::to_string(hi_point.header_bytes));
+  };
+
+  spawn("obj1000000"); spawn("obj4000000");
+  assert_slope("ordinary unique-key object (1,000,000 / 4,000,000, the (f) worker)",
+               read_te215_measure("obj1000000"), read_te215_measure("obj4000000"));
+
+  spawn("arr2000000"); spawn("arr8000000");
+  assert_slope("admitted wide array (2,000,000 / 8,000,000, the TE-207 (a) worker)",
+               read_te215_measure("arr2000000"), read_te215_measure("arr8000000"));
+
+  spawn("str4194304"); spawn("str16777216");
+  assert_slope("single string (4 MiB / 16 MiB, the (i) worker)",
+               read_te215_measure("str4194304"), read_te215_measure("str16777216"));
+
+  // The equal-hash row -- cells (j) and (m) -- runs through the TE-213
+  // seam-linked worker executable, exactly like RunTe213Workers above.
+  const fs::path te213_worker_exe = fs::path(executable).parent_path() / "te213_manifest_binding_testseam_worker.exe";
+  Verdict(fs::exists(te213_worker_exe), "TE215/m,n TE213 seam worker exists", te213_worker_exe.string());
+  auto spawn213 = [&](const char* tag) {
+    const std::string worker_path = te213_worker_exe.string();
+    const int rc = _spawnl(_P_WAIT, worker_path.c_str(), worker_path.c_str(), "--model", a.model.c_str(),
+      "--tokenizer", a.tokenizer.c_str(), "--dims", std::to_string(a.dims).c_str(), "--scratch", a.scratch.c_str(),
+      "--stem", a.stem.c_str(), "--te213-worker", tag, nullptr);
+    Verdict(rc == 0, std::string("TE215/m,n ") + tag + " fresh-process worker", rc == 0 ? "exit 0" : "nonzero exit");
+  };
+  spawn213("j2000000");
+  spawn213("j8000000");
+  auto read_te213_measure = [&](const char* tag) {
+    return ReadMeasureFile(fs::path(a.scratch) / (a.stem + "_te213_" + tag + ".measure"));
+  };
+  const Measurement j2m = read_te213_measure("j2000000");
+  const Measurement j8m = read_te213_measure("j8000000");
+  assert_slope("equal-hash run (2,000,000 / 8,000,000, the (j) and (m) workers)", j2m, j8m);
+
+  // Cell (m) -- I5 on the equal-hash path beyond the cross-over.
+  auto read_te213_seconds = [&](const char* tag) {
+    const fs::path result = fs::path(a.scratch) / (a.stem + "_te213_" + tag + ".seconds");
+    double value = 0;
+    { std::ifstream in(result); in >> value; }
+    fs::remove(result);
+    return value;
+  };
+  const double j2s = read_te213_seconds("j2000000");
+  const double j8s = read_te213_seconds("j8000000");
+  Verdict(j2s > 0 && j8s / j2s <= 8.0,
+          "TE215/m I5 equal-hash decoded-run sort threshold beyond the cross-over (2,000,000 / 8,000,000)",
+          "ratio=" + std::to_string(j8s / j2s));
+#else
+  (void)a; (void)executable;
+  Observed("TE215 fresh-process slope and cross-over cells are Windows-only");
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -492,6 +668,7 @@ int main(int argc, char** argv) {
   }
   if (!a.te209_worker.empty()) return RunTe209Worker(a);
   if (!a.te213_worker.empty()) return RunTe213Worker(a);
+  if (!a.te215_worker.empty()) return RunTe215Worker(a);
   fs::create_directories(a.scratch);
   const fs::path scratch(a.scratch);
   const std::string label = "mechanism";
@@ -1074,6 +1251,7 @@ int main(int argc, char** argv) {
 
   RunTe209Workers(a, argv[0]);
   RunTe213Workers(a, argv[0]);
+  RunTe215SlopeWorkers(a, argv[0]);
 
   std::printf("\nte196_manifest_binding_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
   return g_failures ? 1 : 0;
