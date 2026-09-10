@@ -268,22 +268,20 @@ class ParserImpl {
     return children;
   }
 
-  // Validate remembers a fixed-size record for every object member until the
-  // closing brace, then sorts by the decoded-name hash. Within an equal-hash
-  // run, the records themselves -- not a materialized copy of their names --
-  // are sorted by decoded name: the comparator decodes the two names it is
-  // comparing into transient strings, released before the next comparison
-  // (DecodeMemberNameAt saves and restores the parser position). The sorted
-  // run is then walked once, decoding each adjacent pair, to refuse an exact
-  // duplicate. No representation beyond the 16-byte record is held for a
-  // whole run at once, so peak memory stays header bytes + 16 bytes per
-  // member + a constant: an object of n members occupies at least 6n header
-  // bytes (the shortest member is `"k":0,`), so 16n <= (16/6) x header and
-  // header + 16n is below 4 x header for every n. Work stays O(n log n): the
-  // comparator's decode is bounded by the length of the name it touches, and
-  // the sort makes at most O(n log n) such comparisons. A deterministic hash
-  // only improves the average; it is not relied upon for either bound.
-  static uint64_t HashDecodedMemberName(const std::string& name) {
+  // Validate remembers a packed 12-byte record for every object member until
+  // the closing brace, then sorts by the decoded-name hash.  JSON's grammar
+  // gives every member at least five bytes: the shortest string is `""` (two
+  // bytes), followed by `:`, a one-digit value, and (except for the last
+  // member) `,`.  The steady retained cost is therefore 12 bytes per member,
+  // below the 15 bytes per member that the 4x I3 slope permits.  Peak is the
+  // header plus 12 * members plus transients; the comparator holds at most two
+  // decoded names and the adjacent walk holds two, each no longer than the
+  // header, so their term is at most twice the header and does not scale with
+  // the member count.  Within an equal-hash run the records themselves -- not
+  // a materialized copy of their names -- are sorted by decoded name.  Exact
+  // decoded comparison remains authoritative: the folded hash only sets
+  // average run length and is never a bound or a duplicate verdict.
+  static uint32_t HashDecodedMemberName(const std::string& name) {
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
     (void)name;
     return 0;
@@ -293,16 +291,18 @@ class ParserImpl {
       hash ^= c;
       hash *= UINT64_C(1099511628211);
     }
-    return hash;
+    return static_cast<uint32_t>(hash ^ (hash >> 32));
 #endif
   }
 
+#pragma pack(push, 1)
   struct MemberNameRecord {
-    uint64_t hash;
+    uint32_t hash;
     size_t offset;
   };
+#pragma pack(pop)
 
-  static_assert(sizeof(MemberNameRecord) == 16, "member name records stay fixed at 16 bytes");
+  static_assert(sizeof(MemberNameRecord) == 12, "member name records stay fixed at 12 bytes");
 
   std::string DecodeMemberNameAt(size_t offset) {
     const size_t saved = i_;
