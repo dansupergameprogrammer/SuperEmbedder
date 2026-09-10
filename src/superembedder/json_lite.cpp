@@ -269,18 +269,32 @@ class ParserImpl {
   }
 
   // Validate remembers a packed 12-byte record for every object member until
-  // the closing brace, then sorts by the decoded-name hash.  JSON's grammar
+  // the closing brace, then sorts by the decoded-name hash. JSON's grammar
   // gives every member at least five bytes: the shortest string is `""` (two
   // bytes), followed by `:`, a one-digit value, and (except for the last
-  // member) `,`.  The steady retained cost is therefore 12 bytes per member,
-  // below the 15 bytes per member that the 4x I3 slope permits.  Peak is the
-  // header plus 12 * members plus transients; the comparator holds at most two
-  // decoded names and the adjacent walk holds two, each no longer than the
-  // header, so their term is at most twice the header and does not scale with
-  // the member count.  Within an equal-hash run the records themselves -- not
-  // a materialized copy of their names -- are sorted by decoded name.  Exact
-  // decoded comparison remains authoritative: the folded hash only sets
-  // average run length and is never a bound or a duplicate verdict.
+  // member) `,`. The steady retained cost is therefore 12 bytes per member,
+  // below the 15 bytes per member that the 4x I3 slope permits.
+  //
+  // On the two-shared-name transient family, the live name-sized allocation
+  // sites are enumerated here rather than inferred from variable names:
+  // - bank.cpp:196-211,281-303 keeps the header read buffer alive; it is one
+  //   header unit and contains the shared name twice.
+  // - json_lite.cpp:320-330 decodes one name, and :345-356 has at most two
+  //   such decoded strings live at either the comparator or equality branch.
+  //   MSVC basic_string's _Calculate_growth
+  //   (VC/Tools/MSVC/14.33.31629/include/xstring:4749-4760) caps each growing
+  //   buffer below 1.5 times its requested name size, so they total below
+  //   2 * 1.5 * (header / 2) = 1.5 header units.
+  // - :379-399 scopes the parser-local key to its completed member. It is
+  //   released before the duplicate check; :375-376 retain only two fixed-
+  //   size records, and the fixed exception at :354 carries no member bytes.
+  //   Those allocations are O(1), not name-sized.
+  // Thus the source term is below 1 + 1.5 = 2.5 header units. TE-219 grades
+  // the two-member family at 2.75 after its explicit 0.25 allocator margin.
+  // Within an equal-hash run the records themselves -- not a materialized copy
+  // of their names -- are sorted by decoded name. Exact decoded comparison
+  // remains authoritative: the folded hash only sets average run length and
+  // is never a bound or a duplicate verdict.
   static uint32_t HashDecodedMemberName(const std::string& name) {
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
     (void)name;
@@ -338,7 +352,7 @@ class ParserImpl {
         for (size_t n = first + 1; n < last; ++n) {
           std::string current = DecodeMemberNameAt((*records)[n].offset);
           if (previous == current) {
-            throw std::runtime_error("json_lite: duplicate object member '" + current + "'");
+            throw std::runtime_error("json_lite: duplicate object member");
           }
           previous = std::move(current);
         }
@@ -366,16 +380,18 @@ class ParserImpl {
     while (true) {
       SkipWs();
       const size_t key_offset = i_;
-      std::string key = ParseString();
-      // JSON object member names are unique for every document this parser
-      // accepts. Keeping the first occurrence would make a consumer disagree
-      // with a last-member reader; reject the object before any caller can
-      // look a field up through Value::Find().
-      RememberMemberName(&member_name_records, key, key_offset);
-      SkipWs();
-      Expect(':');
-      Parsed<Build> val = ParseValue<Build>();
-      if constexpr (Build) v.as_object.emplace_back(std::move(key), std::move(val));
+      {
+        std::string key = ParseString();
+        // JSON object member names are unique for every document this parser
+        // accepts. Keeping the first occurrence would make a consumer disagree
+        // with a last-member reader; reject the object before any caller can
+        // look a field up through Value::Find().
+        RememberMemberName(&member_name_records, key, key_offset);
+        SkipWs();
+        Expect(':');
+        Parsed<Build> val = ParseValue<Build>();
+        if constexpr (Build) v.as_object.emplace_back(std::move(key), std::move(val));
+      }
       SkipWs();
       const char c = Next();
       if (c == ',') continue;
