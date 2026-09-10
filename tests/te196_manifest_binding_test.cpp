@@ -81,7 +81,7 @@ semb_status ResolveStatus(const char* name) {
 }
 
 struct Args {
-  std::string model, tokenizer, scratch, stem = "te196", te209_worker, te213_worker, te215_worker;
+  std::string model, tokenizer, scratch, stem = "te196", te209_worker, te213_worker, te215_worker, te217_worker;
   unsigned dims = 0;
 };
 Args ParseArgs(int argc, char** argv) {
@@ -97,6 +97,7 @@ Args ParseArgs(int argc, char** argv) {
     else if (k == "--te209-worker") next(&a.te209_worker);
     else if (k == "--te213-worker") next(&a.te213_worker);
     else if (k == "--te215-worker") next(&a.te215_worker);
+    else if (k == "--te217-worker") next(&a.te217_worker);
   }
   return a;
 }
@@ -658,6 +659,100 @@ void RunTe215SlopeWorkers(const Args& a, const char* executable) {
 #endif
 }
 
+// TE-217 (o)/(p): I3's grammar-minimum and transient-term populations.  The
+// compact object repeats the legal empty member name, so each retained member
+// costs the grammar minimum of five bytes ("":0, apart from the final comma).
+// The long-name pair holds only two records, making decoded comparator and
+// adjacent-walk temporaries the whole variable term.
+constexpr size_t kTe217Compact4M = 4'000'000;
+constexpr size_t kTe217Compact16M = 16'000'000;
+constexpr size_t kTe217LongName4MiB = size_t{4} * 1024 * 1024;
+constexpr size_t kTe217LongName16MiB = size_t{16} * 1024 * 1024;
+
+void WriteTe217CompactHeader(const fs::path& header, size_t members) {
+  std::ofstream out(header, std::ios::binary);
+  if (!out) throw std::runtime_error("cannot create " + header.string());
+  WriteTe209Prefix(&out);
+  out << '{';
+  for (size_t i = 0; i < members; ++i) {
+    if (i) out << ',';
+    out << "\"\":0";
+  }
+  out << "}}";
+  if (!out) throw std::runtime_error("cannot write " + header.string());
+}
+
+void WriteTe217LongNameHeader(const fs::path& header, size_t name_bytes) {
+  std::ofstream out(header, std::ios::binary);
+  if (!out) throw std::runtime_error("cannot create " + header.string());
+  WriteTe209Prefix(&out);
+  out << '{' << '"';
+  for (size_t i = 0; i < name_bytes; ++i) out << 'x';
+  out << "\":0,\"";
+  for (size_t i = 0; i < name_bytes; ++i) out << 'x';
+  out << "\":0}}";
+  if (!out) throw std::runtime_error("cannot write " + header.string());
+}
+
+int RunTe217Worker(const Args& a) {
+  const std::string& tag = a.te217_worker;
+  fs::create_directories(a.scratch);
+  const fs::path stem = fs::path(a.scratch) / (a.stem + "_te217_" + tag);
+  const fs::path header(stem.string() + ".wvbank.json");
+  fs::remove(header);
+  try {
+    if (tag == "empty4000000") WriteTe217CompactHeader(header, kTe217Compact4M);
+    else if (tag == "empty16000000") WriteTe217CompactHeader(header, kTe217Compact16M);
+    else if (tag == "long4194304") WriteTe217LongNameHeader(header, kTe217LongName4MiB);
+    else if (tag == "long16777216") WriteTe217LongNameHeader(header, kTe217LongName16MiB);
+    else throw std::runtime_error("unknown TE-217 worker: " + tag);
+  } catch (const std::exception& e) {
+    Verdict(false, "TE217/" + tag + " fixture", e.what());
+    return 1;
+  }
+  const size_t header_bytes = static_cast<size_t>(fs::file_size(header));
+  TryOpenExpectWithPeakBound("TE217/" + tag, stem, ResolveStatus("SEMB_ARTIFACT_UNREADABLE"),
+                             "SEMB_ARTIFACT_UNREADABLE", header_bytes);
+#if defined(_WIN32)
+  WriteMeasureFile(fs::path(a.scratch) / (a.stem + "_te217_" + tag + ".measure"), PeakWorkingSetBytes(), header_bytes);
+#endif
+  fs::remove(header);
+  return g_failures ? 1 : 0;
+}
+
+void RunTe217SlopeWorkers(const Args& a, const char* executable) {
+#if defined(_WIN32)
+  auto spawn = [&](const char* tag) {
+    const int rc = _spawnl(_P_WAIT, executable, executable, "--model", a.model.c_str(), "--tokenizer", a.tokenizer.c_str(),
+      "--dims", std::to_string(a.dims).c_str(), "--scratch", a.scratch.c_str(), "--stem", a.stem.c_str(),
+      "--te217-worker", tag, nullptr);
+    Verdict(rc == 0, std::string("TE217 ") + tag + " fresh-process worker", rc == 0 ? "exit 0" : "nonzero exit");
+  };
+  auto read_measure = [&](const char* tag) {
+    return ReadMeasureFile(fs::path(a.scratch) / (a.stem + "_te217_" + tag + ".measure"));
+  };
+  auto assert_slope = [&](const std::string& family, const Measurement& lo, const Measurement& hi) {
+    const bool grows = hi.header_bytes > lo.header_bytes && hi.peak >= lo.peak;
+    const size_t peak_growth = grows ? hi.peak - lo.peak : 0;
+    const size_t header_growth = grows ? hi.header_bytes - lo.header_bytes : 0;
+    const size_t four_header_growth = 4 * header_growth;
+    Verdict(grows && peak_growth <= four_header_growth,
+            "TE217 " + family + " slope: peak growth <= 4 x header growth",
+            "peak(small)=" + std::to_string(lo.peak) + " header(small)=" + std::to_string(lo.header_bytes) +
+            " peak(large)=" + std::to_string(hi.peak) + " header(large)=" + std::to_string(hi.header_bytes) +
+            " peak growth=" + std::to_string(peak_growth) + " 4 x header growth=" + std::to_string(four_header_growth));
+  };
+  spawn("empty4000000"); spawn("empty16000000");
+  assert_slope("(o) repeated-empty-name object (4,000,000 / 16,000,000)",
+               read_measure("empty4000000"), read_measure("empty16000000"));
+  spawn("long4194304"); spawn("long16777216");
+  assert_slope("(p) two shared 4 MiB / 16 MiB names", read_measure("long4194304"), read_measure("long16777216"));
+#else
+  (void)a; (void)executable;
+  Observed("TE217 fresh-process slope cells are Windows-only");
+#endif
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -669,6 +764,7 @@ int main(int argc, char** argv) {
   if (!a.te209_worker.empty()) return RunTe209Worker(a);
   if (!a.te213_worker.empty()) return RunTe213Worker(a);
   if (!a.te215_worker.empty()) return RunTe215Worker(a);
+  if (!a.te217_worker.empty()) return RunTe217Worker(a);
   fs::create_directories(a.scratch);
   const fs::path scratch(a.scratch);
   const std::string label = "mechanism";
@@ -1252,6 +1348,7 @@ int main(int argc, char** argv) {
   RunTe209Workers(a, argv[0]);
   RunTe213Workers(a, argv[0]);
   RunTe215SlopeWorkers(a, argv[0]);
+  RunTe217SlopeWorkers(a, argv[0]);
 
   std::printf("\nte196_manifest_binding_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
   return g_failures ? 1 : 0;
