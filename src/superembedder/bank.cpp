@@ -54,6 +54,7 @@ struct semb_bank_opaque {
   std::array<uint8_t, 32> fingerprint{};
   int64_t count = 0;
   int64_t dims = 0;
+  uint32_t live_queries = 0;
 };
 
 namespace {
@@ -657,14 +658,33 @@ extern "C" semb_status semb_bank_close(semb_bank bank) {
     std::lock_guard<std::mutex> lock(RegistryMutex());
     const auto found = Registry().find(bank);
     if (found == Registry().end()) return SEMB_INVALID_HANDLE;
-    // SEMB_BANK_IN_USE (a live semb_query reference count on the bank) is
-    // Slice 5's own -- no semb_query_open exists yet to raise it
-    // (D-SLM4664; D-SLM6393). Every open handle closes unconditionally at
-    // this slice.
+    if (found->second->live_queries != 0) return SEMB_BANK_IN_USE;
     closing = std::move(found->second);
     Registry().erase(found);
   }
   closing.reset();
+  return SEMB_OK;
+}
+
+extern "C" semb_status semb_bank_acquire_query(semb_bank bank, const uint8_t fingerprint[32]) {
+  if (!bank || !fingerprint) return SEMB_NULL_ARGUMENT;
+  std::lock_guard<std::mutex> lock(RegistryMutex());
+  const auto found = Registry().find(bank);
+  if (found == Registry().end()) return SEMB_INVALID_HANDLE;
+  if (std::memcmp(found->second->fingerprint.data(), fingerprint, 32) != 0) {
+    return SEMB_FINGERPRINT_MISMATCH;
+  }
+  ++found->second->live_queries;
+  return SEMB_OK;
+}
+
+extern "C" semb_status semb_bank_release_query(semb_bank bank) {
+  if (!bank) return SEMB_NULL_ARGUMENT;
+  std::lock_guard<std::mutex> lock(RegistryMutex());
+  const auto found = Registry().find(bank);
+  if (found == Registry().end()) return SEMB_INVALID_HANDLE;
+  if (found->second->live_queries == 0) return SEMB_INVALID_HANDLE;
+  --found->second->live_queries;
   return SEMB_OK;
 }
 

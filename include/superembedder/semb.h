@@ -17,6 +17,12 @@ typedef struct semb_encoder_s* semb_encoder;
 // never interchangeable (tests/semb_bank_abi_contract.h, TE-163/TE-166).
 typedef struct semb_bank_opaque* semb_bank;
 
+// A bank-bound query handle. It is library-owned and distinct from both the
+// encoder and bank handles; query encodes can only occur after open compared
+// the encoder's untagged five-component identity against the bank's retained
+// manifest identity.
+typedef struct semb_query_opaque* semb_query;
+
 // Closed and append-only: existing names and ordinals never move.
 #define SEMB_STATUS_ENUM_LIST(X) \
   X(SEMB_OK,                        0) \
@@ -64,7 +70,8 @@ typedef struct semb_bank_opaque* semb_bank;
   /* bank.cpp). Distinct from SEMB_FINGERPRINT_MISMATCH (the encoder  */ \
   /* fingerprint's own five-component recomputation) and              */ \
   /* SEMB_ARTIFACT_SHA_MISMATCH (provenance.artifact_sha).            */ \
-  X(SEMB_BANK_DIGEST_MISMATCH,             33)
+  X(SEMB_BANK_DIGEST_MISMATCH,             33) \
+  X(SEMB_BANK_IN_USE,                      34)
 
 typedef enum semb_status {
 #define SEMB_STATUS_ENUM_VALUE_(name, value) name = value,
@@ -105,11 +112,11 @@ struct semb_document {
   size_t utf8_len;
 };
 
-// U1's raw-text slice does not yet carry the certified W-B, W-Q, and epoch
-// fields required by the final five-field fingerprint. Successful encodes are
-// therefore marked in-band: digest[0..7] equals this eight-byte tag. Consumers
-// MUST reject tagged values as persistent bank/query compatibility identities.
-// The tag disappears only when the complete certified derivation replaces it.
+// U1's ABI-facing raw fingerprint is tagged in-band: digest[0..7] equals this
+// eight-byte tag. It is returned only by semb_encode and semb_fingerprint_of.
+// Persistent manifests and semb_query_open compare the untagged SHA-256 over
+// the five clear components; consumers MUST NOT compare this tagged ABI value
+// to a manifest's encoder_fingerprint.
 #define SEMB_FINGERPRINT_PROVISIONAL_TAG "SEMBP001"
 #define SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE 8u
 
@@ -134,9 +141,15 @@ semb_status semb_encode_batch(semb_encoder enc, const semb_document* docs, size_
 // `*out == NULL` (when `out` is non-NULL) (`Claude/Plans/SuperEmbedder_Plan.md`
 // sec 3.1; `tests/semb_bank_abi_contract.h`).
 semb_status semb_bank_open(const char* path, size_t path_len, semb_bank* out);
-// Releases the handle. `SEMB_BANK_IN_USE` (a live query-handle reference
-// count) is Slice 5's own and is not tracked by this slice.
+// Releases the handle. A bank with one or more live query handles returns
+// SEMB_BANK_IN_USE and remains live; close those query handles and retry.
 semb_status semb_bank_close(semb_bank bank);
+semb_status semb_query_open(semb_encoder enc, semb_bank bank, semb_query* out);
+semb_status semb_query_encode(semb_query q, const char* utf8, size_t utf8_len,
+                              float* out_vector, size_t out_capacity_bytes,
+                              size_t* out_required_bytes);
+semb_status semb_query_close(semb_query q);
+semb_status semb_fingerprint_of(semb_encoder enc, semb_fingerprint* out);
 const char* semb_status_name(semb_status s);
 
 #ifdef __cplusplus

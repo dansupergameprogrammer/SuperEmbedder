@@ -12,6 +12,7 @@
 #include "superembedder/manifest_labels_abi.h"
 #include "superembedder/version.h"
 #include "encoder_open_internal.h"
+#include "query_internal.h"
 #include "wb_corpus.h"
 #include "json_lite.h"
 
@@ -61,6 +62,7 @@ struct semb_encoder_s {
   // many times a diagnostic accessor is called against an already-open
   // handle (witness_abi.h's own semb_wb_digest comment).
   std::array<uint8_t, 32> wb_digest{};
+  std::array<uint8_t, 32> wq_digest{};
   // TE-166 (U1 slice 4): the manifest's own five clear-text fingerprint
   // components and the PURE sec 3.3 encoder_fingerprint (SHA-256 over the
   // five, length-prefixed, no tag) -- derived once at open, alongside
@@ -99,10 +101,6 @@ constexpr char kQueryPrefix[] =
 constexpr char kCanonicalEndToken[] = "<|endoftext|>";
 // W-B's own sentinel retired, TE-147: ComputeProvisionalFingerprint now
 // takes a real, handle-derived wb_digest (ComputeWbDigest, below) instead
-// of hashing a placeholder literal. W-Q is still out of this slice's own
-// scope (SuperEmbedder_Plan.md sec 4.4c: "specification, probe-proven, not
-// yet built") and keeps its sentinel.
-constexpr char kWqPendingSentinel[] = "SEMB-W-Q-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
 constexpr char kCertificationPendingSentinel[] =
     "SEMB-CERTIFIED-BUILDS-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
 constexpr char kProvisionalFingerprintTag[] = SEMB_FINGERPRINT_PROVISIONAL_TAG;
@@ -414,6 +412,36 @@ semb_status ComposeBatch(semb_encoder_s* h, const std::string_view* texts, size_
   return MapInterimStatus(status, dequantize);
 }
 
+// The one query-side forward composition. Query text is composed before this
+// function is called; it tokenizes that whole composition, then applies the
+// caller-selected content ceiling, leaving the interim layer to append the
+// canonical special token. W-Q and semb_query_encode both reach this path.
+semb_status EncodeQueryComposedImpl(semb_encoder_s* h, std::string_view composed,
+                                    size_t max_content_ids,
+                                    std::vector<float>* out_vector) {
+  if (!h || !out_vector) return SEMB_NULL_ARGUMENT;
+  std::vector<int32_t> ids = h->tokenizer.Encode(composed);
+  if (ids.empty()) return SEMB_INPUT_EMPTY;
+  const size_t context_limit = h->context_cap > 0 ? h->context_cap - 1 : 0;
+  const size_t permitted = std::min(context_limit, max_content_ids);
+  if (permitted == 0) return SEMB_CONTEXT_CAP_EXCEEDED;
+  if (ids.size() > permitted) ids.resize(permitted);
+
+  const size_t required = static_cast<size_t>(h->dims) * sizeof(float);
+  std::vector<float> staged(h->dims);
+  SembWaPoolStatus dequantize = kSembOk;
+  const char* engine_status = nullptr;
+  size_t interim_required = 0;
+  const SembInterimStatus status = semb_interim_encode_ps_n(
+      h->interim, ids.data(), ids.size(), h->chunk_budget, staged.data(), required,
+      &interim_required, &dequantize, &engine_status);
+  (void)engine_status;
+  const semb_status mapped = MapInterimStatus(status, dequantize);
+  if (mapped != SEMB_OK) return mapped;
+  *out_vector = std::move(staged);
+  return SEMB_OK;
+}
+
 // TE-165 (D-SLM6390 item 2), corrected TE-184 (N-8, D-SLM6406): prepares
 // one W-B document as TEXT -- the longest UTF-8-boundary byte prefix such
 // that ComposeDocumentInput(prefix)'s tokenized length under `enc`'s OWN
@@ -576,12 +604,12 @@ bool ComputeWbDigest(semb_encoder_s* h, std::array<uint8_t, 32>* out_digest) {
 // open-sequence change).
 std::array<uint8_t, 32> ComputeProvisionalFingerprint(
     const uint8_t model_sha[32], const uint8_t tokenizer_sha[32],
-    const std::array<uint8_t, 32>& wb_digest) {
+    const std::array<uint8_t, 32>& wb_digest, const std::array<uint8_t, 32>& wq_digest) {
   uint8_t wa_sha[32], wq_sha[32];
   uint8_t wb_sha[32];
   semb_wa_digest(wa_sha);
   std::memcpy(wb_sha, wb_digest.data(), 32);
-  Hash(kWqPendingSentinel, sizeof(kWqPendingSentinel) - 1, wq_sha);
+  std::memcpy(wq_sha, wq_digest.data(), 32);
 
   uint8_t witness_sha[32];
   {
@@ -649,7 +677,7 @@ struct ManifestFingerprintComponents {
 
 ManifestFingerprintComponents ComputeManifestFingerprintComponents(
     const uint8_t model_sha[32], const uint8_t tokenizer_sha[32],
-    const std::array<uint8_t, 32>& wb_digest) {
+    const std::array<uint8_t, 32>& wb_digest, const std::array<uint8_t, 32>& wq_digest) {
   ManifestFingerprintComponents c{};
   std::memcpy(c.model_sha.data(), model_sha, 32);
   std::memcpy(c.tokenizer_sha.data(), tokenizer_sha, 32);
@@ -657,7 +685,7 @@ ManifestFingerprintComponents ComputeManifestFingerprintComponents(
 
   uint8_t wa_sha[32], wq_sha[32];
   semb_wa_digest(wa_sha);
-  Hash(kWqPendingSentinel, sizeof(kWqPendingSentinel) - 1, wq_sha);
+  std::memcpy(wq_sha, wq_digest.data(), 32);
   {
     superslm::Sha256 hash;
     hash.Update(wa_sha, 32);
@@ -877,15 +905,18 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
       return SEMB_ENGINE_REFUSED;
     }
 
-    h->fingerprint = ComputeProvisionalFingerprint(model_sha, tokenizer_sha, wb_digest);
+    std::array<uint8_t, 32> wq_digest{};
+    if (!semb_compute_wq_digest(h, &wq_digest)) return SEMB_ENGINE_REFUSED;
+    h->fingerprint = ComputeProvisionalFingerprint(model_sha, tokenizer_sha, wb_digest, wq_digest);
     h->wb_digest = wb_digest;
+    h->wq_digest = wq_digest;
     // TE-166 (U1 slice 4): the manifest's own components, derived from the
     // SAME one-read-owned buffers (model_sha/tokenizer_sha) and the SAME
     // wb_digest just computed above -- never a second read, never a
     // second forward.
     {
       const ManifestFingerprintComponents mc =
-          ComputeManifestFingerprintComponents(model_sha, tokenizer_sha, wb_digest);
+          ComputeManifestFingerprintComponents(model_sha, tokenizer_sha, wb_digest, wq_digest);
       h->manifest_model_sha = mc.model_sha;
       h->manifest_tokenizer_sha = mc.tokenizer_sha;
       h->manifest_template_sha256 = mc.template_sha256;
@@ -1016,6 +1047,62 @@ extern "C" semb_status semb_wb_digest(semb_encoder enc, uint8_t out_digest[32]) 
   std::memcpy(out_digest, lease.get()->wb_digest.data(), lease.get()->wb_digest.size());
   return SEMB_OK;
 }
+
+namespace semb {
+
+semb_status EncoderManifestFingerprint(semb_encoder enc, uint8_t out[32]) {
+  if (!enc || !out) return SEMB_NULL_ARGUMENT;
+  HandleLease lease(enc);
+  if (!lease.get()) return SEMB_INVALID_HANDLE;
+  std::memcpy(out, lease.get()->manifest_fingerprint.data(), 32);
+  return SEMB_OK;
+}
+
+semb_status EncoderAbiFingerprint(semb_encoder enc, uint8_t out[32]) {
+  if (!enc || !out) return SEMB_NULL_ARGUMENT;
+  HandleLease lease(enc);
+  if (!lease.get()) return SEMB_INVALID_HANDLE;
+  std::memcpy(out, lease.get()->fingerprint.data(), 32);
+  return SEMB_OK;
+}
+
+semb_status EncoderWqDigest(semb_encoder enc, uint8_t out[32]) {
+  if (!enc || !out) return SEMB_NULL_ARGUMENT;
+  HandleLease lease(enc);
+  if (!lease.get()) return SEMB_INVALID_HANDLE;
+  std::memcpy(out, lease.get()->wq_digest.data(), 32);
+  return SEMB_OK;
+}
+
+semb_status EncoderDims(semb_encoder enc, uint32_t* out_dims) {
+  if (!enc || !out_dims) return SEMB_NULL_ARGUMENT;
+  HandleLease lease(enc);
+  if (!lease.get()) return SEMB_INVALID_HANDLE;
+  *out_dims = lease.get()->dims;
+  return SEMB_OK;
+}
+
+bool EncoderValidUtf8(const char* data, size_t size) {
+  return data && ValidUtf8(data, size);
+}
+
+semb_status EncodeQueryComposedForWitness(semb_encoder_s* encoder,
+                                          std::string_view composed,
+                                          size_t max_content_ids,
+                                          std::vector<float>* out_vector) {
+  return EncodeQueryComposedImpl(encoder, composed, max_content_ids, out_vector);
+}
+
+semb_status EncodeQueryComposed(semb_encoder enc, std::string_view composed,
+                                size_t max_content_ids,
+                                std::vector<float>* out_vector) {
+  if (!enc || !out_vector) return SEMB_NULL_ARGUMENT;
+  HandleLease lease(enc);
+  if (!lease.get()) return SEMB_INVALID_HANDLE;
+  return EncodeQueryComposedImpl(lease.get(), composed, max_content_ids, out_vector);
+}
+
+}  // namespace semb
 
 // TE-147 (U1 slice 2 build): the bake-side corpus entry
 // (`Claude/Plans/SuperEmbedder_Plan.md` sec 3.1; the ratified contract is

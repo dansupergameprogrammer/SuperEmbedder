@@ -105,6 +105,7 @@ configure_file(
 set(SEMB_LIBRARY_SOURCES
 	src/version.cpp
 	src/superembedder/encoder.cpp
+	src/superembedder/query.cpp
 	src/superembedder/ps1_pool.cpp
 	src/superembedder/ps_n_pool.cpp
 	src/superembedder/seam_serialize.cpp

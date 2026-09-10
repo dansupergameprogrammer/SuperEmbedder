@@ -61,7 +61,10 @@
 //   omitted (a field whose producing mechanism lands at a later slice
 //   carries the same provisional sentinel the fingerprint already carries
 //   for it -- present, never omitted, never fabricated):
-//     encoder_fingerprint          -- hex, the handle's own semb_fingerprint
+//     encoder_fingerprint          -- hex, the untagged SHA-256 over the five
+//                                      clear components; distinct from the
+//                                      tagged ABI value semb_encode and
+//                                      semb_fingerprint_of return
 //     model_sha, tokenizer_sha,
 //       template_sha256, witness_sha,
 //       certification_epoch        -- the five components IN CLEAR (sec 3.4:
