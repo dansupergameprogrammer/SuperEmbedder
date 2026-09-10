@@ -108,8 +108,12 @@
 
 #include "semb_public_abi_contract.h"
 #include "semb_batch_abi_contract.h"
+#include "semb_bank_abi_contract.h"
+#include "semb_bake_abi_contract.h"
+#include "semb_query_abi_contract.h"
 #include "semb_seam_abi_contract.h"
 #include "semb_wb_witness_abi_contract.h"
+#include "json_mini.h"
 
 // TE-155 item 1 (D-SLM6341): the independent recomputation below needs
 // context_cap to apply the SAME per-document cut
@@ -409,6 +413,63 @@ semb_encoder Open(const Args& a) {
   const semb_status s = semb_encoder_open(&c, &enc);
   if (!Is(s, "SEMB_OK") || !enc) { Verdict(false, "(setup) open", Name(s)); return nullptr; }
   return enc;
+}
+
+// §4.4b/c's independent W-Q route. The only input is committed fixture data
+// and the public query API; no test-owned declaration reaches the product's
+// private W-Q digest. Each emitted vector has an explicit u64 LE byte-length.
+bool ComputePlanWqDigest(semb_encoder enc, unsigned dims, uint8_t out[32], std::string* why) {
+  const char id[] = "wq-bank";
+  const char text[] = "cap-safe independent W-Q bank document";
+  semb_document doc{};
+  doc.struct_size = sizeof(doc); doc.id = id; doc.id_len = sizeof(id) - 1;
+  doc.utf8 = text; doc.utf8_len = sizeof(text) - 1;
+  const std::string stem = "build/_scratch/te222_wq_fingerprint";
+  const semb_status baked = semb_bake_to_path(enc, &doc, 1, stem.c_str(), stem.size());
+  if (!Is(baked, "SEMB_OK")) { *why = "bake=" + std::string(Name(baked)); return false; }
+  semb_bank bank = nullptr;
+  const semb_status bank_s = semb_bank_open(stem.c_str(), stem.size(), &bank);
+  semb_query query = nullptr;
+  const semb_status query_s = Is(bank_s, "SEMB_OK") ? semb_query_open(enc, bank, &query) : bank_s;
+  if (!query) {
+    if (bank) semb_bank_close(bank);
+    *why = "bank=" + std::string(Name(bank_s)) + " query=" + Name(query_s);
+    return false;
+  }
+  std::vector<std::string> queries;
+  for (const char* path : {"tests/fixtures/wq/wq-queries.jsonl", "tests/fixtures/wq/wq-truncation-leg.jsonl"}) {
+    std::ifstream f(path);
+    std::string line;
+    if (!f) { *why = std::string("cannot open ") + path; semb_query_close(query); semb_bank_close(bank); return false; }
+    while (std::getline(f, line)) if (!line.empty()) queries.push_back(json_mini::Parse(line)["text"].s());
+  }
+  if (queries.size() != 6) {
+    *why = "committed W-Q population count=" + std::to_string(queries.size());
+    semb_query_close(query); semb_bank_close(bank); return false;
+  }
+  auto update_u64 = [](superslm::Sha256* h, uint64_t v) {
+    uint8_t b[8]; for (size_t i = 0; i < 8; ++i) b[i] = static_cast<uint8_t>(v >> (8 * i)); h->Update(b, sizeof(b));
+  };
+  superslm::Sha256 hash;
+  update_u64(&hash, queries.size());
+  bool ok = true;
+  for (const std::string& q : queries) {
+    std::vector<uint8_t> storage(static_cast<size_t>(dims) * sizeof(float) + 16);
+    float* vector = reinterpret_cast<float*>((reinterpret_cast<uintptr_t>(storage.data()) + 15) & ~uintptr_t(15));
+    size_t required = 0;
+    const semb_status s = semb_query_encode(query, q.data(), q.size(), vector,
+                                             static_cast<size_t>(dims) * sizeof(float), &required);
+    if (!Is(s, "SEMB_OK") || required != static_cast<size_t>(dims) * sizeof(float)) {
+      *why = "semb_query_encode=" + std::string(Name(s)) + " required=" + std::to_string(required);
+      ok = false; break;
+    }
+    update_u64(&hash, required);
+    hash.Update(reinterpret_cast<const uint8_t*>(vector), required);
+  }
+  if (ok) hash.Final(out);
+  semb_query_close(query);
+  semb_bank_close(bank);
+  return ok;
 }
 
 }  // namespace
@@ -931,12 +992,9 @@ int main(int argc, char** argv) {
     // include/superembedder/wb_digest_abi.h's own header comment names).
     constexpr char kTag[] = "SEMBP001";
     static_assert(sizeof(kTag) - 1 == 8, "SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE is 8");
-    // W-Q is a live third witness leg at this product tip. This test cannot
-    // independently recompute the enclosing fingerprint until the product
-    // declares its diagnostic accessor in a private witness ABI header:
-    // semb_wq_digest exists only as an undeclared query-handle-scoped symbol.
-    // Do not preserve the retired pending sentinel as an oracle; it makes the
-    // correct three-leg fingerprint fail while proving nothing about W-B.
+    // W-Q is independently recomputed through the committed fixture population
+    // and public query verb below.  A private diagnostic accessor is neither
+    // needed nor used for this five-field comparison.
     constexpr char kCertificationPendingSentinel[] =
         "SEMB-CERTIFIED-BUILDS-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
     // sec 2.1's own literal, verbatim (confirmed against the plan, not
@@ -958,7 +1016,7 @@ int main(int argc, char** argv) {
     const std::vector<uint8_t> model_bytes = ReadFile(a.model);
     const std::vector<uint8_t> tokenizer_bytes = ReadFile(a.tokenizer);
     if (model_bytes.empty() || tokenizer_bytes.empty()) {
-      Missing("(fingerprint) semb_fingerprint equals the independently-recomputed five-field composition",
+      Verdict(false, "(fingerprint) semb_fingerprint equals the independently-recomputed five-field composition",
               "cannot read model/tokenizer artifact bytes");
     } else {
       uint8_t model_sha[32], tokenizer_sha[32];
@@ -980,11 +1038,56 @@ int main(int argc, char** argv) {
         semb_wa_digest(wa);
         uint8_t wb[32];
         const semb_status swb = semb_wb_digest(enc, wb);
-        Missing("(fingerprint) the emitted semb_fingerprint equals the independent three-leg witness composition",
-                "requires a product-declared private witness ABI for semb_wq_digest; the current "
-                "query-handle-scoped, undeclared symbol cannot be called without adding a test-owned "
-                "declaration, and the bank comparison would remain circular. Routed to the builder.");
+        uint8_t wq[32]{};
+        std::string wq_why;
+        const bool wq_ok = ComputePlanWqDigest(enc, a.dims, wq, &wq_why);
+        uint8_t expected[32]{}, actual[32]{};
+        bool composed = false;
+        if (wq_ok && Is(swb, "SEMB_OK")) {
+          uint8_t witness_sha[32], certification_epoch[32], inner[32];
+          std::vector<uint8_t> witness;
+          witness.insert(witness.end(), wa, wa + 32);
+          witness.insert(witness.end(), wb, wb + 32);
+          witness.insert(witness.end(), wq, wq + 32);
+          sha256(witness.data(), witness.size(), witness_sha);
+          sha256(kCertificationPendingSentinel, sizeof(kCertificationPendingSentinel) - 1,
+                 certification_epoch);
+
+          std::vector<uint8_t> composition;
+          composition.insert(composition.end(), kTag, kTag + sizeof(kTag) - 1);
+          update_field(&composition, model_sha);
+          update_field(&composition, tokenizer_sha);
+          update_field(&composition, template_sha256);
+          update_field(&composition, witness_sha);
+          update_field(&composition, certification_epoch);
+          sha256(composition.data(), composition.size(), inner);
+          std::memcpy(expected, kTag, sizeof(kTag) - 1);
+          std::memcpy(expected + sizeof(kTag) - 1, inner, 24);
+
+          std::vector<uint8_t> storage(static_cast<size_t>(a.dims) * sizeof(float) + 16);
+          float* vector = reinterpret_cast<float*>(
+              (reinterpret_cast<uintptr_t>(storage.data()) + 15) & ~uintptr_t(15));
+          size_t required = 0;
+          semb_fingerprint fp{};
+          fp.struct_size = sizeof(fp);
+          const char probe[] = "five-field fingerprint probe";
+          const semb_status se = semb_encode(enc, probe, sizeof(probe) - 1, vector,
+                                             static_cast<size_t>(a.dims) * sizeof(float),
+                                             &required, &fp);
+          std::memcpy(actual, fp.digest, sizeof(actual));
+          composed = Is(se, "SEMB_OK") &&
+                     std::memcmp(expected, actual, sizeof(expected)) == 0;
+          wq_why += " raw=" + std::string(Name(se)) + " expected=" + Hex(expected) +
+                    " actual=" + Hex(actual);
+        } else {
+          wq_why = "wb=" + std::string(Name(swb)) + " " + wq_why;
+        }
+        Verdict(composed, "(fingerprint) semb_fingerprint equals the independently-recomputed five-field composition",
+                wq_why);
         semb_encoder_close(enc);
+      } else {
+        Verdict(false, "(fingerprint) semb_fingerprint equals the independently-recomputed five-field composition",
+                "encoder open failed");
       }
     }
   }

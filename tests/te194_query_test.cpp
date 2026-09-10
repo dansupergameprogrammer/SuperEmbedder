@@ -37,6 +37,8 @@
 #include "semb_bank_abi_contract.h"
 #include "semb_bake_abi_contract.h"
 #include "semb_query_abi_contract.h"
+#include "semb_wb_witness_abi_contract.h"
+#include "superembedder/witness_abi.h"
 #include "json_mini.h"
 #include "superslm/sha256.h"
 
@@ -77,6 +79,49 @@ std::string Sha256Hex(const std::string& bytes) {
   uint8_t digest[32];
   hash.Final(digest);
   return Hex(digest, sizeof(digest));
+}
+
+// §4.4b/c's public, independent W-Q construction: its two committed JSONL
+// populations go through semb_query_encode itself. The fixed-width emitted
+// vectors are length-prefixed (u64 LE) so this stream has an explicit
+// boundary independent of a particular hidden size. A public caller cannot
+// select the product's private witness cap; that is deliberately visible in
+// the final fingerprint comparison rather than hidden behind an accessor.
+bool ComputePlanWqDigest(semb_query query, uint32_t dims, uint8_t out[32], std::string* why) {
+  std::vector<std::string> queries;
+  for (const char* path : {"tests/fixtures/wq/wq-queries.jsonl",
+                           "tests/fixtures/wq/wq-truncation-leg.jsonl"}) {
+    std::ifstream f(path);
+    if (!f) { *why = std::string("cannot open ") + path; return false; }
+    std::string line;
+    while (std::getline(f, line)) {
+      if (!line.empty()) queries.push_back(json_mini::Parse(line)["text"].s());
+    }
+  }
+  if (queries.size() != 6) { *why = "committed W-Q population count is " + std::to_string(queries.size()); return false; }
+  auto update_u64 = [](superslm::Sha256* h, uint64_t v) {
+    uint8_t b[8];
+    for (size_t i = 0; i < sizeof(b); ++i) b[i] = static_cast<uint8_t>(v >> (8 * i));
+    h->Update(b, sizeof(b));
+  };
+  superslm::Sha256 hash;
+  update_u64(&hash, queries.size());
+  for (const std::string& text : queries) {
+    std::vector<uint8_t> storage(static_cast<size_t>(dims) * sizeof(float) + 16);
+    const uintptr_t raw = reinterpret_cast<uintptr_t>(storage.data());
+    float* vector = reinterpret_cast<float*>((raw + 15) & ~uintptr_t(15));
+    size_t required = 0;
+    const semb_status s = semb_query_encode(query, text.data(), text.size(), vector,
+                                             static_cast<size_t>(dims) * sizeof(float), &required);
+    if (s != SEMB_OK || required != static_cast<size_t>(dims) * sizeof(float)) {
+      *why = "semb_query_encode=" + std::string(Name(s)) + " required=" + std::to_string(required);
+      return false;
+    }
+    update_u64(&hash, required);
+    hash.Update(reinterpret_cast<const uint8_t*>(vector), required);
+  }
+  hash.Final(out);
+  return true;
 }
 
 // sec 2.1's own compiled-in literal, quoted here as an INDEPENDENT copy of
@@ -303,30 +348,18 @@ int main(int argc, char** argv) {
         const std::string qid = v["id"].s();
         const std::string qtext = v["text"].s();
         const std::string composed = ComposeQueryText(qtext);
-        // The synthetic tokenizer-pair's cap is deliberately 64 and the
-        // literal prefix alone exceeds it. Query encoding correctly cuts the
-        // composed token sequence; raw encoding correctly refuses an over-cap
-        // public input. For that mechanism-only fixture, compare against the
-        // exact cap-safe prefix of the same composed bytes (the fixture's
-        // byte-level tokenizer makes this the identical first 63 ids). The
-        // product leg retains the complete normative composition unchanged.
-
         std::vector<float> via_query(dims), via_raw(dims);
         size_t req_q = 0, req_raw = 0;
         const semb_status qs = semb_query_encode(q, qtext.data(), qtext.size(), via_query.data(),
                                                   via_query.size() * sizeof(float), &req_q);
         semb_fingerprint fp_raw{}; fp_raw.struct_size = sizeof(fp_raw);
-        if (have_a) {
-          const semb_status rs = semb_encode(enc_b, composed.data(), composed.size(), via_raw.data(),
-                                              via_raw.size() * sizeof(float), &req_raw, &fp_raw);
-          const bool ok = qs == SEMB_OK && rs == SEMB_OK &&
-                           std::memcmp(via_query.data(), via_raw.data(), dims * sizeof(float)) == 0;
-          Verdict(ok, "cell1 semb_query_encode(" + qid + ") == semb_encode(prefix ‖ text)",
-                  "query_status=" + std::string(Name(qs)) + " raw_status=" + std::string(Name(rs)) +
-                      (ok ? " vectors byte-identical" : " vectors differ or a call refused"));
-        } else {
-          Verdict(qs == SEMB_OK, "cell1 mechanism query encoding reaches the query composition path", Name(qs));
-        }
+        const semb_status rs = semb_encode(enc_b, composed.data(), composed.size(), via_raw.data(),
+                                            via_raw.size() * sizeof(float), &req_raw, &fp_raw);
+        const bool ok = qs == SEMB_OK && rs == SEMB_OK &&
+                        std::memcmp(via_query.data(), via_raw.data(), dims * sizeof(float)) == 0;
+        Verdict(ok, "cell1 semb_query_encode(" + qid + ") == semb_encode(prefix ‖ text)",
+                "query_status=" + std::string(Name(qs)) + " raw_status=" + std::string(Name(rs)) +
+                    (ok ? " vectors byte-identical" : " vectors differ or a call refused"));
       }
 
       // Buffer too small: SEMB_BUFFER_TOO_SMALL, required bytes written,
@@ -438,10 +471,9 @@ int main(int argc, char** argv) {
   }
 
   // ---------------------------------------------------------------------
-  // Cell 6 -- W-Q's own leg. The fixture population is authenticated here
-  // before any product reading is considered. The product accessor remains
-  // undeclared, so this cell deliberately stops at a named prerequisite
-  // rather than inventing a test-owned declaration for an internal symbol.
+  // Cell 6 -- W-Q's own leg. The public query route supplies the independent
+  // reading; the missing private accessor is only a separately named
+  // diagnostic comparison, never a reason to hollow out this composition.
   {
     const std::string join_bytes = ReadFile("tests/fixtures/wq/wq-queries.jsonl");
     const std::string trunc_bytes = ReadFile("tests/fixtures/wq/wq-truncation-leg.jsonl");
@@ -451,12 +483,68 @@ int main(int argc, char** argv) {
         Sha256Hex(trunc_bytes) == manifest["files"]["wq-truncation-leg.jsonl"]["sha256"].s();
     Verdict(fixture_hashes_match, "cell6 W-Q committed join and truncation fixtures match their manifest hashes",
             "join=" + Sha256Hex(join_bytes) + " truncation=" + Sha256Hex(trunc_bytes));
-    Missing("cell6 W-Q emitted-vector digest equals the product W-Q digest",
-            "semb_wq_digest is query-handle-scoped and defined in query.cpp but declared in no private "
-            "witness ABI header. This cell cannot call it without adding a test-owned declaration; the "
-            "builder must expose the private header before the independent recomputation can execute. "
-            "The future cell encodes every authenticated query through semb_query_encode, length-prefixes "
-            "the emitted vectors, and compares that digest to the accessor. QUARANTINED pending independent commissioning.");
+    semb_bank bank = nullptr;
+    const semb_status bank_s = semb_bank_open(stem_b.c_str(), stem_b.size(), &bank);
+    semb_query query = nullptr;
+    const semb_status query_s = bank_s == SEMB_OK ? semb_query_open(enc_b, bank, &query) : bank_s;
+    uint32_t dims = 0;
+    semb_encoder_dims(enc_b, &dims);
+    uint8_t wq[32]{};
+    std::string why;
+    const bool wq_ok = query && ComputePlanWqDigest(query, dims, wq, &why);
+
+    const std::string model_bytes = ReadFile(args.model_b);
+    const std::string tokenizer_bytes = ReadFile(args.tokenizer_b);
+    uint8_t model_sha[32]{}, tokenizer_sha[32]{}, template_sha[32]{}, wa[32]{}, wb[32]{};
+    auto hash_bytes = [](const uint8_t* bytes, size_t size, uint8_t out[32]) {
+      superslm::Sha256 h; h.Update(bytes, size); h.Final(out);
+    };
+    if (!model_bytes.empty() && !tokenizer_bytes.empty()) {
+      hash_bytes(reinterpret_cast<const uint8_t*>(model_bytes.data()), model_bytes.size(), model_sha);
+      hash_bytes(reinterpret_cast<const uint8_t*>(tokenizer_bytes.data()), tokenizer_bytes.size(), tokenizer_sha);
+    }
+    std::vector<uint8_t> template_stream;
+    for (uint64_t v : {uint64_t{0}, static_cast<uint64_t>(sizeof(kQueryPrefix) - 1)})
+      for (size_t i = 0; i < 8; ++i) template_stream.push_back(static_cast<uint8_t>(v >> (8 * i)));
+    template_stream.insert(template_stream.end(), kQueryPrefix, kQueryPrefix + sizeof(kQueryPrefix) - 1);
+    hash_bytes(template_stream.data(), template_stream.size(), template_sha);
+    semb_wa_digest(wa);
+    const semb_status wb_s = semb_wb_digest(enc_b, wb);
+    uint8_t expected[32]{}, actual[32]{};
+    bool composed = false;
+    if (wq_ok && wb_s == SEMB_OK && !model_bytes.empty() && !tokenizer_bytes.empty()) {
+      uint8_t witness[32], epoch[32], inner[32];
+      std::vector<uint8_t> witness_stream;
+      witness_stream.insert(witness_stream.end(), wa, wa + 32);
+      witness_stream.insert(witness_stream.end(), wb, wb + 32);
+      witness_stream.insert(witness_stream.end(), wq, wq + 32);
+      hash_bytes(witness_stream.data(), witness_stream.size(), witness);
+      constexpr char kEpochPending[] = "SEMB-CERTIFIED-BUILDS-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
+      hash_bytes(reinterpret_cast<const uint8_t*>(kEpochPending), sizeof(kEpochPending) - 1, epoch);
+      constexpr char kTag[] = "SEMBP001";
+      std::vector<uint8_t> stream(kTag, kTag + sizeof(kTag) - 1);
+      for (const uint8_t* field : {model_sha, tokenizer_sha, template_sha, witness, epoch}) {
+        for (size_t i = 0; i < 8; ++i) stream.push_back(i == 0 ? 32 : 0);
+        stream.insert(stream.end(), field, field + 32);
+      }
+      hash_bytes(stream.data(), stream.size(), inner);
+      std::memcpy(expected, kTag, sizeof(kTag) - 1);
+      std::memcpy(expected + sizeof(kTag) - 1, inner, 24);
+      std::vector<uint8_t> storage(static_cast<size_t>(dims) * sizeof(float) + 16);
+      float* vector = reinterpret_cast<float*>((reinterpret_cast<uintptr_t>(storage.data()) + 15) & ~uintptr_t(15));
+      size_t required = 0; semb_fingerprint fp{}; fp.struct_size = sizeof(fp);
+      const semb_status raw_s = semb_encode(enc_b, "cell6 fingerprint probe", 23, vector,
+                                             static_cast<size_t>(dims) * sizeof(float), &required, &fp);
+      std::memcpy(actual, fp.digest, sizeof(actual));
+      composed = raw_s == SEMB_OK && std::memcmp(expected, actual, sizeof(expected)) == 0;
+      why = std::string("raw=") + Name(raw_s) + " expected=" + Hex(expected, 32) + " actual=" + Hex(actual, 32);
+    } else {
+      why = "bank=" + std::string(Name(bank_s)) + " query=" + Name(query_s) + " wb=" + Name(wb_s) + " " + why;
+    }
+    Verdict(composed, "cell6 plan W-Q recomputation folds into the emitted five-field fingerprint", why);
+    Missing("cell6 direct product W-Q accessor comparison", "semb_wq_digest remains query-handle-scoped and undeclared in a private witness ABI; builder must expose that diagnostic accessor. This does not block the public independent recomputation above. QUARANTINED.");
+    if (query) semb_query_close(query);
+    if (bank) semb_bank_close(bank);
   }
 
   std::printf("[SUMMARY] cells=%d failures=%d\n", g_cells, g_failures);
