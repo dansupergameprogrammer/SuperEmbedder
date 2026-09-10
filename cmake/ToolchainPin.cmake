@@ -1,10 +1,12 @@
 # cmake/ToolchainPin.cmake -- TE-165 (N-4, D-SLM6386; D-SLM6390 item 5): the
-# certified {compiler id, version} pairs this project's own CI records and
-# clean-room rebuilds have actually verified are read from ONE committed
-# file (cmake/toolchain-pin.json, never duplicated here) and enforced at
+# certified {compiler id, version} pairs are read from ONE committed file
+# (cmake/toolchain-pin.json, never duplicated here) and enforced at
 # configure time -- the same shape EngineGuards.cmake already uses for the
 # engine pin: a committed fact, checked by name, refusing rather than
-# silently accepting an uncertified toolchain.
+# silently accepting an uncertified toolchain. TE-184 (N-6, D-SLM6403):
+# this repository's own CI has never run, so no pair is verified by this
+# project's own CI records -- toolchain-pin.json's own _comment states what
+# verified each one.
 #
 # Before this file, S-1's finding (a bare `clang-cl.exe` configure line
 # resolving, inside the VS developer shell, to the VS-bundled LLVM at

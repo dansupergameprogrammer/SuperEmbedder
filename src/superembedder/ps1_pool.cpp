@@ -30,6 +30,7 @@
 
 #include "big_uint.h"
 #include "binary32_construct.h"
+#include "superembedder/manifest_labels_abi.h"
 
 namespace semb {
 namespace {
@@ -184,3 +185,16 @@ extern "C" SembWaPoolStatus semb_wa_pooled_spread(const int64_t* e, size_t n,
   if (out_spread) *out_spread = static_cast<int64_t>(spread);
   return kSembOk;
 }
+
+// TE-166 (U1 slice 4, C34 leg (h)): this TU's own compiled-in
+// pooling-scheme label -- D-SLM4727's named PS-1 fallback. Not read by
+// `semb_bake_to_path` today (PS-N is the active scheme, ps_n_pool.cpp's
+// own copy is what leg (h) uses); present because this epilogue stays
+// compiled into the library and sec 3.4's label-check table names "the
+// pooling epilogue's own TU" without restricting it to whichever scheme
+// is currently active.
+namespace {
+constexpr char SEMB_PS_VERSION_LABEL[] = "PS-1";
+}  // namespace
+
+extern "C" const char* semb_ps1_version_label() { return SEMB_PS_VERSION_LABEL; }

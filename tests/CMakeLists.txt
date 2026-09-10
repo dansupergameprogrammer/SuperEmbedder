@@ -185,7 +185,19 @@ add_test(
 	NAME c41_part4_object_code_scan
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c41_part4_object_code_scan.py"
 		--build-dir "${CMAKE_BINARY_DIR}"
+		--repo-root "${CMAKE_SOURCE_DIR}"
 		--objdump "${SEMB_TEST_OBJDUMP}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# TE-201 item 5: structural scope gate for C41 part 4.  Unlike the
+# quarantined instruction reading, this compares the scan's declared source
+# population to SEMB_LIBRARY_SOURCES and fails if any library TU is absent.
+add_test(
+	NAME c41_part4_scope_derivation_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c41_part4_scope_derivation_check.py"
+		--repo-root "${CMAKE_SOURCE_DIR}"
+		--scan-script "${CMAKE_CURRENT_SOURCE_DIR}/c41_part4_object_code_scan.py"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
@@ -618,6 +630,12 @@ function(semb_add_workspace_tests)
   add_executable(u1_workspace_seam_test EXCLUDE_FROM_ALL "${_semb_test_dir}/u1_workspace_seam_test.cpp")
   target_link_libraries(u1_workspace_seam_test PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
   target_include_directories(u1_workspace_seam_test PRIVATE "${_semb_test_dir}")
+  # TE-213: a private worker for te196's equal-hash I5 cell. It is invoked
+  # only by the ordinary te196 driver and is never registered as a test.
+  add_executable(te213_manifest_binding_testseam_worker EXCLUDE_FROM_ALL "${_semb_test_dir}/te196_manifest_binding_test.cpp")
+  target_link_libraries(te213_manifest_binding_testseam_worker PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
+  target_include_directories(te213_manifest_binding_testseam_worker PRIVATE "${_semb_test_dir}" "${CMAKE_SOURCE_DIR}/src/superembedder")
+  add_dependencies(te196_manifest_binding_test te213_manifest_binding_testseam_worker)
   # TE-145 (U1 slice 2): the seam-observable batch cells (C4's no-forward-ran
   # proof, C26's two races, C48, C49, C50) and the real W-B witness leg both
   # need the identical testseam wiring this function already builds for
@@ -635,7 +653,7 @@ function(semb_add_workspace_tests)
   target_include_directories(w_b_corpus_witness_test PRIVATE "${_semb_test_dir}")
   set_target_properties(superembedder_testseam PROPERTIES
     ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
-  set_target_properties(u1_workspace_seam_test u1_batch_workspace_test w_b_corpus_witness_test PROPERTIES
+  set_target_properties(u1_workspace_seam_test u1_batch_workspace_test w_b_corpus_witness_test te213_manifest_binding_testseam_worker PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
   # Explicit diagnostic configurations compile generated fault copies only into
   # the noninstalled seam target. The production source/target is unchanged.
@@ -913,5 +931,87 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/epoch_store_gitattributes_check.py"
 		--repo-root "${CMAKE_CURRENT_SOURCE_DIR}/.."
 		--scratch-dir "${CMAKE_BINARY_DIR}/_epoch_store_gitattributes"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# TE-163 (U1 slice 4): the bank pair / manifest sidecar / semb_bank_open
+# red suite (Claude/Bach/briefs/te163-slice4-red.md) -- cells 1, 2, 3, 5, 6.
+# Links against symbols undefined at this branch's own base 7af22da
+# (semb_bake_to_path, semb_bank_open, semb_bank_close), so it is
+# EXCLUDE_FROM_ALL; tests/te163_bank_pair_check.py builds it on demand and
+# reports the unresolved symbol(s) by name, the same red-first shape
+# tests/u1_batch_contract_check.py already uses for Slice 2. No K-15 seam
+# observable is needed (bake/open/close are ordinary superembedder entries,
+# not seam-instrumented), so this links plain `superembedder`, not
+# `superembedder_testseam`.
+# ---------------------------------------------------------------------------
+add_executable(te163_bank_pair_test EXCLUDE_FROM_ALL te163_bank_pair_test.cpp)
+target_link_libraries(te163_bank_pair_test PRIVATE superembedder superslm::superslm)
+target_include_directories(te163_bank_pair_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+set(_semb_te163_args --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}")
+if(NOT SEMB_C12B_MODEL STREQUAL "")
+	list(APPEND _semb_te163_args --model "${SEMB_C12B_MODEL}")
+endif()
+if(NOT SEMB_U1_TOKENIZER STREQUAL "")
+	list(APPEND _semb_te163_args --tokenizer "${SEMB_U1_TOKENIZER}")
+endif()
+add_test(
+	NAME te163_bank_pair_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te163_bank_pair_check.py" ${_semb_te163_args}
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+	set_tests_properties(te163_bank_pair_check PROPERTIES LABELS "real_artifact")
+endif()
+
+# TE-163 cell 4: C34 legs (e)/(h), the manifest-honesty scratch-build
+# mutation proof (SEMB_ADAPTER_ID_MISMATCH / SEMB_PS_VERSION_LABEL_MISMATCH).
+# A compiled-in-constant mutation cannot be driven from an already-linked
+# executable -- this driver clones the source tree, edits one label constant
+# in the clone, reconfigures and rebuilds a scratch tree, and asserts the
+# bake refuses by name; restores, rebuilds, asserts it writes. Red at
+# 7af22da: semb_bake_to_path and both compiled-in label constants
+# (SEMB_ADAPTER_SELF_ID, SEMB_PS_VERSION_LABEL) do not exist yet -- this
+# driver reports RED-UNIMPLEMENTED by name rather than failing to configure.
+set(SEMB_TEST_ENGINE_PREFIX_TE163 "${SEMB_ENGINE_PREFIX}" CACHE PATH
+	"C34 (e)/(h) scratch-build mutation proof: the engine install prefix its scratch reconfigure links against")
+add_test(
+	NAME te163_c34_manifest_honesty_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te163_c34_manifest_honesty_check.py"
+		--repo-root "${CMAKE_SOURCE_DIR}"
+		--engine-prefix "${SEMB_TEST_ENGINE_PREFIX_TE163}"
+		--cmake-executable "${CMAKE_COMMAND}"
+		--cxx-compiler "${CMAKE_CXX_COMPILER}"
+		--python-executable "${Python3_EXECUTABLE}"
+		--model "${SEMB_C12B_MODEL}"
+		--tokenizer "${SEMB_U1_TOKENIZER}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# ---------------------------------------------------------------------------
+# TE-196 (U1 slice 4 fix round): the manifest-binding driver -- the cells
+# for the TE-193 review's P-3 (channels under schemaVersion 1) and the
+# later items of the same round as their cells land in the binary. Every
+# symbol it links exists at 21b1735, but it needs the synthetic mechanism
+# pair and a scratch dir as runtime arguments, so it follows the
+# te163_bank_pair_check shape: EXCLUDE_FROM_ALL, built and run on demand
+# by tests/te196_manifest_binding_check.py (which also ensures the pair,
+# since ctest does not order tests by dependency). The mechanism-bake
+# scaffolding inside the binary is COPIED from
+# tests/te163_bank_pair_test.cpp per this round's own brief (TE-192 owns
+# that file in a concurrent round -- nothing is factored out of it). The
+# src include dir is for json_lite.h, the product's own internal JSON
+# reader (the same include the te166_bake_239_timer target already uses).
+# ---------------------------------------------------------------------------
+add_executable(te196_manifest_binding_test EXCLUDE_FROM_ALL te196_manifest_binding_test.cpp)
+target_link_libraries(te196_manifest_binding_test PRIVATE superembedder superslm::superslm)
+target_include_directories(te196_manifest_binding_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}"
+	"${CMAKE_SOURCE_DIR}/src/superembedder")
+
+set(_semb_te196_args --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}")
+add_test(
+	NAME te196_manifest_binding_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te196_manifest_binding_check.py" ${_semb_te196_args}
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )

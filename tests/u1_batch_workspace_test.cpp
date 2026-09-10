@@ -60,6 +60,25 @@
 
 using namespace std::chrono_literals;
 
+// TE-192 item 6 (TE-187 bare cell 7, D-SLM6434 item 2): the per-document
+// ("row") seam hook TE-184 added alongside the once-per-call hook this
+// file's own C26a/C26b already exercise through
+// `tests/support/semb_workspace_seam.h`. That header was not extended for
+// the row-level surface (out of this seat's own writable scope --
+// `tests/support/semb_workspace_seam.h` is not a file this round's brief
+// lists), so the five row-level entry points this file's own C51 uses are
+// declared directly here, in the identical shape
+// `src/superembedder/engine_adapter_interim.cpp` already defines them
+// (extern "C", the same names, `semb_test_seam_row_parked` omitted since
+// C51 does not call it).
+extern "C" {
+int32_t semb_test_seam_row_arm_park(uint32_t count);
+int32_t semb_test_seam_row_wait_parked(uint32_t n, uint32_t timeout_ms);
+void semb_test_seam_row_release(void);
+uint64_t semb_test_seam_row_acquisitions(void);
+int32_t semb_test_seam_row_reset(void);
+}
+
 // ---------------------------------------------------------------------------
 // C49's own leak instrument: a global operator-new/delete override that
 // counts LIVE bytes (allocated minus freed), the leak-detection analogue of
@@ -768,6 +787,123 @@ int main(int argc, char** argv) {
               "s_one=" + std::string(Name(s_one)) + " many_ok=" + std::to_string(many_ok) +
                   " rows_match=" + std::to_string(rows_match));
       semb_encoder_close(enc);
+    }
+  }
+
+  // =========================================================================
+  // C51 (TE-187 bare cell 7, D-SLM6434 item 2, TE-149 sec 7 bare cell 2):
+  // the between-row seam hook (OnRowAcquired, TE-184's own K-15 per-row
+  // park point) proves the ONE workspace slot acquired for the whole call
+  // is STILL held strictly BETWEEN two rows of a multi-document batch --
+  // a granularity C26a/C26b cannot reach, since the once-per-call hook
+  // (OnAcquired) parks exactly once, before ANY row's own forward begins,
+  // so a park there is observationally identical to a park at the very
+  // first row's own hook call. The property under test (a contender
+  // refused while the slot is held) is not new; WHERE the observation is
+  // taken is: this cell's own park is armed a SECOND time only once the
+  // FIRST row's own hook call has fully returned (confirmed via a bounded
+  // retry on re-arming, which `semb_test_seam_row_arm_park` refuses while
+  // any row is still parked, and via the row-level acquisition counter,
+  // incremented unconditionally on every hook call before the park check)
+  // -- never by racing the model's own forward-pass wall-clock time. A
+  // build reverted to call-boundary-only parking (no working row hook)
+  // leaves this cell's own second park request permanently unconsumed:
+  // `semb_test_seam_row_wait_parked` times out, a loud, named failure
+  // (TE-187's own must-reject: "a scratch build parking only at the call
+  // boundary fails it") rather than a false pass.
+  // =========================================================================
+  {
+    semb_encoder enc = Open(a, 1);
+    if (enc) {
+      ResetSeam(deadline30());
+      Verdict(semb_test_seam_row_reset() == 1, "C51 (setup) reset the row-level seam epoch", "");
+
+      std::vector<std::pair<std::string, std::string>> docs_named = {
+          {"r0", "the first short document"},
+          {"r1", "the second document"},
+          {"r2", "the third document"},
+      };
+      std::vector<semb_document> docs;
+      for (auto& [id, text] : docs_named) docs.push_back(MakeDoc(id, text));
+      std::vector<uint8_t> buf((docs.size() * required1) + 64, 0xA5);
+      auto p = reinterpret_cast<uintptr_t>(buf.data());
+      float* aligned = reinterpret_cast<float*>((p + 15) & ~uintptr_t(15));
+      size_t req = 0xBAD5EED;
+
+      Verdict(semb_test_seam_row_arm_park(1) == 1, "C51 (setup) arm the row-level park for row 0", "");
+      semb_status batch_status = -1000;
+      auto job = std::async(std::launch::async, [&] {
+        batch_status = semb_encode_batch(enc, docs.data(), docs.size(), aligned, buf.size() - 16, &req);
+      });
+      const bool row0_parked = semb_test_seam_row_wait_parked(1, 10000) == 1;
+      Verdict(row0_parked, "C51 (setup) row 0's own hook call parks", "");
+      bool mid_batch_parked = false;
+      if (row0_parked) {
+        semb_test_seam_row_release();
+        bool rearmed = false;
+        const auto rearm_deadline = std::chrono::steady_clock::now() + 10s;
+        while (std::chrono::steady_clock::now() < rearm_deadline) {
+          if (semb_test_seam_row_arm_park(1) == 1) { rearmed = true; break; }
+        }
+        Verdict(rearmed,
+                "C51 (setup) re-arm the row-level park for the row AFTER row 0, refused until row 0's own "
+                "hook call has fully returned (the row parked-count back to zero)", "");
+        mid_batch_parked = rearmed && semb_test_seam_row_wait_parked(1, 10000) == 1;
+        Verdict(mid_batch_parked,
+                "C51 (setup) the batch parks a SECOND time, strictly between two rows -- past row 0's own "
+                "hook call, before the batch's own last row", "");
+        if (mid_batch_parked) {
+          const uint64_t acquisitions_at_park = semb_test_seam_row_acquisitions();
+          Verdict(acquisitions_at_park >= 2,
+                  "C51 (setup) the second park is genuinely past row 0: the row-level acquisition counter "
+                  "reads at least 2 hook calls, so this park is not the once-per-call hook's own first-row "
+                  "timing wearing a different name",
+                  std::to_string(acquisitions_at_park));
+
+          // The ONE workspace slot from this call's own once-per-call
+          // acquisition is still held while parked strictly between two
+          // rows: a contender on the SAME encoder (pool size 1, no other
+          // slot to acquire) is refused SEMB_CONCURRENCY_EXCEEDED, output
+          // canaries untouched, no additional acquisition recorded.
+          const uint64_t before_contender = semb_test_seam_acquisitions();
+          BatchOut extra(dims);
+          BatchCall(enc, "extra", "the contender issued while parked strictly between two rows", &extra, dims);
+          Verdict(Is(extra.status, "SEMB_CONCURRENCY_EXCEEDED") && extra.untouched() &&
+                      semb_test_seam_acquisitions() == before_contender,
+                  "C51 a contender parked strictly BETWEEN two rows of a 3-document batch (past row 0, "
+                  "before the last row) is refused SEMB_CONCURRENCY_EXCEEDED with output canaries "
+                  "untouched and no additional acquisition -- proven at the between-row seam hook's own "
+                  "granularity, distinct from the once-per-call hook's own call-boundary observation",
+                  Name(extra.status));
+        }
+        semb_test_seam_row_release();
+      }
+      if (job.wait_until(deadline30()) != std::future_status::ready) FatalTimeout("C51 batch job cleanup deadline");
+      job.get();
+      Verdict(Is(batch_status, "SEMB_OK"),
+              "C51 the call parked strictly between two of its own rows completes successfully once fully "
+              "released, every row's own forward having run exactly once",
+              Name(batch_status));
+      // Every row ran exactly once: the batch's own emitted row for r1
+      // (the row parked mid-call) matches an unparked serial reference,
+      // proving the mid-batch park changed timing only, never content.
+      if (Is(batch_status, "SEMB_OK")) {
+        semb_encoder serial_ref = Open(a, 1);
+        semb_status ref_status = -1000;
+        std::vector<uint8_t> reference;
+        if (serial_ref) {
+          reference = BakeOne(serial_ref, "r1", docs_named[1].second, dims, &ref_status);
+          semb_encoder_close(serial_ref);
+        }
+        auto b = reinterpret_cast<uint8_t*>(aligned) + 1 * required1;
+        const std::vector<uint8_t> row1(b, b + required1);
+        Verdict(Is(ref_status, "SEMB_OK") && row1 == reference,
+                "C51 row 1 (the row parked mid-call) is byte-identical to an unparked serial reference",
+                "ref_status=" + std::string(Name(ref_status)));
+      }
+      semb_encoder_close(enc);
+      ResetSeam(deadline30());
+      Verdict(semb_test_seam_row_reset() == 1, "C51 (teardown) reset the row-level seam epoch", "");
     }
   }
 

@@ -235,24 +235,25 @@ void PutU64LE(std::vector<uint8_t>* out, uint64_t v) {
   for (int i = 0; i < 8; ++i) out->push_back(static_cast<uint8_t>((v >> (8 * i)) & 0xFF));
 }
 
-// TE-172 (N-7, D-SLM6390 item 2): the cut rule this recomputation applies,
-// realized independently from the RULING'S OWN WORDS -- "each document is
-// the longest byte prefix on a UTF-8 boundary whose tokenized length under
-// the handle's own tokenizer is at most context_cap - 1, found by
-// tokenizing prefixes" -- not read from
-// src/superembedder/encoder.cpp's CutWbDocumentText. D-SLM6341's ORIGINAL
-// rule ("cut at context_cap-1 at open") is the same rule; what changed at
-// TE-165 is HOW it is realized -- a byte-prefix search through the real
-// tokenizer, not a tokenize-then-truncate-the-id-array -- and this
-// recomputation now matches that. Walks UTF-8 character boundaries
-// forward, tokenizing each candidate prefix, stopping at the first
-// boundary whose own tokenized length exceeds max_content_ids; the empty
-// prefix (0 ids) is always a valid answer, so `best` starts at 0 rather
-// than assuming the first boundary fits.
-std::string_view CutWbDocumentTextForTest(const superslm::TokenizerView& tokenizer, std::string_view text,
-                                            size_t max_content_ids) {
-  if (tokenizer.Encode(text).size() <= max_content_ids) return text;
-  size_t best = 0;
+// TE-192 item 5 (TE-187 bare cell 1, D-SLM6406/D-SLM6457): an independent
+// reimplementation of the CORRECTED per-document cut rule -- the longest
+// UTF-8-boundary text prefix whose COMPOSED sequence (`frame` then the
+// prefix, matching `encoder.cpp`'s own `ComposeDocumentInput` concatenation
+// order) tokenizes to at most `max_content_ids` ids. Authored independently
+// of `CutWbDocumentText` (never reads that function's own source), grounded
+// directly in D-SLM6457's own stated bound rather than a recode of the
+// product's walk -- the walk SHAPE is the only sane way to answer "longest
+// prefix such that a real tokenizer call agrees," since BPE merges near a
+// boundary are not predictable from byte length alone. `frame` is empty by
+// default, matching `kDocumentFrame`'s real, current compiled-in value
+// (PS-N, D-SLM4726) -- passing a non-empty `frame` exercises the corrected
+// rule's OWN sensitivity to a document frame, the corner D-SLM6406 found
+// unaccounted.
+std::string_view CutToComposedBudget(const superslm::TokenizerView& tokenizer, std::string_view frame,
+                                      std::string_view text, size_t max_content_ids) {
+  const std::string frame_str(frame);
+  if (tokenizer.Encode(frame_str + std::string(text)).size() <= max_content_ids) return text;
+  size_t best = 0;  // the empty prefix always tokenizes frame+"" to Encode(frame).size() ids.
   size_t i = 0;
   while (i < text.size()) {
     const uint8_t lead = static_cast<uint8_t>(text[i]);
@@ -261,7 +262,7 @@ std::string_view CutWbDocumentTextForTest(const superslm::TokenizerView& tokeniz
     else if ((lead & 0xF0) == 0xE0) width = 3;
     else if ((lead & 0xF8) == 0xF0) width = 4;
     const size_t next = (i + width < text.size()) ? i + width : text.size();
-    if (tokenizer.Encode(text.substr(0, next)).size() > max_content_ids) break;
+    if (tokenizer.Encode(frame_str + std::string(text.substr(0, next))).size() > max_content_ids) break;
     best = next;
     i = next;
   }
@@ -270,19 +271,24 @@ std::string_view CutWbDocumentTextForTest(const superslm::TokenizerView& tokeniz
 
 // Independent recomputation of W-B's own corpus digest, per sec 4.4b's
 // formula, using ONLY primitives that predate this round (see the file
-// header) plus CutWbDocumentTextForTest, above (TE-172, realized from
+// header) plus CutToComposedBudget, above (TE-172 realized the bare rule from
 // D-SLM6390 item 2's own words, not from the product's implementation).
 // Returns false with `why` set on any setup failure (an engine refusal
 // opening the tokenizer, an absent end token, etc.) -- MISSING
 // PREREQUISITE, not a silent wrong digest. `out_cut_count`, when non-NULL,
-// receives the number of the 16 documents whose own real UTF-8-boundary
-// prefix is SHORTER than their full text -- i.e., a document whose full
-// tokenization would have exceeded context_cap-1 ids and was therefore cut
-// before the end token was appended (D-SLM6341, D-SLM6390 item 2) -- 0
-// when every document fits whole.
+// receives the number of the 16 documents whose own tokenized COMPOSED
+// content (frame + text) exceeded context_cap-1 ids and was therefore cut
+// before the end token was appended (TE-155 item 1, D-SLM6341; corrected
+// TE-192 item 5, D-SLM6406/D-SLM6457, to budget the composed sequence
+// rather than the bare text alone) -- 0 when every document fits.
+// `document_frame` defaults to "", matching the real, currently-shipped
+// `kDocumentFrame` (PS-N) -- this default reproduces the achievement
+// cell's own prior behavior exactly, since the composed and bare budgets
+// are numerically identical whenever the frame is empty; passing a
+// non-empty frame is this round's own divergence construction, below.
 bool ComputeExpectedWbDigest(const std::string& model_path, const std::string& tokenizer_path,
                               const std::vector<Record>& corpus, uint8_t out_digest[32], std::string* why,
-                              size_t* out_cut_count = nullptr) {
+                              size_t* out_cut_count = nullptr, std::string_view document_frame = "") {
   if (out_cut_count) *out_cut_count = 0;
   const std::vector<uint8_t> tokenizer_bytes = ReadFile(tokenizer_path);
   if (tokenizer_bytes.empty()) { *why = "cannot read tokenizer artifact " + tokenizer_path; return false; }
@@ -327,15 +333,18 @@ bool ComputeExpectedWbDigest(const std::string& model_path, const std::string& t
   std::vector<uint8_t> stream;
   PutU64LE(&stream, static_cast<uint64_t>(corpus.size()));
   for (const Record& r : corpus) {
-    // TE-172 (N-7, D-SLM6390 item 2): the longest UTF-8-boundary byte
-    // prefix whose tokenized length is at most max_content_ids, found
-    // through the tokenizer -- CutWbDocumentTextForTest, above -- not the
-    // retired tokenize-then-resize() rule this comparison used to run.
-    const std::string_view text(r.text);
-    const std::string_view prefix = CutWbDocumentTextForTest(tokenizer, text, max_content_ids);
-    if (prefix.size() < text.size() && out_cut_count) ++*out_cut_count;
-    std::vector<int32_t> ids = tokenizer.Encode(prefix);
-    ids.push_back(end_id);  // PS-N: no document frame, terminator appended once (sec 3.1's shared adapter)
+    // TE-192 item 5 (D-SLM6406/D-SLM6457): the cut is budgeted against the
+    // COMPOSED sequence (document_frame + text), matching
+    // ComposeDocumentInput's own concatenation order -- CutToComposedBudget
+    // finds the longest UTF-8-boundary text prefix whose composed tokenized
+    // length is at most max_content_ids, and the ids fed forward are the
+    // SAME composed sequence (frame + kept prefix), never the bare text
+    // alone. Reduces to the prior bare-text behavior exactly when
+    // document_frame is empty (the real, currently-shipped default).
+    const std::string_view kept_text = CutToComposedBudget(tokenizer, document_frame, r.text, max_content_ids);
+    if (kept_text.size() < r.text.size() && out_cut_count) ++*out_cut_count;
+    std::vector<int32_t> ids = tokenizer.Encode(std::string(document_frame) + std::string(kept_text));
+    ids.push_back(end_id);  // the terminator, appended once (sec 3.1's shared adapter)
 
     // TE-155 item 1 (found by execution, not by construction,
     // StandardsDocument.md sec 5.4): `codes` is over-provisioned at
@@ -533,6 +542,94 @@ int main(int argc, char** argv) {
     }
   }
 
+  // ---- TE-192 item 5 (TE-187 bare cell 1, D-SLM6406/D-SLM6457): the
+  // framed-text cut divergence. A non-empty hypothesis frame ("FRAME ",
+  // the same construction TE-184/N-8 exercises against the source fix,
+  // D-SLM6452) against the real tokenizer, at whichever context_cap this
+  // leg's own artifact carries -- asserts the composed-budget cut point
+  // (this file's own corrected CutToComposedBudget) differs from the
+  // bare-text cut point (the pre-TE-184 rule, realized here as
+  // CutToComposedBudget called with an EMPTY frame, which is exactly what
+  // the retired algorithm computed) on at least one committed document,
+  // and that the bare rule's own cut point, once the frame is actually
+  // prepended, VIOLATES the composed budget -- the corner D-SLM6406 found
+  // unaccounted, and the must-reject this bare cell names: the pre-TE-184
+  // implementation fails this construction because its own cut point is
+  // provably over budget once a frame is real. ----
+  {
+    const std::vector<uint8_t> tokenizer_bytes = ReadFile(a.tokenizer);
+    superslm::SslmArtifact tokenizer_artifact;
+    superslm::SslmError artifact_error;
+    std::string why_setup;
+    bool setup_ok = !tokenizer_bytes.empty() &&
+                     superslm::SslmArtifact::OpenFromMemory(tokenizer_bytes.data(), tokenizer_bytes.size(),
+                                                              tokenizer_artifact, &artifact_error) ==
+                         superslm::SslmStatus::Ok;
+    superslm::TokenizerView tokenizer;
+    std::string tok_err;
+    if (setup_ok) setup_ok = superslm::TokenizerView::Open(tokenizer_artifact, tokenizer, &tok_err);
+    if (!setup_ok) {
+      Missing("(framed-cut-divergence) the composed-budget cut point differs from the bare-text cut point "
+              "at a non-empty frame, and the bare rule's own cut violates the composed budget",
+              "cannot open the tokenizer artifact for an independent frame/cap probe");
+    } else {
+      const std::vector<int32_t> end_ids2 = tokenizer.Encode("<|endoftext|>");
+      SembInterimEncoder* cap_probe2 = nullptr;
+      const char* cap_probe2_status = nullptr;
+      SembInterimGeometry geometry2{};
+      geometry2.struct_size = sizeof(geometry2);
+      bool cap_ok = end_ids2.size() == 1 &&
+                    semb_interim_encoder_open(a.model.c_str(), end_ids2[0], &cap_probe2, &cap_probe2_status) ==
+                        kSembInterimOk;
+      if (cap_ok) {
+        cap_ok = semb_interim_encoder_geometry(cap_probe2, &geometry2) == kSembInterimOk;
+        semb_interim_encoder_close(cap_probe2);
+      }
+      if (!cap_ok) {
+        Missing("(framed-cut-divergence) the composed-budget cut point differs from the bare-text cut point "
+                "at a non-empty frame, and the bare rule's own cut violates the composed budget",
+                "cannot discover context_cap for an independent frame/cap probe");
+      } else {
+        const size_t max_content_ids =
+            geometry2.context_cap > 0 ? static_cast<size_t>(geometry2.context_cap) - 1 : 0;
+        constexpr std::string_view kHypothesisFrame = "FRAME ";
+        bool found_divergence = false;
+        std::string divergence_detail;
+        for (const Record& r : corpus) {
+          const std::string_view bare_cut = CutToComposedBudget(tokenizer, "", r.text, max_content_ids);
+          const std::string_view composed_cut = CutToComposedBudget(tokenizer, kHypothesisFrame, r.text, max_content_ids);
+          if (bare_cut == composed_cut) continue;  // this document does not reach the divergence corner
+          const size_t bare_cut_with_frame_len =
+              tokenizer.Encode(std::string(kHypothesisFrame) + std::string(bare_cut)).size();
+          const size_t composed_cut_with_frame_len =
+              tokenizer.Encode(std::string(kHypothesisFrame) + std::string(composed_cut)).size();
+          found_divergence = true;
+          divergence_detail = "doc=" + r.id + " bare_cut_len=" + std::to_string(bare_cut.size()) +
+                               " composed_cut_len=" + std::to_string(composed_cut.size()) +
+                               " bare_cut_with_frame_ids=" + std::to_string(bare_cut_with_frame_len) +
+                               " composed_cut_with_frame_ids=" + std::to_string(composed_cut_with_frame_len) +
+                               " max_content_ids=" + std::to_string(max_content_ids);
+          Verdict(bare_cut_with_frame_len > max_content_ids,
+                  "(framed-cut-divergence) the bare-text (pre-TE-184) cut point, once the frame is prepended, "
+                  "EXCEEDS the composed budget -- exactly the defect D-SLM6406 found",
+                  divergence_detail);
+          Verdict(composed_cut_with_frame_len <= max_content_ids,
+                  "(framed-cut-divergence) the composed-budget cut point (this file's own corrected oracle) "
+                  "stays within the composed budget once the frame is prepended",
+                  divergence_detail);
+          break;  // one documented corner is sufficient; the loop exists to find one on whichever leg runs
+        }
+        if (!found_divergence) {
+          Missing("(framed-cut-divergence) the composed-budget cut point differs from the bare-text cut point "
+                  "at a non-empty frame, and the bare rule's own cut violates the composed budget",
+                  "no committed document reaches this leg's own context_cap (" + std::to_string(geometry2.context_cap) +
+                      ") even with the hypothesis frame prepended -- expected on the real candidate (cap 32,768), "
+                      "reachable on the mechanism pair (cap 64)");
+        }
+      }
+    }
+  }
+
   // ---- Mutation-proof of THIS FILE'S OWN cut rule (TE-172, N-7): the
   // recomputation's cut must be the RULED rule (D-SLM6390 item 2 -- the
   // longest UTF-8-boundary byte prefix whose tokenized length is at most
@@ -564,7 +661,7 @@ int main(int argc, char** argv) {
   // reproducing both rules over the committed corpus, D:\te172_scratch,
   // never committed) rather than recomputed a third way here -- a third
   // implementation could share the same bug as the first two, and pinning
-  // is the mutation-proof: reverting CutWbDocumentTextForTest to the
+  // is the mutation-proof: reverting CutToComposedBudget (empty frame) to the
   // retired rule makes `ruled` produce the RETIRED value instead, and this
   // cell goes red. ----
   if (a.dims == 1024) {
@@ -590,7 +687,7 @@ int main(int argc, char** argv) {
       constexpr size_t kMaxContentIds = 1;  // context_cap 2 -- the first divergent budget (F-5)
       const std::string_view text(corpus[3].text);
       const std::vector<int32_t> ruled =
-          tokenizer.Encode(CutWbDocumentTextForTest(tokenizer, text, kMaxContentIds));
+          tokenizer.Encode(CutToComposedBudget(tokenizer, "", text, kMaxContentIds));
       // The RETIRED rule, reproduced independently right here (not via the
       // shared helper), so a mutation to the helper alone cannot make both
       // sides move together and vacuously agree.
@@ -606,7 +703,7 @@ int main(int argc, char** argv) {
       const std::vector<int32_t> kExpectedRetired = {55653};
       Verdict(ruled == kExpectedRuled,
               "(cut-rule) wb-03 cut to max_content_ids=1 under the ruled rule (D-SLM6390 item 2, this "
-              "file's own CutWbDocumentTextForTest) equals the value this round's own execution "
+              "file's own CutToComposedBudget (empty frame)) equals the value this round's own execution "
               "established against the real tokenizer",
               "ruled=(" + ids_to_string(ruled) + ")");
       Verdict(retired == kExpectedRetired,

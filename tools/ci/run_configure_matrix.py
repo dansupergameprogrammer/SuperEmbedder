@@ -1063,12 +1063,22 @@ def c34_leg_g_preprocess_failure_raises():
     # places -- one substitution into that set's own closing line now
     # extends BOTH lists at once, where the two-anchor form this replaced
     # needed a second, separate add_library() text replace.
-    old_sources_block = '\tsrc/superembedder/engine_adapter_interim.cpp\n)'
-    new_sources_block = '\tsrc/superembedder/engine_adapter_interim.cpp\n\tsrc/uses_gen.cpp\n)'
-    assert text.count(old_sources_block) == 1, (
-        f"anchor not found or not unique: {text.count(old_sources_block)}"
+    # TE-196 (TE-193 review P-13): the anchor is the block's own NAME --
+    # insert a source before the closing paren of the
+    # set(SEMB_LIBRARY_SOURCES ...) call, found by locating that call --
+    # never the block's last source line, which SEMB_LIBRARY_SOURCES's own
+    # append-only growth (semb_source_hash.py's own covered-set
+    # discipline) keeps moving: bank.cpp was already the last line twice
+    # in one slice (the anchor was re-edited twice inside this same
+    # review range). A name-based anchor needs no re-edit when the list
+    # grows.
+    set_marker = "set(SEMB_LIBRARY_SOURCES"
+    assert text.count(set_marker) == 1, (
+        f"SEMB_LIBRARY_SOURCES set() block not found or not unique: {text.count(set_marker)}"
     )
-    text = text.replace(old_sources_block, new_sources_block, 1)
+    close_paren = text.find("\n)", text.index(set_marker))
+    assert close_paren != -1, "SEMB_LIBRARY_SOURCES set() block has no closing paren"
+    text = text[:close_paren] + "\tsrc/uses_gen.cpp" + text[close_paren:]
     cmakelists.write_text(text, encoding="utf-8")
     rc, out = run_cmake_configure(src, SCRATCH / "c34g_build", ENGINE_PREFIX)
     record("C34(g) preprocess failure raises, not truncates (N-5)", "SEMB_SOURCE_PREPROCESS_FAILED", rc, out)
@@ -1136,13 +1146,17 @@ def c34_leg_i_build_dir_placement_invariant():
     # TE-63: see c34_leg_g_preprocess_failure_raises's own comment -- one
     # substitution into the shared set(SEMB_LIBRARY_SOURCES ...) now
     # extends both semb_compute_source_provenance's SOURCES and
-    # add_library's source list at once.
-    old_sources_block = '\tsrc/superembedder/engine_adapter_interim.cpp\n)'
-    new_sources_block = '\tsrc/superembedder/engine_adapter_interim.cpp\n\tsrc/uses_gen.cpp\n)'
-    assert text.count(old_sources_block) == 1, (
-        f"anchor not found or not unique: {text.count(old_sources_block)}"
+    # add_library's source list at once. TE-196 (TE-193 review P-13): the
+    # anchor is the block's own NAME (insert before the set() call's
+    # closing paren), not the current last source line -- see the sibling
+    # leg's own comment for why.
+    set_marker = "set(SEMB_LIBRARY_SOURCES"
+    assert text.count(set_marker) == 1, (
+        f"SEMB_LIBRARY_SOURCES set() block not found or not unique: {text.count(set_marker)}"
     )
-    text = text.replace(old_sources_block, new_sources_block, 1)
+    close_paren = text.find("\n)", text.index(set_marker))
+    assert close_paren != -1, "SEMB_LIBRARY_SOURCES set() block has no closing paren"
+    text = text[:close_paren] + "\tsrc/uses_gen.cpp" + text[close_paren:]
     cmakelists.write_text(text, encoding="utf-8")
 
     # TE-71 Q-2: build_in used to be SCRATCH/"c34i_build_in" -- a SIBLING of

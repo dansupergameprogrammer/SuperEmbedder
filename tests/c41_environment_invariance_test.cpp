@@ -24,24 +24,41 @@
 // environment) reference.
 //
 // PART 3 -- THE CLEARED-MASK LEGS. Three sub-legs, each named because sec
-// 8 requires it stated separately:
+// 8 requires it stated separately. (a) and (b) below are each run in their
+// OWN CHILD PROCESS of this same binary (TE-192 item 7, TE-187 bare cell
+// 6, D-SLM6441 item 4; the outside review's sec 5) rather than wrapped in
+// Windows SEH (__try/__except) in-process: MSVC and clang-cl 18.1.8 lower
+// __try/__except at this exact call site DIFFERENTLY (D-SLM6438 --
+// clang-cl's own SEH did not intercept the trap, crashing the whole test
+// binary instead of reporting a clean result), while both compilers
+// terminate an unhandled hardware exception's PROCESS with the trapping
+// NTSTATUS as its exit code IDENTICALLY -- so observing the trap at the
+// OS process boundary (`GetExitCodeProcess`) needs no compiler-specific
+// SEH lowering at all. Verified by execution to hold on both compilers
+// (this file's own build record); replaces both, one code path for both,
+// rather than forking on `#if defined(__clang__)`.
 //   (a) LIVENESS CONTROL (required before either b or c is meaningful):
-//       clear all six MXCSR exception masks and execute a deliberately
-//       inexact division OUTSIDE any library call, wrapped in Windows SEH
-//       (__try/__except) so a genuine hardware trap is OBSERVED rather
-//       than crashing this process. If the host/toolchain does not trap
+//       a child process clears all six MXCSR exception masks and executes
+//       a deliberately inexact division OUTSIDE any library call; the
+//       parent requires the child to be terminated by the OS with the
+//       expected floating-point exception NTSTATUS as its exit code. A
+//       SECOND child performs the SAME division WITHOUT clearing the
+//       masks and must exit cleanly (0) -- the outside review's own
+//       must-accept, proving the first child's trap is the cleared masks,
+//       not the division itself. If the host/toolchain does not trap
 //       under cleared masks (observed on some environments, sec 1.3's own
 //       toolset table), this leg reports UNDETERMINED rather than a false
 //       PASS -- a control that cannot fire proves nothing about the legs
 //       it is meant to gate (StandardsDocument.md sec 5.4's commissioning
 //       discipline, applied to this cell's own internal control).
-//   (b) THE LIBRARY CALL UNDER CLEARED MASKS: with the SAME cleared masks
-//       (proven live by (a)), `semb_encoder_open` + `semb_encode` must
-//       RETURN NORMALLY -- no trap -- because SuperSLM >= 1.3.0's open
-//       path performs no floating-point operation (sec 1.3's own
-//       TERM REMOVAL ruling, D-SLM4231). The call is itself wrapped in SEH
-//       so a genuine regression traps THIS assertion rather than crashing
-//       the test binary silently.
+//   (b) THE LIBRARY CALL UNDER CLEARED MASKS: a THIRD child, with the
+//       SAME cleared masks (proven live by (a)), calls
+//       `semb_encoder_open` + `semb_encode` and must RETURN NORMALLY --
+//       no trap, exit 0 -- because SuperSLM >= 1.3.0's open path performs
+//       no floating-point operation (sec 1.3's own TERM REMOVAL ruling,
+//       D-SLM4231). A genuine regression traps the CHILD process, which
+//       the parent observes as a non-zero exit code, rather than crashing
+//       the test binary itself.
 //   (c) THE ENGINE-PIN ASSERTION, BESIDE THE LEG (sec 8's own text: "the
 //       cell asserts the linked engine's VERSION beside the leg", D-SLM4602,
 //       because a green leg is compatible with an UNDER-PINNED engine on
@@ -57,10 +74,14 @@
 //       strings) to assert >= 1.3.0.
 //
 // MASKS ARE ALWAYS RESTORED before this file's `main` returns, on every
-// exit path (including a caught SEH trap), via a scope guard -- clearing
-// MXCSR exception masks and leaving them cleared would make every
-// subsequent floating-point operation in a shared test process a live
-// trap, corrupting whichever cell ctest happens to run next.
+// parent-process exit path, via a scope guard -- clearing MXCSR exception
+// masks and leaving them cleared would make every subsequent floating-
+// point operation in a shared test process a live trap, corrupting
+// whichever cell ctest happens to run next. Part 3's own mask-clearing
+// (TE-192 item 7) happens entirely inside a CHILD process's own MXCSR
+// register state, which the OS discards when that child exits -- the
+// PARENT's own MXCSR is never touched by Part 3 at all, so nothing there
+// needs restoring on that path.
 //
 // RED-FIRST: before this file existed, no test in tests/ set MXCSR's
 // rounding/flush-to-zero/denormals-are-zero bits, called
@@ -213,31 +234,11 @@ bool EncodeAllDocs(semb_encoder enc, std::vector<uint8_t>* out) {
   return true;
 }
 
-// SEH: __except's filter expression cannot see C++ objects with
-// destructors in the same function scope in general, so the trapping call
-// is isolated in its own small function with only POD locals.
-int TrapIfInexact() {
-  __try {
-    volatile float a = 1.0f;
-    volatile float b = 3.0f;
-    volatile float c = a / b;  // 1/3 is not exactly representable: genuinely inexact
-    (void)c;
-    return 0;  // did not trap
-  } __except (GetExceptionCode() == STATUS_FLOAT_INEXACT_RESULT ||
-                       GetExceptionCode() == STATUS_FLOAT_MULTIPLE_TRAPS
-                   ? EXCEPTION_EXECUTE_HANDLER
-                   : EXCEPTION_CONTINUE_SEARCH) {
-    return 1;  // trapped, for the expected reason
-  }
-}
-
-// The real work, as an ordinary C++ function -- vectors, strings, RAII,
-// all legal here because this function contains no __try/__except of its
-// own. Called ONLY from inside OpenAndEncodeCatchingTraps's __try block,
-// below, so a trap during any of this unwinds into that wrapper's
-// __except, never through a frame that itself mixes SEH with objects
-// requiring unwinding (MSVC C2712: a function using __try/__except cannot
-// also contain a C++ object with a destructor in the SAME function scope).
+// The real work, as an ordinary C++ function -- vectors, strings, RAII, all
+// legal here since no caller wraps this in SEH any more (see below). Called
+// ONLY from RunChildLibrary, in its own child process: a trap anywhere in
+// here terminates that child, observed by the parent as a non-zero exit
+// code, never caught in-process.
 void DoOpenAndEncode(bool* opened_ok, semb_status* out_status) {
   semb_encoder enc = nullptr;
   semb_config cfg{};
@@ -262,19 +263,156 @@ void DoOpenAndEncode(bool* opened_ok, semb_status* out_status) {
   semb_encoder_close(enc);
 }
 
-int OpenAndEncodeCatchingTraps(bool* opened_ok, semb_status* out_status) {
-  *opened_ok = false;
-  __try {
-    DoOpenAndEncode(opened_ok, out_status);
-    return 0;  // did not trap
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return 1;  // trapped somewhere in open/encode/close
+// -----------------------------------------------------------------------
+// TE-192 item 7 (TE-187 bare cell 6, D-SLM6441 item 4; the outside review's
+// sec 5, "clang-cl C41 liveness without fragile in-process SEH"): PART
+// 3(a)'s liveness control and PART 3(b)'s library-under-cleared-masks leg
+// are both replaced by a parent/child PROCESS boundary, on BOTH compilers
+// (not clang-cl only) -- verified by execution below to hold identically
+// on MSVC 19.33.31631.0 and clang-cl 18.1.8, so one code path serves both
+// rather than forking on `#if defined(__clang__)`. The property under
+// test ("does a genuinely inexact operation trap under cleared MXCSR
+// exception masks on this host/toolchain") is observed at OS
+// process-termination level (GetExitCodeProcess), which needs no
+// compiler-specific SEH lowering at all: Windows terminates an unhandled
+// hardware exception's process with the trapping NTSTATUS as its exit
+// code on both toolchains identically. This removes the exact dependency
+// D-SLM6438's own clang-cl 18.1.8 crash traced to -- clang-cl's
+// __try/__except did not intercept the trap at this call site the way
+// MSVC's does, crashing the whole test binary rather than reporting a
+// clean FAIL or UNDETERMINED.
+//
+// This binary re-execs its OWN on-disk path (`argv[0]`'s resolved module
+// path, not the caller-supplied argv[0] text) as a child process carrying
+// one mode flag; the child does the minimal, SEH-free, POD-only work its
+// mode names and either exits 0 (did not trap) or is terminated by the OS
+// with the trapping NTSTATUS as its exit code (did trap) -- no code path
+// in a child catches anything, so a genuine trap is never masked by an
+// in-process handler either compiler might lower differently.
+// -----------------------------------------------------------------------
+constexpr char kChildInexactCleared[] = "--c41-child-inexact-cleared";
+constexpr char kChildInexactUncleared[] = "--c41-child-inexact-uncleared";
+constexpr char kChildLibraryCleared[] = "--c41-child-library-cleared";
+
+enum class ChildMode { kNone, kInexactCleared, kInexactUncleared, kLibraryCleared };
+
+ChildMode ParseChildMode(int argc, char** argv) {
+  if (argc >= 2) {
+    if (std::strcmp(argv[1], kChildInexactCleared) == 0) return ChildMode::kInexactCleared;
+    if (std::strcmp(argv[1], kChildInexactUncleared) == 0) return ChildMode::kInexactUncleared;
+    if (std::strcmp(argv[1], kChildLibraryCleared) == 0) return ChildMode::kLibraryCleared;
   }
+  return ChildMode::kNone;
+}
+
+// A child's own inexact-division leg: with (`clear_masks`) or without all
+// six MXCSR exception masks cleared, perform a genuinely inexact division.
+// If the hardware traps, the OS terminates THIS process with the trapping
+// NTSTATUS as its exit code -- nothing here catches it. If it does not
+// trap, the process exits 0. No SEH anywhere in this function.
+int RunChildInexact(bool clear_masks) {
+  SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);  // no modal crash dialog under automation
+  if (clear_masks) _MM_SET_EXCEPTION_MASK(0);
+  volatile float a = 1.0f;
+  volatile float b = 3.0f;
+  volatile float c = a / b;  // 1/3 is not exactly representable: genuinely inexact
+  (void)c;
+  return 0;  // did not trap
+}
+
+// A child's own library leg: with all six MXCSR exception masks cleared,
+// open the mechanism encoder and encode one document (SuperSLM >= 1.3.0's
+// open path performs no floating-point operation, D-SLM4231, so this must
+// return normally). On success, serializes the resulting status name to
+// stdout for the parent to read; a trap here terminates the child before
+// any of that runs, observed by the parent through the exit code alone.
+int RunChildLibrary() {
+  SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+  _MM_SET_EXCEPTION_MASK(0);
+  bool opened_ok = false;
+  semb_status out_status = SEMB_OK;
+  DoOpenAndEncode(&opened_ok, &out_status);
+  std::printf("opened_ok=%d status=%s\n", opened_ok ? 1 : 0, semb_status_name(out_status));
+  std::fflush(stdout);
+  return 0;  // did not trap
+}
+
+// Spawns THIS binary's own resolved on-disk path as a child process with
+// `mode_flag` as argv[1], waits for it to exit, and returns its exit code.
+// When `capture_stdout` is non-null, the child's stdout/stderr are piped
+// and collected into it -- used only for the library leg, whose result the
+// parent must read; the two inexact legs need nothing but the exit code.
+DWORD SpawnChildAndWait(const char* mode_flag, std::string* capture_stdout) {
+  char self_path[MAX_PATH] = {0};
+  if (GetModuleFileNameA(nullptr, self_path, MAX_PATH) == 0) {
+    Fail("SpawnChildAndWait: GetModuleFileNameA failed (error %lu)", GetLastError());
+    return static_cast<DWORD>(-1);
+  }
+
+  HANDLE stdout_read = nullptr, stdout_write = nullptr;
+  if (capture_stdout) {
+    SECURITY_ATTRIBUTES sa{};
+    sa.nLength = sizeof(sa);
+    sa.bInheritHandle = TRUE;
+    if (!CreatePipe(&stdout_read, &stdout_write, &sa, 0)) {
+      Fail("SpawnChildAndWait: CreatePipe failed (error %lu)", GetLastError());
+      return static_cast<DWORD>(-1);
+    }
+    SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);  // the parent's own read end is not inherited further
+  }
+
+  std::string cmdline = "\"" + std::string(self_path) + "\" " + mode_flag;
+  std::vector<char> cmdline_buf(cmdline.begin(), cmdline.end());
+  cmdline_buf.push_back('\0');
+
+  STARTUPINFOA si{};
+  si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  if (capture_stdout) {
+    si.dwFlags |= STARTF_USESTDHANDLES;
+    si.hStdOutput = stdout_write;
+    si.hStdError = stdout_write;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  }
+
+  const BOOL created = CreateProcessA(self_path, cmdline_buf.data(), nullptr, nullptr,
+                                       /*bInheritHandles=*/capture_stdout ? TRUE : FALSE, 0, nullptr, nullptr, &si,
+                                       &pi);
+  if (capture_stdout) CloseHandle(stdout_write);
+  if (!created) {
+    Fail("SpawnChildAndWait: CreateProcessA('%s') failed (error %lu)", mode_flag, GetLastError());
+    if (stdout_read) CloseHandle(stdout_read);
+    return static_cast<DWORD>(-1);
+  }
+
+  if (capture_stdout) {
+    char buf[4096];
+    DWORD n = 0;
+    while (ReadFile(stdout_read, buf, sizeof(buf), &n, nullptr) && n > 0) {
+      capture_stdout->append(buf, n);
+    }
+    CloseHandle(stdout_read);
+  }
+
+  WaitForSingleObject(pi.hProcess, INFINITE);
+  DWORD exit_code = static_cast<DWORD>(-1);
+  GetExitCodeProcess(pi.hProcess, &exit_code);
+  CloseHandle(pi.hProcess);
+  CloseHandle(pi.hThread);
+  return exit_code;
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  // Child dispatch (TE-192 item 7): a child invocation does the minimal,
+  // SEH-free work its mode names and returns immediately, before the
+  // parent-only MxcsrGuard/Part-1/Part-2 machinery below ever runs.
+  const ChildMode child_mode = ParseChildMode(argc, argv);
+  if (child_mode == ChildMode::kInexactCleared) return RunChildInexact(/*clear_masks=*/true);
+  if (child_mode == ChildMode::kInexactUncleared) return RunChildInexact(/*clear_masks=*/false);
+  if (child_mode == ChildMode::kLibraryCleared) return RunChildLibrary();
+
   MxcsrGuard top_level_guard;  // restores the process's MXCSR on every exit path below
 
   semb_encoder enc = nullptr;
@@ -372,20 +510,32 @@ int main() {
   semb_encoder_close(enc);
 
   // --- PART 3(a): liveness control -- prove masks-cleared genuinely traps
-  // on THIS host/toolchain, outside the library, before either sub-leg
-  // below is treated as meaningful. ---
-  const unsigned saved_csr_before_part3 = _mm_getcsr();
-  _MM_SET_EXCEPTION_MASK(0);  // unmask all six exceptions
-  const int trapped = TrapIfInexact();
-  _mm_setcsr(saved_csr_before_part3);  // restore before doing anything else
+  // on THIS host/toolchain, at the OS process boundary, before either
+  // sub-leg below is treated as meaningful. Two children: one with masks
+  // cleared (expected to trap -- terminated by the OS with the trapping
+  // NTSTATUS as its exit code), one WITHOUT (the outside review's own
+  // must-accept: "a child that does not clear the masks must be seen not
+  // to trap" -- proving the trap below is the CLEARED MASKS, not the
+  // division itself). ---
+  const DWORD cleared_exit = SpawnChildAndWait(kChildInexactCleared, nullptr);
+  const bool trapped = cleared_exit == static_cast<DWORD>(STATUS_FLOAT_INEXACT_RESULT) ||
+                        cleared_exit == static_cast<DWORD>(STATUS_FLOAT_MULTIPLE_TRAPS);
+  const DWORD uncleared_exit = SpawnChildAndWait(kChildInexactUncleared, nullptr);
+  if (uncleared_exit != 0) {
+    Fail("part 3(a) must-accept: the child WITHOUT cleared masks did not exit cleanly (exit code 0x%08lX) "
+         "-- the same division traps regardless of the mask state on this host/toolchain, so a trap below "
+         "under cleared masks would prove nothing about the masks specifically",
+         uncleared_exit);
+  }
   if (!trapped) {
-    Undetermined("part 3(a): the liveness control did not trap under cleared MXCSR exception masks on "
-                 "this host/toolchain -- STATUS_FLOAT_INEXACT_RESULT was not observed for a genuinely "
-                 "inexact division outside the library. Parts 3(b)/3(c) below still ran and are reported, "
-                 "but a PASS on 3(b) is not evidence of anything when this control cannot fire; what would "
-                 "settle it: re-running on a host/toolchain combination matching sec 1.3's own toolset "
-                 "table (MSVC 19.3x is documented as trapping; 19.44 is documented as not trapping on the "
-                 "cited construction -- this build's own compiler is "
+    Undetermined("part 3(a): the liveness-control child did not trap under cleared MXCSR exception masks "
+                 "on this host/toolchain (child exit code 0x%08lX) -- STATUS_FLOAT_INEXACT_RESULT was not "
+                 "observed for a genuinely inexact division in its own child process. Parts 3(b)/3(c) "
+                 "below still ran and are reported, but a PASS on 3(b) is not evidence of anything when "
+                 "this control cannot fire; what would settle it: re-running on a host/toolchain "
+                 "combination matching sec 1.3's own toolset table (MSVC 19.3x is documented as trapping; "
+                 "19.44 is documented as not trapping on the cited construction -- this build's own "
+                 "compiler is "
 #if defined(__clang__)
                  "clang " __clang_version__
 #elif defined(_MSC_VER)
@@ -393,28 +543,33 @@ int main() {
 #else
                  "unknown"
 #endif
-                 ".");
+                 ").",
+                 cleared_exit);
   } else {
-    std::printf("C41 part 3(a): liveness control trapped as expected (masks-cleared is live on this "
-                "host/toolchain).\n");
+    std::printf("C41 part 3(a): liveness control trapped as expected in its own child process (exit code "
+                "0x%08lX; masks-cleared is live on this host/toolchain); the must-accept uncleared-masks "
+                "child exited cleanly.\n",
+                cleared_exit);
   }
 
   // --- PART 3(b): the library call under cleared masks must return
-  // normally (SuperSLM >= 1.3.0's open path performs no FP operation). ---
-  _MM_SET_EXCEPTION_MASK(0);
-  bool opened_ok = false;
-  semb_status lib_status = SEMB_OK;
-  const int lib_trapped = OpenAndEncodeCatchingTraps(&opened_ok, &lib_status);
-  _mm_setcsr(saved_csr_before_part3);
-  if (lib_trapped) {
-    Fail("part 3(b): semb_encoder_open/semb_encode TRAPPED under cleared MXCSR exception masks -- the "
-         "raw path performed a floating-point operation that raised (opened_ok=%d)",
-         opened_ok ? 1 : 0);
-  } else if (lib_status != SEMB_OK) {
-    Fail("part 3(b): the library call did not trap but returned %s instead of SEMB_OK",
-         semb_status_name(lib_status));
+  // normally, in its own child process (SuperSLM >= 1.3.0's open path
+  // performs no floating-point operation). ---
+  std::string lib_stdout;
+  const DWORD lib_exit = SpawnChildAndWait(kChildLibraryCleared, &lib_stdout);
+  if (lib_exit != 0) {
+    Fail("part 3(b): semb_encoder_open/semb_encode TRAPPED under cleared MXCSR exception masks in its own "
+         "child process (exit code 0x%08lX) -- the raw path performed a floating-point operation that "
+         "raised",
+         lib_exit);
+  } else if (lib_stdout.find("status=SEMB_OK") == std::string::npos) {
+    Fail("part 3(b): the library call's own child did not trap (exit 0) but its serialized result was "
+         "not SEMB_OK: '%s'",
+         lib_stdout.c_str());
   } else {
-    std::printf("C41 part 3(b): semb_encoder_open + semb_encode returned normally under cleared masks.\n");
+    std::printf("C41 part 3(b): semb_encoder_open + semb_encode returned normally under cleared masks in "
+                "its own child process ('%s').\n",
+                lib_stdout.c_str());
   }
 
   // --- PART 3(c): the engine-pin assertion, beside the leg. ---

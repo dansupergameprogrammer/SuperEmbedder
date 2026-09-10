@@ -24,19 +24,15 @@ cannot even RUN (the disassembler is missing, an object file does not
 exist) is the only case this script fails on, because that is an
 authoring-time infrastructure defect, not a quarantined finding.
 
-SCOPE. sec 8's own C41 part 4 text and the sub-plan's Slice 1 text both
-name the scope explicitly, verbatim: `encoder.cpp`, `ps1_pool.cpp`,
-`ps_n_pool.cpp`, `wa_digest.cpp`, `binary32_construct.h`, `big_uint.h`.
-The two headers are never compiled as their own translation unit -- they
-are #included into ps1_pool.cpp and ps_n_pool.cpp (binary32_construct.h)
-and, transitively, wherever big_uint.h lands -- so their compiled code is
-scoped in by scanning the OBJECT FILES for the four named .cpp TUs, which
-is where a header's own inlined code actually appears as machine
-instructions. This is Slice 1's own INITIAL scan, explicitly scoped to
-today's library surface (`SuperEmbedder_Plan.md` sec 8 C41 part 4: "scoped
-to today's library surface"); Slices 2 and 5 widen it as
-`semb_encode_batch` and `semb_query_encode` add entry points, closing fully
-only at Slice 5 (this project's own sequencing, `te140` sec 6).
+SCOPE. The scan derives every compiled C++ translation unit from the root
+`set(SEMB_LIBRARY_SOURCES ...)` block at test time.  The list is therefore
+the library target's actual CMake population rather than a second,
+hand-maintained subset that can lag it.  A separately registered structural
+check compares this derived population to the root list and refuses a
+difference.  The two headers `binary32_construct.h` and `big_uint.h` are
+never compiled as their own translation unit; their compiled code appears in
+the objects for the translation units that include them, so those objects
+cover the headers too.
 
 THE MNEMONIC CLASS -- STATED, AND ITS OWN LIMIT NAMED. sec 8's C41 part 4
 text says this scan uses "the same mnemonic class the engine-side scan
@@ -79,12 +75,20 @@ import subprocess
 import sys
 from pathlib import Path
 
-SCOPED_TUS = [
-    "encoder.cpp",
-    "ps1_pool.cpp",
-    "ps_n_pool.cpp",
-    "wa_digest.cpp",
-]
+def library_translation_units(repo_root: Path) -> list[str]:
+    """Derive C41's source population from SEMB_LIBRARY_SOURCES at test time."""
+    cmake = (repo_root / "CMakeLists.txt").read_text(encoding="utf-8")
+    match = re.search(r"set\s*\(\s*SEMB_LIBRARY_SOURCES\s*(.*?)\)", cmake, re.DOTALL)
+    if match is None:
+        raise RuntimeError("C41 part 4: cannot find set(SEMB_LIBRARY_SOURCES ...) in root CMakeLists.txt")
+    sources = []
+    for token in re.findall(r"[^\s#)]+", re.sub(r"#.*", "", match.group(1))):
+        path = Path(token)
+        if path.suffix == ".cpp":
+            sources.append(path.name)
+    if not sources:
+        raise RuntimeError("C41 part 4: SEMB_LIBRARY_SOURCES contains no .cpp translation units")
+    return sources
 
 # Header files inlined into the TUs above (binary32_construct.h into both
 # pool TUs, big_uint.h into both pool TUs and, transitively, wherever a
@@ -171,6 +175,7 @@ def scan_object(objdump: str, obj_path: Path) -> "list[str]":
 def main(argv: list) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", required=True)
+    ap.add_argument("--repo-root", default=str(Path(__file__).resolve().parent.parent))
     ap.add_argument("--objdump", default="", help="path to llvm-objdump; empty tries PATH, then MISSING PREREQUISITE")
     args = ap.parse_args(argv)
 
@@ -184,9 +189,15 @@ def main(argv: list) -> int:
               "this suite's own convention for a leg whose external prerequisite is absent.")
         return 0
 
+    try:
+        scoped_tus = library_translation_units(Path(args.repo_root))
+    except (OSError, RuntimeError) as exc:
+        print(f"C41 part 4: INFRASTRUCTURE FAIL -- {exc}")
+        return 1
+
     total_matches = []
     scoped_report = []
-    for tu in SCOPED_TUS:
+    for tu in scoped_tus:
         obj = find_object(build_dir, tu)
         if obj is None:
             print(f"C41 part 4: INFRASTRUCTURE FAIL -- no compiled object found for '{tu}' under {build_dir} "

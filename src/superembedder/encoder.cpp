@@ -8,12 +8,23 @@
 #include "superembedder/seam_abi.h"
 #include "superembedder/witness_abi.h"
 #include "superembedder/wb_digest_abi.h"
+#include "superembedder/bake_abi.h"
+#include "superembedder/manifest_labels_abi.h"
+#include "superembedder/version.h"
 #include "encoder_open_internal.h"
 #include "wb_corpus.h"
+#include "json_lite.h"
+
+// Generated at configure time (cmake/EngineGuards.cmake -> semb_engine_pin.h.in),
+// a plain configure_file() template with no dependency on this target's own
+// source-closure scan -- safe to include here, unlike generated/semb_provenance.h
+// (see semb_bake_to_path's own provenance-block comment for why THAT one is not).
+#include "semb_engine_pin.h"
 
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -50,6 +61,19 @@ struct semb_encoder_s {
   // many times a diagnostic accessor is called against an already-open
   // handle (witness_abi.h's own semb_wb_digest comment).
   std::array<uint8_t, 32> wb_digest{};
+  // TE-166 (U1 slice 4): the manifest's own five clear-text fingerprint
+  // components and the PURE sec 3.3 encoder_fingerprint (SHA-256 over the
+  // five, length-prefixed, no tag) -- derived once at open, alongside
+  // `fingerprint` above (the ABI-facing, U1-provisional-tagged value),
+  // never re-derived at bake (D-SLM3978's no-cache rule: no re-read of a
+  // file another field was derived from). See
+  // ComputeManifestFingerprintComponents's own comment.
+  std::array<uint8_t, 32> manifest_model_sha{};
+  std::array<uint8_t, 32> manifest_tokenizer_sha{};
+  std::array<uint8_t, 32> manifest_template_sha256{};
+  std::array<uint8_t, 32> manifest_witness_sha{};
+  std::array<uint8_t, 32> manifest_certification_epoch{};
+  std::array<uint8_t, 32> manifest_fingerprint{};
   std::atomic<uint32_t> active_calls{0};
   // TE-165 (N-1, D-SLM6383; D-SLM6390 item 4): false from construction
   // until the fingerprint and wb_digest above are both written. The
@@ -84,6 +108,56 @@ constexpr char kCertificationPendingSentinel[] =
 constexpr char kProvisionalFingerprintTag[] = SEMB_FINGERPRINT_PROVISIONAL_TAG;
 static_assert(sizeof(kProvisionalFingerprintTag) - 1 ==
               SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE);
+
+// TE-166 (U1 slice 4): manifest provenance fields with no mechanism that
+// computes them yet -- present, never omitted, never fabricated (this
+// round's own contract header, tests/semb_bake_abi_contract.h: "a field
+// whose producing mechanism lands at a later slice carries the same
+// provisional sentinel the fingerprint already carries for it"). Named
+// per field so each is independently greppable later.
+//
+// object_code_sha / engine_object_code_sha: "the SHA-256 of THIS process's
+// own compiled object code" has no runtime-readable source in this tree --
+// C34's own semb_source_sha is a BUILD-TIME provenance digest
+// (cmake/SourceProvenance.cmake), and reading its own generated header
+// (generated/semb_provenance.h) back from a file inside THIS target's own
+// covered-source list would make the closure the digest is computed over
+// include the digest's own output file, which does not exist at the
+// moment the closure is scanned -- a genuine circularity, not a gap left
+// idle. semb_source_sha is therefore ALSO pending here (see below), and
+// object_code_sha/engine_object_code_sha (no producing mechanism exists
+// anywhere in this tree yet) are pending unconditionally.
+constexpr char kObjectCodeShaPendingSentinel[] =
+    "SEMB-OBJECT-CODE-SHA-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
+constexpr char kEngineObjectCodeShaPendingSentinel[] =
+    "SEMB-ENGINE-OBJECT-CODE-SHA-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
+constexpr char kSourceShaPendingSentinel[] =
+    "SEMB-SOURCE-SHA-PENDING-SELF-REFERENTIAL-CLOSURE-AFTER-U1-RAW-ENCODER-SLICE";
+// No CPU-tier accessor is exposed by this library or by SuperSLM's public
+// surface (the engine's own CPUID+XGETBV dispatch, matmul.h/matmul.cpp,
+// is internal to SuperSLM and not reachable from here).
+constexpr char kCpuTierPendingSentinel[] = "SEMB-CPU-TIER-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
+
+// C34 legs (e)/(h) (sec 3.4's label-check table): the value THIS primitive
+// is about to write into label:engine_path_id / label:ps_version,
+// maintained independently of engine_adapter_interim.cpp's own
+// SEMB_ADAPTER_SELF_ID / ps_n_pool.cpp's own SEMB_PS_VERSION_LABEL so the
+// bake-time comparison is genuinely two compiled sources, not one value
+// read twice -- see semb_bake_to_path's own comment and
+// tests/te163_c34_manifest_honesty_check.py's own single-file source
+// mutation, which edits only the TU-local constant and rebuilds.
+constexpr char kEngineAdapterIdLabel[] = "interim";
+constexpr char kPsVersionLabel[] = "PS-N";
+
+std::string Hex(const uint8_t* d, size_t n) {
+  static const char* kHexDigits = "0123456789abcdef";
+  std::string out(n * 2, '0');
+  for (size_t i = 0; i < n; ++i) {
+    out[2 * i] = kHexDigits[(d[i] >> 4) & 0xF];
+    out[2 * i + 1] = kHexDigits[d[i] & 0xF];
+  }
+  return out;
+}
 
 std::mutex& RegistryMutex() {
   static auto* mutex = new std::mutex();
@@ -249,6 +323,30 @@ std::array<uint8_t, 32> ComputeTemplateDigest() {
   return out;
 }
 
+// TE-184 (N-8, D-SLM6406): the document frame -- the empty byte string
+// under PS-N (D-SLM4726), the concatenation point a future PS-1 frame
+// lands at without changing ComposeBatch's own shape (its comment, below)
+// -- named here as ONE constant and concatenated through ONE function, so
+// every caller that needs to know what ComposeBatch will tokenize for a
+// document (ComposeBatch itself, and CutWbDocumentText's own budget below)
+// reads the SAME frame rather than a second, independently-stated one.
+constexpr std::string_view kDocumentFrame = "";
+
+// The exact byte sequence ComposeBatch tokenizes for one document: the
+// document frame, then the document's own text -- no second concatenation
+// point exists anywhere else in this file (D-SLM6390 item 1's "no
+// tokenize-or-cut code exists on the W-B path outside this function",
+// extended to the frame's own length: a budget computed without calling
+// this function is a second, independent statement of the composition,
+// which is exactly N-8's own defect).
+std::string ComposeDocumentInput(std::string_view text) {
+  std::string out;
+  out.reserve(kDocumentFrame.size() + text.size());
+  out.append(kDocumentFrame);
+  out.append(text);
+  return out;
+}
+
 // TE-165 (D-SLM6390, the conductor's ruling re-opening D-SLM6354 on
 // TE-161's own measurement, N-3/D-SLM6385): ONE internal batch
 // composition -- everything semb_encode_batch does after validating the
@@ -271,20 +369,21 @@ semb_status ComposeBatch(semb_encoder_s* h, const std::string_view* texts, size_
                          float* out_vectors, size_t out_capacity_bytes,
                          size_t* out_required_bytes, uint8_t* out_seam_stream,
                          size_t out_seam_stream_capacity, size_t* out_seam_stream_len) {
-  // Per-document tokenization, with the document frame applied (the empty
-  // byte string under PS-N, D-SLM4726 -- the concatenation point a future
-  // PS-1 frame lands at without changing this function's own shape) and
-  // the >= context_cap refusal (TE-96 sec 4.2 step 11), stopping at the
-  // first document that fails: identical to semb_encode_batch's own prior
-  // step 11, now the ONE place either caller reaches it. This check is
-  // also the guard M-3 named removed: D-SLM6390 item 2 makes it reachable
-  // in principle (a bug in CutWbDocumentText's own prefix search could
-  // hand this function text that still tokenizes over budget), and this
-  // check -- shared with the public verb -- refuses it here rather than
-  // overrunning the K/V workspace sec 3.1 sizes from context_cap.
+  // Per-document tokenization, with the document frame applied through
+  // ComposeDocumentInput (TE-184, N-8, D-SLM6406 -- the empty byte string
+  // under PS-N, D-SLM4726, concatenated at the ONE point named above, so a
+  // future PS-1 frame lands here without changing this function's own
+  // shape) and the >= context_cap refusal (TE-96 sec 4.2 step 11), stopping
+  // at the first document that fails: identical to semb_encode_batch's own
+  // prior step 11, now the ONE place either caller reaches it. This check
+  // is also the guard M-3 named removed: D-SLM6390 item 2 makes it
+  // reachable in principle (a bug in CutWbDocumentText's own prefix search
+  // could hand this function text that still tokenizes over budget), and
+  // this check -- shared with the public verb -- refuses it here rather
+  // than overrunning the K/V workspace sec 3.1 sizes from context_cap.
   std::vector<std::vector<int32_t>> content_ids(n);
   for (size_t i = 0; i < n; ++i) {
-    content_ids[i] = h->tokenizer.Encode(texts[i]);
+    content_ids[i] = h->tokenizer.Encode(ComposeDocumentInput(texts[i]));
     // Defensive, matching the raw path's own equivalent check: zero
     // content ids is unreachable for byte-level BPE over a non-empty
     // span. W-B's own texts are never empty (CutWbDocumentText never
@@ -315,20 +414,30 @@ semb_status ComposeBatch(semb_encoder_s* h, const std::string_view* texts, size_
   return MapInterimStatus(status, dequantize);
 }
 
-// TE-165 (D-SLM6390 item 2): prepares one W-B document as TEXT -- the
-// longest UTF-8-boundary byte prefix whose tokenized length under `enc`'s
-// OWN tokenizer is at most context_cap - 1 -- so ComposeBatch, above,
-// never has to cut internally on the W-B path. D-SLM6341's original rule
-// ("cut at context_cap - 1 at open") is kept, restated as an INPUT
-// preparation rather than a second tokenize-and-cut inside the
-// composition: exactly what a real caller with an oversized document
-// would have to do for itself before calling semb_encode_batch, since the
-// composition refuses rather than cuts. Against the real candidate this
+// TE-165 (D-SLM6390 item 2), corrected TE-184 (N-8, D-SLM6406): prepares
+// one W-B document as TEXT -- the longest UTF-8-boundary byte prefix such
+// that ComposeDocumentInput(prefix)'s tokenized length under `enc`'s OWN
+// tokenizer is at most context_cap - 1 -- so ComposeBatch, above, never
+// has to cut internally on the W-B path. D-SLM6341's original rule ("cut
+// at context_cap - 1 at open") is kept, restated as an INPUT preparation
+// rather than a second tokenize-and-cut inside the composition: exactly
+// what a real caller with an oversized document would have to do for
+// itself before calling semb_encode_batch, since the composition refuses
+// rather than cuts. The budget below is checked against the SAME composed
+// sequence -- frame then text, via ComposeDocumentInput, the identical
+// function ComposeBatch calls -- so a future PS-1 frame's own tokenized
+// length is included automatically, with no second, independent
+// tokenize-or-cut path stating the frame's length differently (N-8's own
+// defect: the budget was checked against the bare text while ComposeBatch
+// tokenized frame+text, so a non-empty frame could push the composed
+// length over context_cap after this function had already returned the
+// whole document as "under budget"). Against the real candidate this
 // never cuts (every committed document is short prose, well under any
-// realistic context_cap); against the mechanism pair every document is
-// cut, deterministically, to the same leading byte prefix on every call
-// (tokenization is deterministic and the search below is a pure function
-// of context_cap and the document's own bytes).
+// realistic context_cap, and the frame is empty); against the mechanism
+// pair every document is cut, deterministically, to the same leading byte
+// prefix on every call (tokenization is deterministic and the search
+// below is a pure function of context_cap, the frame and the document's
+// own bytes).
 std::string_view CutWbDocumentText(const superslm::TokenizerView& tokenizer,
                                    std::string_view text, uint32_t context_cap) {
   // D-SLM6341: the largest content-id count that leaves room for the
@@ -337,15 +446,17 @@ std::string_view CutWbDocumentText(const superslm::TokenizerView& tokenizer,
   // leaves room for no content at all.
   const size_t max_content_ids =
       context_cap > 0 ? static_cast<size_t>(context_cap) - 1 : 0;
-  if (tokenizer.Encode(text).size() <= max_content_ids) return text;
+  if (tokenizer.Encode(ComposeDocumentInput(text)).size() <= max_content_ids) return text;
 
   // Walk UTF-8 character boundaries forward, tokenizing each candidate
-  // prefix through the SAME tokenizer the composition will use, stopping
-  // at the first boundary whose own tokenized length exceeds the budget.
-  // Exact by construction (every candidate is checked by a real Encode
-  // call, never inferred from byte length), and cheap: only exercised
-  // against the mechanism pair's own tiny context_cap, over sixteen short
-  // committed documents, once per open.
+  // prefix's OWN composed input (frame + prefix, ComposeDocumentInput)
+  // through the SAME tokenizer the composition will use, stopping at the
+  // first boundary whose own composed tokenized length exceeds the
+  // budget. Exact by construction (every candidate is checked by a real
+  // Encode call over the actual composed bytes, never inferred from byte
+  // length or from the frame's length added separately), and cheap: only
+  // exercised against the mechanism pair's own tiny context_cap, over
+  // sixteen short committed documents, once per open.
   size_t best = 0;  // the empty prefix always tokenizes to 0 ids.
   size_t i = 0;
   while (i < text.size()) {
@@ -355,7 +466,7 @@ std::string_view CutWbDocumentText(const superslm::TokenizerView& tokenizer,
     else if ((lead & 0xF0) == 0xE0) width = 3;
     else if ((lead & 0xF8) == 0xF0) width = 4;
     const size_t next = (i + width < text.size()) ? i + width : text.size();
-    if (tokenizer.Encode(text.substr(0, next)).size() > max_content_ids) break;
+    if (tokenizer.Encode(ComposeDocumentInput(text.substr(0, next))).size() > max_content_ids) break;
     best = next;
     i = next;
   }
@@ -505,6 +616,66 @@ std::array<uint8_t, 32> ComputeProvisionalFingerprint(
   std::memcpy(out.data() + SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE, digest,
               out.size() - SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE);
   return out;
+}
+
+// TE-166 (U1 slice 4): the manifest's own five clear-text components and
+// the PURE sec 3.3 `encoder_fingerprint` formula -- SHA-256 over the five,
+// length-prefixed, IN THIS ORDER, NO TAG. Distinct from
+// ComputeProvisionalFingerprint above, whose output is the ABI-facing
+// `semb_fingerprint` value `semb_encode` returns: that value additionally
+// tags its first 8 bytes per the U1 provisional boundary (semb.h's own
+// SEMB_FINGERPRINT_PROVISIONAL_TAG comment) and hashes the tag INTO the
+// digest, so it is a different 32 bytes by construction. The manifest's
+// own `encoder_fingerprint` is checked by `tests/te163_bank_pair_test.cpp`
+// cell 3 against an INDEPENDENT recomputation from the manifest's five
+// clear-text fields under this exact untagged formula
+// (RecomputeFingerprintFromManifest), which is what fixes this function's
+// own output rather than the tagged ABI value.
+//
+// Recomputes the same five components ComputeProvisionalFingerprint
+// derives (semb_wa_digest, the caller's own wb_digest, the W-Q pending
+// sentinel, the pending certification epoch, the template digest) --
+// cheap next to ComputeWbDigest's own real forward, and keeps this
+// function independent of ComputeProvisionalFingerprint's own internals
+// rather than threading an output parameter through it.
+struct ManifestFingerprintComponents {
+  std::array<uint8_t, 32> model_sha;
+  std::array<uint8_t, 32> tokenizer_sha;
+  std::array<uint8_t, 32> template_sha256;
+  std::array<uint8_t, 32> witness_sha;
+  std::array<uint8_t, 32> certification_epoch;
+  std::array<uint8_t, 32> pure_fingerprint;
+};
+
+ManifestFingerprintComponents ComputeManifestFingerprintComponents(
+    const uint8_t model_sha[32], const uint8_t tokenizer_sha[32],
+    const std::array<uint8_t, 32>& wb_digest) {
+  ManifestFingerprintComponents c{};
+  std::memcpy(c.model_sha.data(), model_sha, 32);
+  std::memcpy(c.tokenizer_sha.data(), tokenizer_sha, 32);
+  c.template_sha256 = ComputeTemplateDigest();
+
+  uint8_t wa_sha[32], wq_sha[32];
+  semb_wa_digest(wa_sha);
+  Hash(kWqPendingSentinel, sizeof(kWqPendingSentinel) - 1, wq_sha);
+  {
+    superslm::Sha256 hash;
+    hash.Update(wa_sha, 32);
+    hash.Update(wb_digest.data(), 32);
+    hash.Update(wq_sha, 32);
+    hash.Final(c.witness_sha.data());
+  }
+  Hash(kCertificationPendingSentinel, sizeof(kCertificationPendingSentinel) - 1,
+       c.certification_epoch.data());
+
+  superslm::Sha256 fp_hash;
+  UpdateField(&fp_hash, c.model_sha.data());
+  UpdateField(&fp_hash, c.tokenizer_sha.data());
+  UpdateField(&fp_hash, c.template_sha256.data());
+  UpdateField(&fp_hash, c.witness_sha.data());
+  UpdateField(&fp_hash, c.certification_epoch.data());
+  fp_hash.Final(c.pure_fingerprint.data());
+  return c;
 }
 
 bool ValidUtf8(const char* data, size_t size) {
@@ -708,6 +879,20 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
 
     h->fingerprint = ComputeProvisionalFingerprint(model_sha, tokenizer_sha, wb_digest);
     h->wb_digest = wb_digest;
+    // TE-166 (U1 slice 4): the manifest's own components, derived from the
+    // SAME one-read-owned buffers (model_sha/tokenizer_sha) and the SAME
+    // wb_digest just computed above -- never a second read, never a
+    // second forward.
+    {
+      const ManifestFingerprintComponents mc =
+          ComputeManifestFingerprintComponents(model_sha, tokenizer_sha, wb_digest);
+      h->manifest_model_sha = mc.model_sha;
+      h->manifest_tokenizer_sha = mc.tokenizer_sha;
+      h->manifest_template_sha256 = mc.template_sha256;
+      h->manifest_witness_sha = mc.witness_sha;
+      h->manifest_certification_epoch = mc.certification_epoch;
+      h->manifest_fingerprint = mc.pure_fingerprint;
+    }
     // The handle is now complete. Publish it: ready first (release order,
     // so every field written above -- including fingerprint and wb_digest
     // -- is visible to any thread that observes ready == true via
@@ -954,6 +1139,320 @@ extern "C" semb_status semb_encode_batch(semb_encoder enc, const semb_document* 
   } catch (const std::length_error&) {
     return SEMB_ALLOCATION_FAILED;
   } catch (...) {
+    return SEMB_ENGINE_REFUSED;
+  }
+}
+
+namespace {
+
+// A 16-byte-aligned float buffer with slack, the same over-allocate-and-
+// align technique tests/u1_raw_text_contract_test.cpp's own SentinelBuffer
+// uses -- std::vector<float>::data() carries no 16-byte alignment
+// guarantee in general.
+float* Align16(std::vector<float>& storage) {
+  auto p = reinterpret_cast<uintptr_t>(storage.data());
+  p = (p + 15) & ~static_cast<uintptr_t>(15);
+  return reinterpret_cast<float*>(p);
+}
+
+// TE-166 (U1 slice 4): writes the three sibling files at a stem -- each
+// written to a temp file in the SAME directory first, then renamed into
+// place, manifest LAST. Every validation and self-check in
+// semb_bake_to_path runs BEFORE this is constructed; on any exception this
+// class's own Rollback() makes the WRITE all-or-nothing against a live,
+// uninterrupted I/O failure -- Commit() either finishes all three renames
+// or (via Rollback) leaves none of the three sibling files in place.
+//
+// TE-191 F6: that guarantee covers a live process; it is NOT crash
+// atomicity across the three-rename SET. Each `std::filesystem::rename`
+// is individually atomic; a process termination or power loss between two
+// of them is not something any in-process catch can undo. Renaming the
+// manifest LAST is what bounds the damage: a termination before it
+// completes leaves either the pre-bake triple entirely untouched, or the
+// new header+payload paired with the OLD manifest -- never a new manifest
+// paired with an old header or payload, because the manifest is the last
+// thing this function ever touches. `semb_bank_open`'s own manifest
+// cross-checks (count, dims, the row digest recomputed over the payload)
+// are what turn that hybrid state into a named refusal
+// (SEMB_BANK_SIZE_MISMATCH / SEMB_BANK_DIGEST_MISMATCH) instead of a
+// silently accepted mismatched pair.
+class AtomicTripleWriter {
+ public:
+  AtomicTripleWriter(std::string header_path, std::string bin_path, std::string manifest_path)
+      : header_path_(std::move(header_path)),
+        bin_path_(std::move(bin_path)),
+        manifest_path_(std::move(manifest_path)),
+        header_tmp_(header_path_ + ".tmp"),
+        bin_tmp_(bin_path_ + ".tmp"),
+        manifest_tmp_(manifest_path_ + ".tmp") {}
+
+  void Commit(const std::string& header_text, const std::string& bin_bytes,
+              const std::string& manifest_text) {
+    try {
+      WriteFile(header_tmp_, header_text);
+      WriteFile(bin_tmp_, bin_bytes);
+      WriteFile(manifest_tmp_, manifest_text);
+      std::filesystem::rename(header_tmp_, header_path_);
+      header_renamed_ = true;
+      std::filesystem::rename(bin_tmp_, bin_path_);
+      bin_renamed_ = true;
+      std::filesystem::rename(manifest_tmp_, manifest_path_);
+      manifest_renamed_ = true;
+    } catch (...) {
+      Rollback();
+      throw;
+    }
+  }
+
+ private:
+  static void WriteFile(const std::string& path, const std::string& bytes) {
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) throw std::runtime_error("semb_bake_to_path: cannot open '" + path + "' for write");
+    f.exceptions(std::ios::badbit | std::ios::failbit);
+    if (!bytes.empty()) f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    f.close();
+  }
+  void Rollback() {
+    std::error_code ec;
+    if (header_renamed_) std::filesystem::remove(header_path_, ec); else std::filesystem::remove(header_tmp_, ec);
+    if (bin_renamed_) std::filesystem::remove(bin_path_, ec); else std::filesystem::remove(bin_tmp_, ec);
+    if (manifest_renamed_) std::filesystem::remove(manifest_path_, ec); else std::filesystem::remove(manifest_tmp_, ec);
+  }
+
+  std::string header_path_, bin_path_, manifest_path_;
+  std::string header_tmp_, bin_tmp_, manifest_tmp_;
+  bool header_renamed_ = false, bin_renamed_ = false, manifest_renamed_ = false;
+};
+
+}  // namespace
+
+// TE-166 (U1 slice 4): the internal bake primitive
+// (`tests/semb_bake_abi_contract.h`; `Claude/Plans/te140-u1-remainder-sequencing.md`
+// sec 4.4). NOT one of the frozen twelve verbs (sec 3.1, D-SLM4646) --
+// Slice 6's `semb bake` CLI wraps this. Computes the rows through the
+// SAME validated call `semb_encode_batch` itself is (this function's own
+// two calls into it below, a size query then the real call -- "the exact
+// same call" per the contract header's own grading note): every refusal
+// semb_encode_batch can produce propagates unchanged, and nothing is
+// written on any non-SEMB_OK return.
+extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* docs, size_t n,
+                                          const char* path_stem, size_t path_stem_len) {
+  // sec 3.1 property 7's own span rule, applied to a path exactly as
+  // semb_config's own path members and semb_bank_open's own `path`
+  // argument already are: (NULL, n>0) is SEMB_NULL_ARGUMENT; an empty
+  // span -- (NULL, 0) or a non-NULL pointer with path_stem_len == 0 -- is
+  // SEMB_ARTIFACT_UNREADABLE (an empty path names no writable location),
+  // never SEMB_NULL_ARGUMENT.
+  if (!enc || (!docs && n > 0) || (!path_stem && path_stem_len > 0)) {
+    return SEMB_NULL_ARGUMENT;
+  }
+  if (path_stem_len == 0) return SEMB_ARTIFACT_UNREADABLE;
+  try {
+    HandleLease lease(enc);
+    if (!lease.get()) return SEMB_INVALID_HANDLE;
+    semb_encoder_s* h = lease.get();
+
+    // Compute the rows: a size query (the query form semb_encode_batch's
+    // own step 7 defines), then the real call. Every refusal
+    // semb_encode_batch itself produces -- CORPUS_EMPTY, per-document
+    // validation, DUPLICATE, CONTEXT_CAP_EXCEEDED, engine refusals, etc. --
+    // propagates unchanged, before any file touch.
+    size_t required = 0;
+    const semb_status size_status = semb_encode_batch(enc, docs, n, nullptr, 0, &required);
+    if (size_status != SEMB_BUFFER_TOO_SMALL) return size_status;
+
+    std::vector<float> rows_storage(required / sizeof(float) + 4, 0.0f);
+    float* aligned_rows = Align16(rows_storage);
+    size_t written = 0;
+    const semb_status encode_status =
+        semb_encode_batch(enc, docs, n, aligned_rows, required, &written);
+    if (encode_status != SEMB_OK) return encode_status;
+
+    const uint32_t dims = h->dims;
+
+    // C34 legs (e)/(h): the value about to be written, checked against the
+    // linked TU's own compiled-in self-report BEFORE any file is touched.
+    // In ordinary operation these are the same two literals and this
+    // cannot fire on any build this suite configures by itself --
+    // tests/te163_c34_manifest_honesty_check.py's own single-file source
+    // mutation is the only way to move them apart.
+    if (std::string(kEngineAdapterIdLabel) != semb_adapter_self_id()) {
+      return SEMB_ADAPTER_ID_MISMATCH;
+    }
+    if (std::string(kPsVersionLabel) != semb_ps_n_version_label()) {
+      return SEMB_PS_VERSION_LABEL_MISMATCH;
+    }
+
+    // Per-row token counts: recomputed through ComposeDocumentInput -- the
+    // ONE composition point semb_encode_batch itself tokenized (D-SLM6390
+    // item 1: no second, independent statement of the composition exists
+    // anywhere in this file). TE-193 P-2: the previous raw-text tokenize
+    // agreed only while kDocumentFrame was empty (D-SLM4726), so a future
+    // PS-1 frame would have silently under-reported every row here. A
+    // second, read-only tokenize pass for metadata, not a second forward.
+    std::vector<int64_t> per_row_token_counts(n);
+    for (size_t i = 0; i < n; ++i) {
+      per_row_token_counts[i] = static_cast<int64_t>(
+          h->tokenizer.Encode(ComposeDocumentInput(std::string_view(docs[i].utf8, docs[i].utf8_len)))
+              .size());
+    }
+
+    // Row digest: SHA-256 over the .wvbank.bin payload bytes just written.
+    std::array<uint8_t, 32> row_digest{};
+    Hash(aligned_rows, required, row_digest.data());
+
+    // Corpus digest: SHA-256 over count-prefixed, per-row
+    // length-prefixed(id) || length-prefixed(utf8), row order -- a
+    // provenance record of the input documents (TE-96 sec 4.5: "the
+    // manifest's corpus digest covers the input file's bytes"), never a
+    // fingerprint field (the producer-identity rule has nothing to say
+    // about a datum outside the emitted bytes).
+    std::array<uint8_t, 32> corpus_digest{};
+    {
+      superslm::Sha256 hash;
+      UpdateU64(&hash, static_cast<uint64_t>(n));
+      for (size_t i = 0; i < n; ++i) {
+        UpdateU64(&hash, static_cast<uint64_t>(docs[i].id_len));
+        hash.Update(reinterpret_cast<const uint8_t*>(docs[i].id), docs[i].id_len);
+        UpdateU64(&hash, static_cast<uint64_t>(docs[i].utf8_len));
+        hash.Update(reinterpret_cast<const uint8_t*>(docs[i].utf8), docs[i].utf8_len);
+      }
+      hash.Final(corpus_digest.data());
+    }
+
+    // provenance.artifact_sha: SHA-256(len(model_sha)||model_sha||
+    // len(tokenizer_sha)||tokenizer_sha) -- an independent, NARROWER
+    // digest over only the two ARTIFACT components (sec 3.3: "model_sha",
+    // "tokenizer_sha" -- "the model artifact", "the tokenizer artifact"),
+    // distinct from encoder_fingerprint's own full five-component
+    // recomputation below. This is what lets semb_bank_open attribute a
+    // tampered model_sha/tokenizer_sha to SEMB_ARTIFACT_SHA_MISMATCH
+    // specifically (sec 8 C18's own name for this class) rather than the
+    // broader SEMB_FINGERPRINT_MISMATCH cell 3 already owns -- this
+    // seat's own derivation, since neither the plan text nor the contract
+    // header names a mechanism for the two statuses to disagree on a
+    // single edited field otherwise; filed as a finding (see the build
+    // record) rather than silently invented and left undocumented.
+    std::array<uint8_t, 32> artifact_sha{};
+    {
+      superslm::Sha256 hash;
+      UpdateField(&hash, h->manifest_model_sha.data());
+      UpdateField(&hash, h->manifest_tokenizer_sha.data());
+      hash.Final(artifact_sha.data());
+    }
+
+    // --- Build the three files' own content. ---
+    namespace js = semb::json;
+
+    js::Value header = js::Value::MakeObject();
+    header.Set("schemaVersion", js::Value::MakeInt(1));
+    header.Set("dims", js::Value::MakeInt(static_cast<int64_t>(dims)));
+    header.Set("count", js::Value::MakeInt(static_cast<int64_t>(n)));
+    header.Set("metric", js::Value::MakeString("cosine"));
+    header.Set("dtype", js::Value::MakeString("float32"));
+    js::Value ids = js::Value::MakeArray();
+    for (size_t i = 0; i < n; ++i) {
+      ids.as_array.push_back(js::Value::MakeString(std::string(docs[i].id, docs[i].id_len)));
+    }
+    header.Set("ids", std::move(ids));
+    const std::string header_text = js::Write(header);
+
+    const std::string bin_bytes(reinterpret_cast<const char*>(aligned_rows), required);
+
+    uint8_t wa_sha[32];
+    semb_wa_digest(wa_sha);
+
+    js::Value witness = js::Value::MakeObject();
+    // This bake's own act of encoding `docs` is, for this manifest's own
+    // purposes, the witness pass its corpus_digest describes -- reusing
+    // the top-level corpus_digest rather than inventing a second,
+    // differently-scoped one; this seat's own derivation (filed as a
+    // finding, see the build record), since sec 3.4's prose does not
+    // pin whether this sub-field is the SAME digest or a distinct one
+    // scoped to W-A/W-B's own fixed witness corpus.
+    witness.Set("corpus_digest", js::Value::MakeString(Hex(corpus_digest.data(), 32)));
+    witness.Set("wa_digest", js::Value::MakeString(Hex(wa_sha, 32)));
+    witness.Set("wb_digest", js::Value::MakeString(Hex(h->wb_digest.data(), 32)));
+    witness.Set("cpu_tier", js::Value::MakeString(kCpuTierPendingSentinel));
+
+    js::Value provenance = js::Value::MakeObject();
+    provenance.Set("object_code_sha", js::Value::MakeString(kObjectCodeShaPendingSentinel));
+    provenance.Set("engine_object_code_sha", js::Value::MakeString(kEngineObjectCodeShaPendingSentinel));
+    provenance.Set("semb_source_sha", js::Value::MakeString(kSourceShaPendingSentinel));
+    provenance.Set("engine_tree_sha", js::Value::MakeString(SEMB_ENGINE_PIN_TREE_SHA));
+    provenance.Set("engine_path_sha", js::Value::MakeString(SEMB_ENGINE_PATH_SHA));
+    provenance.Set("engine_chunk_budget", js::Value::MakeInt(static_cast<int64_t>(h->chunk_budget)));
+    provenance.Set("artifact_sha", js::Value::MakeString(Hex(artifact_sha.data(), 32)));
+    provenance.Set("witness", std::move(witness));
+
+    js::Value manifest = js::Value::MakeObject();
+    manifest.Set("encoder_fingerprint", js::Value::MakeString(Hex(h->manifest_fingerprint.data(), 32)));
+    manifest.Set("model_sha", js::Value::MakeString(Hex(h->manifest_model_sha.data(), 32)));
+    manifest.Set("tokenizer_sha", js::Value::MakeString(Hex(h->manifest_tokenizer_sha.data(), 32)));
+    manifest.Set("template_sha256", js::Value::MakeString(Hex(h->manifest_template_sha256.data(), 32)));
+    manifest.Set("witness_sha", js::Value::MakeString(Hex(h->manifest_witness_sha.data(), 32)));
+    manifest.Set("certification_epoch", js::Value::MakeString(Hex(h->manifest_certification_epoch.data(), 32)));
+    manifest.Set("certified_builds_path", js::Value::MakeString("docs/certified-builds.json"));
+    manifest.Set("provenance", std::move(provenance));
+    manifest.Set("label:ps_version", js::Value::MakeString(kPsVersionLabel));
+    manifest.Set("label:engine_path_id", js::Value::MakeString(kEngineAdapterIdLabel));
+    manifest.Set("label:superslm_tag_commit",
+                 js::Value::MakeString(std::string(SEMB_ENGINE_PIN_TAG) + " @ " + SEMB_ENGINE_PIN_COMMIT));
+    manifest.Set("label:semb_version", js::Value::MakeString(superembedder::Version()));
+    manifest.Set("count", js::Value::MakeInt(static_cast<int64_t>(n)));
+    manifest.Set("dims", js::Value::MakeInt(static_cast<int64_t>(dims)));
+    // TE-193 P-4: the manifest binds metric and dtype the same way it
+    // binds count/dims -- the bake's own header values, written here so
+    // semb_bank_open can refuse a header edited after the bake (metric is
+    // the one consumer-visible header field an editor could otherwise flip
+    // past the manifest binding with every cross-check still passing).
+    manifest.Set("metric", js::Value::MakeString("cosine"));
+    manifest.Set("dtype", js::Value::MakeString("float32"));
+    manifest.Set("row_digest", js::Value::MakeString(Hex(row_digest.data(), 32)));
+    manifest.Set("corpus_digest", js::Value::MakeString(Hex(corpus_digest.data(), 32)));
+    manifest.Set("machine_tier", js::Value::MakeString(kCpuTierPendingSentinel));
+    js::Value token_counts = js::Value::MakeArray();
+    for (size_t i = 0; i < n; ++i) token_counts.as_array.push_back(js::Value::MakeInt(per_row_token_counts[i]));
+    manifest.Set("per_row_token_counts", std::move(token_counts));
+    const std::string manifest_text = js::Write(manifest);
+
+    const std::string stem(path_stem, path_stem_len);
+
+    // TE-184 (D-SLM6440): a missing (or, so far as this check can tell,
+    // unwritable) output directory is a path/output problem -- checked
+    // explicitly, before AtomicTripleWriter is even constructed, so it
+    // reports SEMB_ARTIFACT_UNREADABLE (this primitive's own path-problem
+    // status, already used above for an empty path_stem) rather than
+    // falling into the generic catch below via AtomicTripleWriter's
+    // temp-file open failure, which reads as an engine/model failure to a
+    // caller. Found against a real clean-room build tree whose `_scratch`
+    // output directory did not yet exist (`tools/te166_bake_239_timer.cpp`,
+    // D-SLM6436): root-caused to AtomicTripleWriter::WriteFile's
+    // std::ofstream failing to open the temp file and throwing
+    // std::runtime_error, indistinguishable at the generic catch from any
+    // other unexpected failure.
+    const std::filesystem::path stem_path(stem);
+    const std::filesystem::path out_dir =
+        stem_path.has_parent_path() ? stem_path.parent_path() : std::filesystem::path(".");
+    std::error_code out_dir_ec;
+    if (!std::filesystem::is_directory(out_dir, out_dir_ec)) {
+      return SEMB_ARTIFACT_UNREADABLE;
+    }
+
+    AtomicTripleWriter writer(stem + ".wvbank.json", stem + ".wvbank.bin", stem + ".semb.json");
+    writer.Commit(header_text, bin_bytes, manifest_text);
+
+    return SEMB_OK;
+  } catch (const std::bad_alloc&) {
+    return SEMB_ALLOCATION_FAILED;
+  } catch (const std::length_error&) {
+    return SEMB_ALLOCATION_FAILED;
+  } catch (...) {
+    // The output directory's existence is checked explicitly above and
+    // never reaches here; this generic catch is now only an I/O failure
+    // mid-write after that check passed (a race, a permission change
+    // after the check, disk full) or any other unexpected exception this
+    // function's own logic did not anticipate.
     return SEMB_ENGINE_REFUSED;
   }
 }

@@ -70,6 +70,40 @@
 // in the plan, not yet required by any verb this slice pins") into the real
 // list, since TE-96 sec 4.2 step 3 now requires it of a frozen verb.
 //
+// TE-163 (U1 Slice 4, `Claude/Bach/briefs/te163-slice4-red.md`): six
+// statuses APPENDED for the bank pair / manifest sidecar and the internal
+// bake primitive (`tests/semb_bake_abi_contract.h`, `tests/semb_bank_abi_contract.h`),
+// ordinals 22-27, SEMB_STATUS_NEXT_FREE now 28 -- the plan's own C18 row
+// (`SuperEmbedder_Plan.md` sec 8, "validation symmetry across entry paths")
+// names all four of SEMB_FINGERPRINT_MISMATCH / SEMB_MANIFEST_SCHEMA_UNSUPPORTED
+// / SEMB_BANK_SIZE_MISMATCH / SEMB_ARTIFACT_SHA_MISMATCH as `semb_bank_open`
+// outcomes (D-SLM4649), and sec 3.4's label-check table names the two C34
+// manifest-honesty statuses (SEMB_ADAPTER_ID_MISMATCH, SEMB_PS_VERSION_LABEL_MISMATCH)
+// as bake outcomes. All six move from kPlanStatusNames (below) into the real
+// list except SEMB_BANK_IN_USE, which stays there -- it is Slice 5's own
+// (no `semb_query` handle exists yet to hold the reference count `semb_bank_close`
+// would refuse against).
+//
+// TE-183 (D-SLM6393 item 1, D-SLM6410): four statuses APPENDED for the four
+// `semb_bank_open` refusal classes TE-163's own cell 2 drives by value but
+// this header left unpinned (D-SLM6392) -- SEMB_BANK_IDS_COUNT_MISMATCH,
+// SEMB_BANK_NONFINITE_ROW, SEMB_BANK_ZERO_NORM_ROW,
+// SEMB_BANK_GEOMETRY_CEILING_EXCEEDED -- ordinals 28-31,
+// SEMB_STATUS_NEXT_FREE now 32. Provisional on the quarantined branch only
+// (D-SLM6393); the plan-of-record amendment naming them is owed to the
+// planner's next fold. None of the four was ever in kPlanStatusNames, so
+// nothing moves out of it this round.
+//
+// TE-192 (D-SLM6467's F8, D-SLM6472/D-SLM6473's two proposed names): two
+// statuses APPENDED for the outside review's F2 and F3 refusal classes --
+// SEMB_BANK_METRIC_DTYPE_UNSUPPORTED (FORMAT.md sec 1's "unknown ...
+// metric, or dtype" obligation) and SEMB_BANK_DIGEST_MISMATCH (a manifest
+// digest -- row_digest, or corpus_digest's self-consistency against its own
+// witness copy -- disagreeing with what it is checked against) -- ordinals
+// 32-33, SEMB_STATUS_NEXT_FREE now 34. Provisional on this branch only,
+// same class as 28-31 above; the plan-of-record amendment naming them is
+// owed to the planner's next fold alongside 28-31's own.
+//
 // STATUSES ARE PINNED BY NAME AND BY ORDINAL, AND THE CELLS COMPARE BY NAME.
 // Behavioural cells resolve every status through `semb_status_name` (StatusByName
 // below) so that a cell is red for its own reason -- a behaviour that differs
@@ -121,7 +155,19 @@ typedef int32_t semb_status;
   X(SEMB_CORPUS_EMPTY,             18) \
   X(SEMB_DOCUMENT_ID_INVALID,      19) \
   X(SEMB_DOCUMENT_ID_DUPLICATE,    20) \
-  X(SEMB_CORPUS_TOO_LARGE,         21)
+  X(SEMB_CORPUS_TOO_LARGE,         21) \
+  X(SEMB_FINGERPRINT_MISMATCH,             22) \
+  X(SEMB_MANIFEST_SCHEMA_UNSUPPORTED,      23) \
+  X(SEMB_BANK_SIZE_MISMATCH,               24) \
+  X(SEMB_ARTIFACT_SHA_MISMATCH,            25) \
+  X(SEMB_ADAPTER_ID_MISMATCH,              26) \
+  X(SEMB_PS_VERSION_LABEL_MISMATCH,        27) \
+  X(SEMB_BANK_IDS_COUNT_MISMATCH,          28) \
+  X(SEMB_BANK_NONFINITE_ROW,               29) \
+  X(SEMB_BANK_ZERO_NORM_ROW,               30) \
+  X(SEMB_BANK_GEOMETRY_CEILING_EXCEEDED,   31) \
+  X(SEMB_BANK_METRIC_DTYPE_UNSUPPORTED,    32) \
+  X(SEMB_BANK_DIGEST_MISMATCH,             33)
 
 enum : int32_t {
 #define SEMB_CONTRACT_STATUS_ENUM_(name, value) name = value,
@@ -130,7 +176,7 @@ enum : int32_t {
   SEMB_STATUS_NEXT_FREE  // the sentinel: never returned, never a valid argument, never named
 };
 
-static_assert(SEMB_STATUS_NEXT_FREE == 22, "the contract pins 22 named statuses, ordinals 0-21 (TE-145 appends 18-21)");
+static_assert(SEMB_STATUS_NEXT_FREE == 34, "the contract pins 34 named statuses, ordinals 0-33 (TE-192 appends 32-33)");
 
 // sec 3.1 item 5: library-owned, opaque, not copyable, released only by
 // semb_encoder_close; a double close returns SEMB_INVALID_HANDLE.
@@ -191,7 +237,7 @@ inline const StatusEntry kStatusTable[] = {
 #undef SEMB_CONTRACT_STATUS_ENTRY_
 };
 inline constexpr size_t kStatusCount = sizeof(kStatusTable) / sizeof(kStatusTable[0]);
-static_assert(kStatusCount == 22, "22 named statuses (TE-145 appends 18-21)");
+static_assert(kStatusCount == 34, "34 named statuses (TE-192 appends 32-33)");
 
 // The name every non-member int32_t resolves to (P-5: static storage, never NULL).
 inline constexpr const char* kUnknownStatusName = "SEMB_UNKNOWN";
@@ -206,13 +252,14 @@ inline constexpr const char* kCanonicalEndToken = "<|endoftext|>";
 // The rest of sec 3.1's/sec 8's caller-facing vocabulary: reported by the
 // status-name coverage cell as present or absent, never required by this
 // slice (their verbs are not in it; P-5 appends each when its verb lands).
+// TE-163: the four C18 names and the two C34 label names moved out of this
+// list into SEMB_CONTRACT_STATUS_LIST above, landing as ordinals 22-27.
+// SEMB_BANK_IN_USE stays here -- Slice 5's own (D-SLM4664: a live-query-
+// handle reference count on the bank, and no `semb_query` handle exists
+// yet to hold one).
 inline const char* const kPlanStatusNames[] = {
     "SEMB_INPUT_TOO_SHORT",
-    "SEMB_FINGERPRINT_MISMATCH",
     "SEMB_BANK_IN_USE",
-    "SEMB_MANIFEST_SCHEMA_UNSUPPORTED",
-    "SEMB_BANK_SIZE_MISMATCH",
-    "SEMB_ARTIFACT_SHA_MISMATCH",
     "SEMB_ACCUMULATOR_OVERFLOW",
     "SEMB_EPOCH_BYTES_DIVERGED",
     "SEMB_EPOCH_LINEAGE_DIVERGED",
