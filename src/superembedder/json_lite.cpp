@@ -269,11 +269,20 @@ class ParserImpl {
   }
 
   // Validate remembers a fixed-size record for every object member until the
-  // closing brace, then sorts by the decoded-name hash. Sorting supplies the
-  // worst-case bound: each member is re-decoded at most once, only in its
-  // equal-hash run, and that run is itself sorted by decoded text before a
-  // duplicate is refused. A deterministic hash only improves the average;
-  // it is not relied upon for the bound.
+  // closing brace, then sorts by the decoded-name hash. Within an equal-hash
+  // run, the records themselves -- not a materialized copy of their names --
+  // are sorted by decoded name: the comparator decodes the two names it is
+  // comparing into transient strings, released before the next comparison
+  // (DecodeMemberNameAt saves and restores the parser position). The sorted
+  // run is then walked once, decoding each adjacent pair, to refuse an exact
+  // duplicate. No representation beyond the 16-byte record is held for a
+  // whole run at once, so peak memory stays header bytes + 16 bytes per
+  // member + a constant: an object of n members occupies at least 6n header
+  // bytes (the shortest member is `"k":0,`), so 16n <= (16/6) x header and
+  // header + 16n is below 4 x header for every n. Work stays O(n log n): the
+  // comparator's decode is bounded by the length of the name it touches, and
+  // the sort makes at most O(n log n) such comparisons. A deterministic hash
+  // only improves the average; it is not relied upon for either bound.
   static uint64_t HashDecodedMemberName(const std::string& name) {
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
     (void)name;
@@ -320,14 +329,18 @@ class ParserImpl {
       size_t last = first + 1;
       while (last < records->size() && (*records)[last].hash == (*records)[first].hash) ++last;
       if (last - first > 1) {
-        std::vector<std::string> names;
-        names.reserve(last - first);
-        for (size_t n = first; n < last; ++n) names.push_back(DecodeMemberNameAt((*records)[n].offset));
-        std::sort(names.begin(), names.end());
-        for (size_t n = 1; n < names.size(); ++n) {
-          if (names[n - 1] == names[n]) {
-            throw std::runtime_error("json_lite: duplicate object member '" + names[n] + "'");
+        std::sort(records->begin() + static_cast<ptrdiff_t>(first),
+                  records->begin() + static_cast<ptrdiff_t>(last),
+                  [this](const MemberNameRecord& a, const MemberNameRecord& b) {
+                    return DecodeMemberNameAt(a.offset) < DecodeMemberNameAt(b.offset);
+                  });
+        std::string previous = DecodeMemberNameAt((*records)[first].offset);
+        for (size_t n = first + 1; n < last; ++n) {
+          std::string current = DecodeMemberNameAt((*records)[n].offset);
+          if (previous == current) {
+            throw std::runtime_error("json_lite: duplicate object member '" + current + "'");
           }
+          previous = std::move(current);
         }
       }
       first = last;
