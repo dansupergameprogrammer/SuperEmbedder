@@ -1047,7 +1047,6 @@ add_test(
 	NAME te194_query_check
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te194_query_check.py"
 		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
-		--model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
