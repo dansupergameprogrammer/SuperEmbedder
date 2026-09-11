@@ -66,10 +66,13 @@ def main(argv: list[str]) -> int:
             if line]
     labels = {row["label"]: row["class"] for row in rows}
     texts = {row["label"]: row["text"] for row in rows}
+    corpus = scratch / "c5-cli-corpus.jsonl"
+    corpus.write_text("".join(json.dumps({"id": row["label"], "text": row["text"]}) + "\n"
+                              for row in rows), encoding="utf-8")
     stem = scratch / "c5"
     base = ["--model", args.model, "--tokenizer", args.tokenizer]
     bake_started = time.monotonic()
-    bake = call([str(semb), "bake", str(ROOT / "tests" / "fixtures" / "c12b" / "corpus-239.jsonl"),
+    bake = call([str(semb), "bake", str(corpus),
                  "--out", str(stem), *base])
     bake_s_per_document = (time.monotonic() - bake_started) / len(rows)
     triple = all(Path(str(stem) + suffix).is_file()
