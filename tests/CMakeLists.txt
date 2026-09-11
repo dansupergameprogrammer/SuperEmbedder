@@ -451,7 +451,7 @@ add_test(
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
-	set_tests_properties(u1_batch_contract_check PROPERTIES LABELS "real_artifact")
+	set_tests_properties(u1_batch_contract_check PROPERTIES LABELS "real_artifact" TIMEOUT 7200)
 endif()
 
 # The converter-emitted Qwen3-Embedding-0.6B tokenizer artifact (3.4 MB, never
@@ -1183,5 +1183,5 @@ add_test(
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
-	set_tests_properties(te230_c5_real_workload PROPERTIES LABELS "real_artifact")
+	set_tests_properties(te230_c5_real_workload PROPERTIES LABELS "real_artifact" TIMEOUT 1800)
 endif()
