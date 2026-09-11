@@ -306,8 +306,9 @@ int Bake(const std::vector<std::string>& args) {
 
 int Query(const std::vector<std::string>& args) {
   if (args.size() == 1 && args[0] == "--help") {
-    std::cout << "usage: semb query [--stdin] <name> [<text>] [--hex | --top k] --model <sslm> --tokenizer <sslm>\n"
-                 "One-shot query is a documented diagnostic; --stdin reuses one checked query handle.\n";
+    std::cout << "usage: semb query [--stdin] <name> [<text>] [--hex | --raw | --top k] --model <sslm> --tokenizer <sslm>\n"
+                 "One-shot query is a documented diagnostic; --stdin reuses one checked query handle.\n"
+                 "Output modes: --hex (default), --raw (float bytes), or --top k (JSON hits).\n";
     return 0;
   }
   QueryArguments parsed;
@@ -326,7 +327,12 @@ int Query(const std::vector<std::string>& args) {
       return Refuse("semb query --top", SEMB_NULL_ARGUMENT);
     }
   }
-  if (parsed.raw && (parsed.stdin_mode || top != 0)) return Refuse("semb query --raw", SEMB_NULL_ARGUMENT);
+  // Reject incompatible presentation modes before opening the encoder: no
+  // session, checked bank, or output stream is created for a usage error.
+  if (parsed.hex && top != 0) return Refuse("semb query --hex --top", SEMB_NULL_ARGUMENT);
+  if (parsed.raw && parsed.hex) return Refuse("semb query --raw --hex", SEMB_NULL_ARGUMENT);
+  if (parsed.raw && top != 0) return Refuse("semb query --raw --top", SEMB_NULL_ARGUMENT);
+  if (parsed.raw && parsed.stdin_mode) return Refuse("semb query --raw --stdin", SEMB_NULL_ARGUMENT);
 #if defined(_WIN32)
   if (parsed.raw && _setmode(_fileno(stdout), _O_BINARY) == -1) {
     return Refuse("semb query --raw", SEMB_ARTIFACT_UNREADABLE);
