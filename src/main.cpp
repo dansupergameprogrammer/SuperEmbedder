@@ -103,16 +103,27 @@ bool LoadCorpus(const std::string& path, std::vector<std::string>* ids,
                 std::vector<std::string>* texts, std::vector<semb_document>* docs) {
   std::ifstream stream(path);
   if (!stream) return false;
+  // Format is selected by the path, never by a line's contents: exactly a
+  // `.jsonl` extension selects JSONL; every other extension is one UTF-8 text
+  // document per physical line, with the zero-based line number as its id.
+  const bool jsonl = std::filesystem::path(path).extension() == ".jsonl";
   std::string line;
+  size_t line_number = 0;
   try {
     while (std::getline(stream, line)) {
-      if (line.empty()) continue;
-      const semb::json::Value row = semb::json::Parse(line);
-      const semb::json::Value* id = row.Find("id");
-      const semb::json::Value* text = row.Find("text");
-      if (!row.IsObject() || !id || !text || !id->IsString() || !text->IsString()) return false;
-      ids->push_back(id->as_string);
-      texts->push_back(text->as_string);
+      if (jsonl) {
+        if (line.empty()) continue;
+        const semb::json::Value row = semb::json::Parse(line);
+        const semb::json::Value* id = row.Find("id");
+        const semb::json::Value* text = row.Find("text");
+        if (!row.IsObject() || !id || !text || !id->IsString() || !text->IsString()) return false;
+        ids->push_back(id->as_string);
+        texts->push_back(text->as_string);
+      } else {
+        ids->push_back(std::to_string(line_number));
+        texts->push_back(line);
+      }
+      ++line_number;
     }
   } catch (...) {
     return false;
