@@ -120,8 +120,8 @@ bool ReadFile(const std::string& path, std::string* out) {
 
 // Verify reuses the shipping bake primitive instead of duplicating either
 // corpus- or row-digest construction in the CLI. Its private directory lives
-// under the system temp root, never beside the bank being checked, and its
-// destructor removes every temporary triple on success and every refusal.
+// under the system temp root, never beside the bank being checked. Verify
+// checks Cleanup before each return; the destructor retries only as fallback.
 class TemporaryBakeDirectory {
  public:
   bool Create() {
@@ -134,7 +134,10 @@ class TemporaryBakeDirectory {
     for (unsigned int attempt = 0; attempt < 128; ++attempt) {
       path_ = root / ("semb-verify-" + std::to_string(ticks) + "-" +
                       std::to_string(counter.fetch_add(1, std::memory_order_relaxed)));
-      if (std::filesystem::create_directory(path_, error)) return true;
+      if (std::filesystem::create_directory(path_, error)) {
+        created_ = true;
+        return true;
+      }
       if (error && error != std::errc::file_exists) return false;
       error.clear();
     }
@@ -143,15 +146,23 @@ class TemporaryBakeDirectory {
 
   const std::filesystem::path& path() const { return path_; }
 
+  bool Cleanup() {
+    if (!created_) return true;
+    std::error_code error;
+    std::filesystem::remove_all(path_, error);
+    if (error) return false;
+    created_ = false;
+    path_.clear();
+    return true;
+  }
+
   ~TemporaryBakeDirectory() {
-    if (!path_.empty()) {
-      std::error_code error;
-      std::filesystem::remove_all(path_, error);
-    }
+    (void)Cleanup();
   }
 
  private:
   std::filesystem::path path_;
+  bool created_ = false;
 };
 
 bool ManifestField(const std::string& manifest, const char* field, std::string* out) {
@@ -405,28 +416,32 @@ int Verify(const std::vector<std::string>& args) {
   if (!LoadCorpus(corpus, &ids, &texts, &docs)) return Refuse("semb verify corpus", SEMB_ARTIFACT_UNREADABLE);
   TemporaryBakeDirectory scratch;
   if (!scratch.Create()) return Refuse("semb verify scratch", SEMB_ARTIFACT_UNREADABLE);
+  auto finish = [&](int result) {
+    if (!scratch.Cleanup()) return Refuse("semb verify scratch cleanup", SEMB_ARTIFACT_UNREADABLE);
+    return result;
+  };
   const std::string rebaked_stem = (scratch.path() / "rebaked").string();
   status = semb_bake_to_path(handles.encoder, docs.data(), docs.size(), rebaked_stem.data(), rebaked_stem.size());
-  if (status != SEMB_OK) return Refuse("semb verify re-encode", status);
+  if (status != SEMB_OK) return finish(Refuse("semb verify re-encode", status));
 
   std::string bank_manifest, rebaked_manifest;
   if (!ReadFile(positional[0] + ".semb.json", &bank_manifest) ||
       !ReadFile(rebaked_stem + ".semb.json", &rebaked_manifest)) {
-    return Refuse("semb verify manifest", SEMB_ARTIFACT_UNREADABLE);
+    return finish(Refuse("semb verify manifest", SEMB_ARTIFACT_UNREADABLE));
   }
   std::string bank_corpus_digest, rebaked_corpus_digest, bank_row_digest, rebaked_row_digest;
   if (!ManifestField(bank_manifest, "corpus_digest", &bank_corpus_digest) ||
       !ManifestField(rebaked_manifest, "corpus_digest", &rebaked_corpus_digest) ||
       !ManifestField(bank_manifest, "row_digest", &bank_row_digest) ||
       !ManifestField(rebaked_manifest, "row_digest", &rebaked_row_digest)) {
-    return Refuse("semb verify manifest", SEMB_ARTIFACT_UNREADABLE);
+    return finish(Refuse("semb verify manifest", SEMB_ARTIFACT_UNREADABLE));
   }
   if (bank_corpus_digest != rebaked_corpus_digest) {
     std::cerr << "semb verify: SEMB_CORPUS_DIGEST_MISMATCH\n";
-    return 1;
+    return finish(1);
   }
-  if (bank_row_digest != rebaked_row_digest) return Refuse("semb verify", SEMB_BANK_DIGEST_MISMATCH);
-  return 0;
+  if (bank_row_digest != rebaked_row_digest) return finish(Refuse("semb verify", SEMB_BANK_DIGEST_MISMATCH));
+  return finish(0);
 }
 
 int Inspect(const std::vector<std::string>& args) {
