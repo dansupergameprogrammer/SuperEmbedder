@@ -631,31 +631,33 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
       return SEMB_PS_VERSION_LABEL_MISMATCH;
     }
 
+    // Materialize the complete immutable snapshot before taking the
+    // process-global registry lock.  This copies and decodes only values
+    // validated above; independent bank/query operations never wait for
+    // payload-sized work from this open.
+    auto handle = std::make_unique<semb_bank_opaque>();
+    handle->fingerprint = fingerprint_bytes;
+    handle->count = count;
+    handle->dims = dims;
+    handle->ids.reserve(ids_v->as_array.size());
+    for (const auto& id : ids_v->as_array) handle->ids.push_back(id.as_string);
+    handle->id_data.reserve(handle->ids.size());
+    handle->id_lengths.reserve(handle->ids.size());
+    for (const std::string& id : handle->ids) {
+      handle->id_data.push_back(id.data());
+      handle->id_lengths.push_back(id.size());
+    }
+    const size_t total = static_cast<size_t>(count) * static_cast<size_t>(dims);
+    handle->rows.resize(total);
+    for (size_t i = 0; i < total; ++i) {
+      handle->rows[i] = DecodeFloatLE(bin_bytes.data() + i * sizeof(float));
+    }
+
     semb_bank cookie = nullptr;
     {
+      // RegistryMutex guards only the cookie namespace and handle registry.
       std::lock_guard<std::mutex> lock(RegistryMutex());
       if (!AllocateHandleCookie(&cookie)) return SEMB_ALLOCATION_FAILED;
-      auto handle = std::make_unique<semb_bank_opaque>();
-      // The handle owns its complete checked snapshot -- copied once, here,
-      // from ids and payload bytes this function already validated; nothing
-      // is re-read from disk after this point.  The internal read side lets
-      // callers rank exactly this snapshot rather than a second disk copy.
-      handle->fingerprint = fingerprint_bytes;
-      handle->count = count;
-      handle->dims = dims;
-      handle->ids.reserve(ids_v->as_array.size());
-      for (const auto& id : ids_v->as_array) handle->ids.push_back(id.as_string);
-      handle->id_data.reserve(handle->ids.size());
-      handle->id_lengths.reserve(handle->ids.size());
-      for (const std::string& id : handle->ids) {
-        handle->id_data.push_back(id.data());
-        handle->id_lengths.push_back(id.size());
-      }
-      const size_t total = static_cast<size_t>(count) * static_cast<size_t>(dims);
-      handle->rows.resize(total);
-      for (size_t i = 0; i < total; ++i) {
-        handle->rows[i] = DecodeFloatLE(bin_bytes.data() + i * sizeof(float));
-      }
       Registry().emplace(cookie, std::move(handle));
     }
     *out = cookie;
