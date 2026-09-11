@@ -3,6 +3,7 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -169,10 +170,15 @@ bool LoadCorpus(const std::string& path, std::vector<std::string>* ids,
                 std::vector<std::string>* texts, std::vector<semb_document>* docs) {
   std::ifstream stream(path);
   if (!stream) return false;
-  // Format is selected by the path, never by a line's contents: exactly a
-  // `.jsonl` extension selects JSONL; every other extension is one UTF-8 text
-  // document per physical line, with the zero-based line number as its id.
-  const bool jsonl = std::filesystem::path(path).extension() == ".jsonl";
+  // Format is selected by the path, never by a line's contents: a
+  // case-insensitive `.jsonl` extension selects JSONL; every other extension
+  // is one UTF-8 text document per physical line, with the zero-based line
+  // number as its id.
+  std::string extension = std::filesystem::path(path).extension().string();
+  std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  const bool jsonl = extension == ".jsonl";
   std::string line;
   size_t line_number = 0;
   try {
