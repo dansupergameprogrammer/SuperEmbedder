@@ -7,11 +7,17 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--production', required=True)
     ap.add_argument('--testseam', required=True)
-    ap.add_argument('--build-dir', required=True)
-    ap.add_argument('--cmake-executable', required=True)
+    ap.add_argument('--build-dir', default='')
+    ap.add_argument('--cmake-executable', default='')
     args = ap.parse_args()
     testseam = Path(args.testseam)
     if not testseam.is_file():
+        missing = [name for name, value in
+                   [('--build-dir', args.build_dir), ('--cmake-executable', args.cmake_executable)]
+                   if not value]
+        if missing:
+            print(f'[FAIL] K-18b: on-demand superembedder_testseam build requires {", ".join(missing)}')
+            return 1
         proc = subprocess.run([args.cmake_executable, '--build', args.build_dir,
                                '--target', 'superembedder_testseam'], capture_output=True,
                               text=True, errors='replace')
