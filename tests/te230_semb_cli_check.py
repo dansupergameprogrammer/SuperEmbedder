@@ -62,7 +62,7 @@ def copied_stem(source: Path, destination: Path) -> None:
 
 def mutate(stem: Path, kind: str) -> None:
     if kind == "size":
-        with Path(str(stem) + ".wvbank.bin").open("ab") as f: f.write(b"\\0")
+        with Path(str(stem) + ".wvbank.bin").open("ab") as f: f.write(b"\0")
         return
     manifest = Path(str(stem) + ".semb.json")
     data = json.loads(manifest.read_text(encoding="utf-8"))
@@ -116,7 +116,7 @@ def main(argv: list[str]) -> int:
     report.add("PASS" if one.returncode == 0 and lib_hex and one_hex and one_hex.group(1) == lib_hex.group(1) else "FAIL",
                "CLI one-shot bytes equal library", "one-shot query is the documented diagnostic")
     lines = [text, "A second query proves session reuse."]
-    session = call([str(semb), "query", "--stdin", str(good), "--hex", *base], stdin="\\n".join(lines) + "\\n")
+    session = call([str(semb), "query", "--stdin", str(good), "--hex", *base], stdin="\n".join(lines) + "\n")
     session_hex = re.findall(r"^VECTOR_HEX=([0-9a-f]+)$", session.stdout, re.M)
     report.add("PASS" if session.returncode == 0 and len(session_hex) == len(lines) and session_hex[0] == (lib_hex.group(1) if lib_hex else "") and "query_handle_opens=1" in session.stderr else "FAIL",
                "CLI stdin one handle", "observable=query_handle_opens=1; each stdin vector is library-equal")
@@ -147,7 +147,7 @@ def main(argv: list[str]) -> int:
         report.add("FAIL", "C5 real workload bake", c5_bake.stderr[-500:]); return 1
     q_started = time.monotonic()
     c5_query = call([str(semb), "query", "--stdin", str(c5_stem), "--top", "5", *base],
-                    stdin="\\n".join(row["text"] for row in c5_rows) + "\\n", timeout=420)
+                    stdin="\n".join(row["text"] for row in c5_rows) + "\n", timeout=420)
     query_s_per_document = (time.monotonic() - q_started) / len(c5_rows)
     try:
         outputs = [json.loads(line) for line in c5_query.stdout.splitlines() if line]
