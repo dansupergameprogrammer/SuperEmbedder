@@ -19,7 +19,24 @@ CLI choices where the plan deliberately leaves syntax/output open:
     reading (D-SLM6632): the first line's id is "0", as a decimal string;
   * `query --stdin` is a session: one line's result must arrive before the
     next line is written, not after standard input closes;
-  * `query --raw` writes exactly `dims * 4` float32 bytes, unpadded.
+  * `query --raw` writes exactly `dims * 4` float32 bytes, unpadded;
+  * the query parser's option/data boundary (D-SLM6637, TE-235 for TE-233's
+    S-1): `--` ends option parsing and every argument after it is data, so
+    option-shaped query text is passed after the boundary
+    (`query <name> --model <m> --tokenizer <t> -- --help` emits the vector for
+    the text `--help`); before the boundary an argument matching a known
+    option spelling is control syntax, never query text, and one-shot query
+    text that spells an option without a boundary is refused by name --
+    exit 0 without a vector is the silent-success shape the review executed
+    at 6991a85;
+  * `query --top` ranks against the bank the checked handle validated; the
+    CLI driver reads no `.wvbank.json`/`.wvbank.bin` itself (plan sec 3.1's
+    checked path; TE-233's S-2);
+  * `query --help` names every implemented output mode, `--raw` included,
+    and every conflicting mode combination is refused (TE-233's M-1);
+  * the corpus format rule selects JSONL for a `.jsonl` extension without
+    regard to case (D-SLM6638, TE-235): a corpus named `.JSONL` bakes with
+    the ids its rows carry, never as plain text with line-number ids.
 These are the smallest machine-readable forms that let this test compare the
 CLI to the C ABI without parsing presentation text.  The planner owns their
 ratification; this file pins the test-author choice until then.
@@ -116,6 +133,80 @@ def stdin_session(semb: Path, stem: Path, base: list[str], text: str,
             proc.wait()
 
 
+def probe_vector_hex(probe: Path, model: str, tokenizer: str, stem: Path,
+                     text: str) -> tuple[str | None, subprocess.CompletedProcess[str]]:
+    """The library's own one-shot query bytes for ``text`` through the frozen
+    C ABI probe -- the oracle the option-shaped-text cells compare against."""
+    run = call([str(probe), "--model", model, "--tokenizer", tokenizer, "--stem", str(stem), "--text", text])
+    match = re.search(r"^VECTOR_HEX=([0-9a-f]+)$", run.stdout, re.M) if run.returncode == 0 else None
+    return (match.group(1) if match else None), run
+
+
+def stdin_top_session(semb: Path, stem: Path, base: list[str], text: str, bound_s: float,
+                      replace_with: Path | None) -> tuple[str | None, str | None, int | None]:
+    """Drives ``query --stdin --top 5`` as a live session and, between the
+    two queries, overwrites the session bank's pair files on disk with
+    another bank's (TE-233 S-2's staged replacement, which the open-to-reread
+    window cannot receive from outside the process).  Returns the first and
+    second answer lines (None if the bound passed without an answer) and the
+    exit code; standard input is held open until the second answer is
+    requested, so a batch-read CLI reports no first answer."""
+    proc = subprocess.Popen([str(semb), "query", "--stdin", str(stem), "--top", "5", *base],
+                           stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, cwd=ROOT)
+    emitted: "queue.Queue[bytes | None]" = queue.Queue()
+
+    def read_lines() -> None:
+        for raw in proc.stdout:
+            emitted.put(raw)
+        emitted.put(None)
+
+    threading.Thread(target=read_lines, daemon=True).start()
+    try:
+        def answer() -> str | None:
+            try:
+                return emitted.get(timeout=bound_s).decode("utf-8", "replace").strip()
+            except queue.Empty:
+                return None
+
+        proc.stdin.write((text + "\n").encode("utf-8"))
+        proc.stdin.flush()
+        first = answer()
+        if replace_with is not None:
+            for suffix in (".wvbank.json", ".wvbank.bin"):
+                shutil.copyfile(Path(str(replace_with) + suffix), Path(str(stem) + suffix))
+        proc.stdin.write((text + "\n").encode("utf-8"))
+        proc.stdin.flush()
+        proc.stdin.close()
+        second = answer()
+        while True:  # drain any trailing output before waiting on the exit code
+            try:
+                raw = emitted.get(timeout=bound_s)
+            except queue.Empty:
+                break
+            if raw is None:
+                break
+        code: int | None = proc.wait(timeout=120)
+        return first, second, code
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def pair_read_lines(source: str) -> list[str]:
+    """TE-233 S-2's structural half: every line of the CLI driver that names a
+    bank pair file by its literal extension.  ``semb_bank_open`` is the only
+    permitted reader of the ``.wvbank.json``/``.wvbank.bin`` pair; a
+    driver-side second copy beside the checked open is exactly the
+    unvalidated re-read the review found."""
+    flagged = []
+    for number, line in enumerate(source.splitlines(), 1):
+        if '".wvbank.json"' in line or '".wvbank.bin"' in line:
+            flagged.append(f"line {number}: {line.strip()}")
+    return flagged
+
+
 def expect_status(report: Report, cell: str, proc: subprocess.CompletedProcess[str], status: str) -> None:
     text = proc.stdout + proc.stderr
     report.add("PASS" if proc.returncode != 0 and status in text else "FAIL", cell,
@@ -173,6 +264,34 @@ def main(argv: list[str]) -> int:
     help_run = call([str(semb), "query", "--help"])
     report.add("PASS" if help_run.returncode == 0 and "diagnostic" in (help_run.stdout + help_run.stderr).lower() else "FAIL",
                "CLI one-shot diagnostic help", "query --help must name one-shot query a diagnostic")
+    # TE-235 (TE-233 M-1): the help names every implemented output mode.
+    missing_modes = [mode for mode in ("--stdin", "--hex", "--top", "--raw")
+                     if mode not in (help_run.stdout + help_run.stderr)]
+    report.add("PASS" if not missing_modes else "FAIL",
+               "M-1 query --help names every implemented output mode",
+               "help names --stdin, --hex, --top, and --raw" if not missing_modes else
+               f"RED: query --help omits {', '.join(missing_modes)}; the usage line presents the modes as "
+               "exclusive, so every implemented mode must be named for a consumer to discover it")
+    # TE-235 (TE-233 S-2), structural half: the CLI driver reads no bank pair
+    # file itself -- semb_bank_open is the only permitted reader of the pair.
+    # The scan is first proven able to fire on a synthetic driver text that
+    # does read the pair, so a clean result means the scan worked, not that
+    # it is dead.  What this check misses, stated plainly: a driver that
+    # re-reads through a second semb_bank_open, extension strings assembled
+    # dynamically, or reads moved to another translation unit -- none of
+    # them appear as literals in src/main.cpp; the behavioral session cell
+    # is the other half.
+    synthetic_reads = pair_read_lines(
+        'bool Load(const std::string& stem) { return ReadFile(stem + ".wvbank.bin", &payload); }')
+    driver_reads = pair_read_lines((ROOT / "src" / "main.cpp").read_text(encoding="utf-8", errors="replace"))
+    if synthetic_reads:
+        report.add("PASS" if not driver_reads else "FAIL",
+                   "S-2a the query driver reads no bank pair file itself",
+                   "src/main.cpp names no .wvbank.json/.wvbank.bin; every pair read is semb_bank_open's" if not driver_reads else
+                   "RED: the CLI driver reads the bank pair itself beside the checked open -- " + "; ".join(driver_reads))
+    else:
+        report.add("FAIL", "S-2a the query driver reads no bank pair file itself",
+                   "the structural scan is dead: a synthetic driver text that reads .wvbank.bin was not flagged")
     corpus = ROOT / "tests" / "fixtures" / "wb" / "wb-corpus.jsonl"; good = scratch / "good"
     base = ["--model", model, "--tokenizer", tokenizer]
     bake = call([str(semb), "bake", str(corpus), "--out", str(good), *base])
@@ -232,12 +351,59 @@ def main(argv: list[str]) -> int:
                    f"exactly dims*4={dims * 4 if isinstance(dims, int) else '?'} bytes, library-equal" if raw_ok else
                    f"RED: --raw is not a CLI option; exit={raw.returncode}, stdout={len(raw.stdout)} bytes, "
                    f"expected exactly {dims * 4 if isinstance(dims, int) else 'dims*4'} bytes equal to the library's")
+        # TE-235 (TE-233 S-1), D-SLM6637: the end-of-options boundary `--`
+        # makes option-shaped text queryable -- the CLI must emit the
+        # library's own bytes for the text `--help`.
+        help_boundary = call([str(semb), "query", str(good), *base, "--", "--help"])
+        help_boundary_hex = re.search(r"^VECTOR_HEX=([0-9a-f]+)$", help_boundary.stdout, re.M)
+        help_oracle, help_oracle_run = probe_vector_hex(probe, model, tokenizer, library_good, "--help")
+        help_ok = (help_oracle is not None and help_boundary.returncode == 0
+                   and help_boundary_hex is not None and help_boundary_hex.group(1) == help_oracle)
+        report.add("PASS" if help_ok else "FAIL",
+                   "S-1 the boundary `--` makes option-shaped text queryable (--help)",
+                   "the CLI emits the library's own bytes for the text `--help`" if help_ok else
+                   f"RED: exit={help_boundary.returncode}, vector={'yes' if help_boundary_hex else 'no'}, "
+                   f"library oracle={'yes' if help_oracle else f'no: {help_oracle_run.stderr[-120:]!r}'}; the parser "
+                   "scans the whole argument vector for option spellings and has no end-of-options boundary, so "
+                   f"`--help` anywhere prints usage and exits -- output: {(help_boundary.stdout + help_boundary.stderr)[:120]!r}")
+        # The same boundary for a second option spelling: `--stdin` is the
+        # flag that turns one-shot query into a session, so without a
+        # boundary it can never be one-shot query text.
+        stdin_boundary = call([str(semb), "query", str(good), *base, "--", "--stdin"])
+        stdin_boundary_hex = re.search(r"^VECTOR_HEX=([0-9a-f]+)$", stdin_boundary.stdout, re.M)
+        stdin_oracle, stdin_oracle_run = probe_vector_hex(probe, model, tokenizer, library_good, "--stdin")
+        stdin_ok = (stdin_oracle is not None and stdin_boundary.returncode == 0
+                    and stdin_boundary_hex is not None and stdin_boundary_hex.group(1) == stdin_oracle)
+        report.add("PASS" if stdin_ok else "FAIL",
+                   "S-1 the boundary `--` makes option-shaped text queryable (--stdin)",
+                   "the CLI emits the library's own bytes for the text `--stdin`" if stdin_ok else
+                   f"RED: exit={stdin_boundary.returncode}, vector={'yes' if stdin_boundary_hex else 'no'}, "
+                   f"library oracle={'yes' if stdin_oracle else f'no: {stdin_oracle_run.stderr[-120:]!r}'}; `--stdin` "
+                   "is scanned as a flag from anywhere and `--` is collected as a positional, so the command is "
+                   "read as a malformed session instead of a one-shot query for the text `--stdin` -- output: "
+                   f"{(stdin_boundary.stdout + stdin_boundary.stderr)[:120]!r}")
+        # The review's exact command (TE-233 S-1, executed on this binary by
+        # the reviewer): option-shaped text with NO boundary must never
+        # succeed silently -- it emits the vector or refuses by name; exit 0
+        # without a vector is the regression this cell pins out.
+        silent = call([str(semb), "query", str(good), "--help", *base])
+        silent_hex = re.search(r"^VECTOR_HEX=([0-9a-f]+)$", silent.stdout, re.M)
+        silent_ok = not (silent.returncode == 0 and silent_hex is None)
+        report.add("PASS" if silent_ok else "FAIL",
+                   "S-1 option-shaped text without a boundary never exits 0 vectorless",
+                   "refused by name or answered with a vector -- never silent success" if silent_ok else
+                   f"RED: exit={silent.returncode} with no VECTOR_HEX and no refusal; the whole vector is scanned "
+                   "for `--help`, which prints usage and returns success -- the exact silent-success shape the "
+                   f"review executed at 6991a85 (output: {(silent.stdout + silent.stderr)[:120]!r})")
     else:
         report.add("BLOCKED", "CLI one-shot bytes equal library", "CLI baseline triple and library vector are required")
         report.add("BLOCKED", "CLI stdin one handle", "CLI baseline triple and library vector are required")
         report.add("BLOCKED", "CLI stdin session serves the first query before input closes", "CLI baseline triple and library vector are required")
         report.add("BLOCKED", "CLI stdin session serves the second query after input closes", "CLI baseline triple and library vector are required")
         report.add("BLOCKED", "CLI query --raw writes the vector bytes", "CLI baseline triple and library vector are required")
+        report.add("BLOCKED", "S-1 the boundary `--` makes option-shaped text queryable (--help)", "CLI baseline triple and library vector are required")
+        report.add("BLOCKED", "S-1 the boundary `--` makes option-shaped text queryable (--stdin)", "CLI baseline triple and library vector are required")
+        report.add("BLOCKED", "S-1 option-shaped text without a boundary never exits 0 vectorless", "CLI baseline triple and library vector are required")
     # C24: output directory begins empty; no final, partial, or temporary file survives refusal.
     empty = scratch / "empty.jsonl"; empty.write_text("", encoding="utf-8"); empty_stem = scratch / "empty" / "out"; empty_stem.parent.mkdir()
     c24 = call([str(semb), "bake", str(empty), "--out", str(empty_stem), *base])
@@ -337,6 +503,88 @@ def main(argv: list[str]) -> int:
         inspect_manifest = Path(str(good) + ".semb.json"); inspect = call([str(semb), "inspect", str(inspect_manifest)])
         report.add("PASS" if inspect.returncode == 0 and inspect_manifest.read_text(encoding="utf-8") in inspect.stdout else "FAIL",
                    "CLI inspect opens no encoder", "inspect succeeds while the configured model artifact is absent")
+        # TE-235 (TE-233 M-1): the output modes are exclusive; every
+        # conflicting combination is refused by name (nonzero exit naming a
+        # SEMB_ status, the suite's standing refusal convention), never
+        # silently resolved by branch order.
+        for flags in (["--hex", "--top", "5"], ["--raw", "--hex"], ["--raw", "--top", "5"], ["--raw", "--stdin"]):
+            clash = call([str(semb), "query", str(good), text, *flags, *base])
+            clash_ok = clash.returncode != 0 and "SEMB_" in (clash.stdout + clash.stderr)
+            # `--raw --hex` at a silently-resolving base emits raw float bytes
+            # on stdout; keep the quoted snippet console-printable (cp1252).
+            snippet = (clash.stdout + clash.stderr)[:160].encode("ascii", "backslashreplace").decode("ascii")
+            report.add("PASS" if clash_ok else "FAIL",
+                       f"M-1 conflicting output modes refused by name ({' '.join(flags)})",
+                       "nonzero exit naming a SEMB_ status" if clash_ok else
+                       f"RED: exit={clash.returncode}; the combination is accepted and one branch wins silently "
+                       f"(output: {snippet!r})")
+        # TE-235 (TE-233 S-2), behavioral half: a --stdin --top session
+        # answers from the bank the checked handle validated even after the
+        # pair files on disk are replaced between queries.  GREEN at 6991a85
+        # (the current CLI loads its --top copy once, before the session
+        # loop); this cell guards a per-query re-read, which is why the
+        # structural cell above is the half that is red at the base.
+        replacement_corpus = scratch / "s2_replacement.jsonl"
+        replacement_corpus.write_text("\n".join(
+            json.dumps({"id": f"REPLACED-{i:02d}",
+                        "text": f"Replacement row {i}: text the original bank never baked."})
+            for i in range(16)) + "\n", encoding="utf-8")
+        replacement_stem = scratch / "s2_replacement_bank"
+        replacement_bake = call([str(semb), "bake", str(replacement_corpus), "--out", str(replacement_stem), *base])
+        if replacement_bake.returncode != 0:
+            report.add("FAIL", "S-2b a --stdin --top session ranks the validated bank after its files are replaced",
+                       f"apparatus: the replacement bank bake failed; exit={replacement_bake.returncode}; "
+                       f"{(replacement_bake.stdout + replacement_bake.stderr)[-300:]!r}")
+        else:
+            session_stem = scratch / "s2_session"
+            copied_stem(good, session_stem)
+            first_line, second_line, session_code = stdin_top_session(
+                semb, session_stem, base, text, 20.0, replacement_stem)
+
+            def hit_ids(line: str | None) -> list[str] | None:
+                if line is None:
+                    return None
+                try:
+                    return [hit["id"] for hit in json.loads(line)["hits"]]
+                except (ValueError, KeyError, TypeError):
+                    return None
+
+            first_ids, second_ids = hit_ids(first_line), hit_ids(second_line)
+            original_ids = {json.loads(row)["id"] for row in corpus.read_text(encoding="utf-8").splitlines()}
+            session_ok = (session_code == 0 and isinstance(first_ids, list) and isinstance(second_ids, list)
+                          and first_ids == second_ids and set(second_ids) <= original_ids)
+            report.add("PASS" if session_ok else "FAIL",
+                       "S-2b a --stdin --top session ranks the validated bank after its files are replaced",
+                       "both answers rank the same wb ids; the on-disk replacement never reached the ranking" if session_ok else
+                       f"RED: after the pair files were replaced mid-session, answer 1 ranked {first_ids} and "
+                       f"answer 2 ranked {second_ids} (exit={session_code}); the session answered from the disk "
+                       "bytes rather than the bank snapshot the checked handle validated")
+        # TE-235 (the conductor's .JSONL finding, D-SLM6638): the corpus
+        # format rule selects JSONL by the path without regard to case; at
+        # 6991a85 only a lower-case `.jsonl` does, so the same rows bake
+        # silently as plain text with line-number ids.
+        upper = scratch / "upper_corpus.JSONL"
+        shutil.copyfile(corpus, upper)
+        upper_bake = call([str(semb), "bake", str(upper), "--out", str(scratch / "upper_bank"), *base])
+        upper_ids = None
+        if upper_bake.returncode == 0:
+            upper_ids = json.loads(Path(str(scratch / "upper_bank") + ".wvbank.json")
+                                   .read_text(encoding="utf-8")).get("ids")
+        row_ids = [json.loads(row)["id"] for row in corpus.read_text(encoding="utf-8").splitlines()]
+        upper_ids_ok = upper_bake.returncode == 0 and upper_ids == row_ids
+        report.add("PASS" if upper_ids_ok else "FAIL",
+                   "an upper-case .JSONL corpus bakes with the ids its rows carry",
+                   "the bank's ids are the rows' own ids, same as the lower-case bake" if upper_ids_ok else
+                   f"RED: exit={upper_bake.returncode}; ids={(upper_ids or [])[:4]}... -- only a lower-case "
+                   "`.jsonl` selects the JSONL rule, so .JSONL rows bake as plain text with line-number ids")
+        upper_vectors_ok = (upper_bake.returncode == 0
+                            and Path(str(scratch / "upper_bank") + ".wvbank.bin").read_bytes()
+                            == Path(str(good) + ".wvbank.bin").read_bytes())
+        report.add("PASS" if upper_vectors_ok else "FAIL",
+                   "an upper-case .JSONL corpus bakes vectors byte-equal the .jsonl bake",
+                   "the identical corpus named .jsonl and .JSONL produces identical vector bytes" if upper_vectors_ok else
+                   "RED: the .JSONL bake's vector bytes differ from the .jsonl bake's -- each JSON line was "
+                   "taken as whole-line document text")
     else:
         report.add("BLOCKED", "verify untouched bank accepts", "CLI baseline triple was not produced")
         report.add("BLOCKED", "verify without --corpus is refused by name", "CLI baseline triple was not produced")
@@ -347,6 +595,13 @@ def main(argv: list[str]) -> int:
         report.add("BLOCKED", "plain-text corpus bakes with line-number ids", "CLI baseline triple was not produced")
         report.add("BLOCKED", "plain-text vectors byte-equal the JSONL bake", "CLI baseline triple was not produced")
         report.add("BLOCKED", "CLI inspect opens no encoder", "CLI baseline manifest was not produced")
+        report.add("BLOCKED", "M-1 conflicting output modes refused by name (--hex --top 5)", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "M-1 conflicting output modes refused by name (--raw --hex)", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "M-1 conflicting output modes refused by name (--raw --top 5)", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "M-1 conflicting output modes refused by name (--raw --stdin)", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "S-2b a --stdin --top session ranks the validated bank after its files are replaced", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "an upper-case .JSONL corpus bakes with the ids its rows carry", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "an upper-case .JSONL corpus bakes vectors byte-equal the .jsonl bake", "CLI baseline triple was not produced")
     return 1 if report.failed else 0
 
 
