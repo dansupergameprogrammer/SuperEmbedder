@@ -181,6 +181,14 @@ add_test(
 # the already-built `superembedder` target's own object files.
 set(SEMB_TEST_OBJDUMP "" CACHE FILEPATH
 	"C41 part 4: path to llvm-objdump (empty tries PATH, then MISSING PREREQUISITE)")
+if(SEMB_TEST_OBJDUMP STREQUAL "")
+	find_program(_semb_test_llvm_objdump NAMES llvm-objdump llvm-objdump.exe
+		PATHS "C:/Program Files/LLVM/bin")
+	if(_semb_test_llvm_objdump)
+		set(SEMB_TEST_OBJDUMP "${_semb_test_llvm_objdump}" CACHE FILEPATH
+			"C41 part 4: configured llvm-objdump path" FORCE)
+	endif()
+endif()
 add_test(
 	NAME c41_part4_object_code_scan
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c41_part4_object_code_scan.py"
@@ -1131,6 +1139,7 @@ add_test(
 	NAME te194_c41_query_scope_check
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te194_c41_query_scope_check.py"
 		--build-dir "${CMAKE_BINARY_DIR}"
+		--objdump "${SEMB_TEST_OBJDUMP}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
@@ -1143,3 +1152,24 @@ add_test(
 		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+
+# ---------------------------------------------------------------------------
+# TE-230 (U1 slice 6): the executable `semb` CLI, C24, C18, and C5.  The
+# Python driver owns command-line/process assertions; its separately-built
+# probe opens the resulting bank through the frozen C ABI and independently
+# produces the library query bytes that CLI --hex must equal.
+# ---------------------------------------------------------------------------
+add_executable(te230_semb_cli_probe EXCLUDE_FROM_ALL te230_semb_cli_probe.cpp)
+target_link_libraries(te230_semb_cli_probe PRIVATE superembedder superslm::superslm)
+target_include_directories(te230_semb_cli_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_test(
+	NAME te230_semb_cli_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te230_semb_cli_check.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+		--model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+	set_tests_properties(te230_semb_cli_check PROPERTIES LABELS "real_artifact" TIMEOUT 420)
+endif()
