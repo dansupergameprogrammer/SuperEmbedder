@@ -1100,14 +1100,6 @@ semb_status EncoderAbiFingerprint(semb_encoder enc, uint8_t out[32]) {
   return SEMB_OK;
 }
 
-semb_status EncoderWqDigest(semb_encoder enc, uint8_t out[32]) {
-  if (!enc || !out) return SEMB_NULL_ARGUMENT;
-  HandleLease lease(enc);
-  if (!lease.get()) return SEMB_INVALID_HANDLE;
-  std::memcpy(out, lease.get()->wq_digest.data(), 32);
-  return SEMB_OK;
-}
-
 semb_status EncoderDims(semb_encoder enc, uint32_t* out_dims) {
   if (!enc || !out_dims) return SEMB_NULL_ARGUMENT;
   HandleLease lease(enc);
@@ -1390,6 +1382,25 @@ extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* 
     if (encode_status != SEMB_OK) return encode_status;
 
     const uint32_t dims = h->dims;
+
+    // FORMAT.md makes a zero-norm row a bake-time error for cosine banks.
+    // Check every staged row before constructing any output content or writer:
+    // all validation and every refusal this bake can return therefore precede
+    // any final or temporary output file. The integer bit test deliberately
+    // treats both signed zeros as zero without introducing FP arithmetic.
+    for (size_t row = 0; row < n; ++row) {
+      bool all_zero = true;
+      const float* row_values = aligned_rows + row * static_cast<size_t>(dims);
+      for (uint32_t dim = 0; dim < dims; ++dim) {
+        uint32_t bits = 0;
+        std::memcpy(&bits, row_values + dim, sizeof(bits));
+        if ((bits & 0x7FFFFFFFu) != 0) {
+          all_zero = false;
+          break;
+        }
+      }
+      if (all_zero) return SEMB_BANK_ZERO_NORM_ROW;
+    }
 
     // C34 legs (e)/(h): the value about to be written, checked against the
     // linked TU's own compiled-in self-report BEFORE any file is touched.
