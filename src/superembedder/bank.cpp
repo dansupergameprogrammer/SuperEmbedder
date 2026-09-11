@@ -31,6 +31,12 @@
 #include "superembedder/bank_internal_abi.h"
 #include "superembedder/manifest_labels_abi.h"
 
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+#include "support/semb_bank_open_seam.h"
+#include <chrono>
+#include <condition_variable>
+#endif
+
 // Completes semb.h's own forward declaration (`typedef struct
 // semb_bank_opaque* semb_bank;`, global scope) -- defined here at GLOBAL
 // scope too, not inside the anonymous namespace below, so this is the
@@ -61,6 +67,63 @@ struct semb_bank_opaque {
   std::vector<float> rows;
   uint32_t live_queries = 0;
 };
+
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+namespace semb::test_seam {
+
+static std::mutex snapshot_state_mutex;
+static std::condition_variable snapshot_state_changed;
+static uint32_t snapshot_park_budget = 0;
+static uint32_t snapshot_parked = 0;
+static uint64_t snapshot_release_generation = 0;
+
+void OnBankSnapshotMaterialize() {
+  std::unique_lock<std::mutex> lock(snapshot_state_mutex);
+  if (snapshot_park_budget == 0) return;
+  --snapshot_park_budget;
+  ++snapshot_parked;
+  const uint64_t generation = snapshot_release_generation;
+  snapshot_state_changed.notify_all();
+  snapshot_state_changed.wait(lock, [generation] { return snapshot_release_generation != generation; });
+  --snapshot_parked;
+}
+
+}  // namespace semb::test_seam
+
+extern "C" int32_t semb_bank_test_seam_arm_snapshot_park(uint32_t count) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::snapshot_state_mutex);
+  if (semb::test_seam::snapshot_parked != 0) return 0;
+  semb::test_seam::snapshot_park_budget = count;
+  return 1;
+}
+
+extern "C" uint32_t semb_bank_test_seam_snapshot_parked(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::snapshot_state_mutex);
+  return semb::test_seam::snapshot_parked;
+}
+
+extern "C" int32_t semb_bank_test_seam_snapshot_wait_parked(uint32_t n, uint32_t timeout_ms) {
+  std::unique_lock<std::mutex> lock(semb::test_seam::snapshot_state_mutex);
+  return semb::test_seam::snapshot_state_changed.wait_for(
+      lock, std::chrono::milliseconds(timeout_ms),
+      [n] { return semb::test_seam::snapshot_parked >= n; }) ? 1 : 0;
+}
+
+extern "C" void semb_bank_test_seam_snapshot_release(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::snapshot_state_mutex);
+  ++semb::test_seam::snapshot_release_generation;
+  semb::test_seam::snapshot_park_budget = 0;
+  semb::test_seam::snapshot_state_changed.notify_all();
+}
+
+extern "C" int32_t semb_bank_test_seam_snapshot_reset(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::snapshot_state_mutex);
+  if (semb::test_seam::snapshot_parked != 0) return 0;
+  semb::test_seam::snapshot_park_budget = 0;
+  ++semb::test_seam::snapshot_release_generation;
+  return 1;
+}
+#endif
 
 namespace {
 
@@ -635,22 +698,28 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
     // process-global registry lock.  This copies and decodes only values
     // validated above; independent bank/query operations never wait for
     // payload-sized work from this open.
-    auto handle = std::make_unique<semb_bank_opaque>();
-    handle->fingerprint = fingerprint_bytes;
-    handle->count = count;
-    handle->dims = dims;
-    handle->ids.reserve(ids_v->as_array.size());
-    for (const auto& id : ids_v->as_array) handle->ids.push_back(id.as_string);
-    handle->id_data.reserve(handle->ids.size());
-    handle->id_lengths.reserve(handle->ids.size());
-    for (const std::string& id : handle->ids) {
-      handle->id_data.push_back(id.data());
-      handle->id_lengths.push_back(id.size());
-    }
-    const size_t total = static_cast<size_t>(count) * static_cast<size_t>(dims);
-    handle->rows.resize(total);
-    for (size_t i = 0; i < total; ++i) {
-      handle->rows[i] = DecodeFloatLE(bin_bytes.data() + i * sizeof(float));
+    std::unique_ptr<semb_bank_opaque> handle;
+    {
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+      semb::test_seam::OnBankSnapshotMaterialize();
+#endif
+      handle = std::make_unique<semb_bank_opaque>();
+      handle->fingerprint = fingerprint_bytes;
+      handle->count = count;
+      handle->dims = dims;
+      handle->ids.reserve(ids_v->as_array.size());
+      for (const auto& id : ids_v->as_array) handle->ids.push_back(id.as_string);
+      handle->id_data.reserve(handle->ids.size());
+      handle->id_lengths.reserve(handle->ids.size());
+      for (const std::string& id : handle->ids) {
+        handle->id_data.push_back(id.data());
+        handle->id_lengths.push_back(id.size());
+      }
+      const size_t total = static_cast<size_t>(count) * static_cast<size_t>(dims);
+      handle->rows.resize(total);
+      for (size_t i = 0; i < total; ++i) {
+        handle->rows[i] = DecodeFloatLE(bin_bytes.data() + i * sizeof(float));
+      }
     }
 
     semb_bank cookie = nullptr;
