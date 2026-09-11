@@ -18,10 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
-
-from te230_c5_floor import FLOOR
 
 ROOT = Path(__file__).resolve().parent.parent
 STATUSES = {
@@ -137,30 +134,6 @@ def main(argv: list[str]) -> int:
     inspect = call([str(semb), "inspect", str(inspect_manifest)])
     report.add("PASS" if inspect.returncode == 0 and inspect_manifest.read_text(encoding="utf-8") in inspect.stdout else "FAIL",
                "CLI inspect opens no encoder", "inspect succeeds while the configured model artifact is absent")
-    # C5: the 239 real-document bake and one-handle query workload.  The floor
-    # was committed by te230_c5_floor.py before this process was ever run.
-    c5_rows = [json.loads(line) for line in (ROOT / "tests" / "fixtures" / "c12b" / "corpus-239.jsonl").read_text(encoding="utf-8").splitlines() if line]
-    c5_stem = scratch / "c5"; started = time.monotonic()
-    c5_bake = call([str(semb), "bake", str(ROOT / "tests" / "fixtures" / "c12b" / "corpus-239.jsonl"), "--out", str(c5_stem), *base], timeout=420)
-    bake_s_per_document = (time.monotonic() - started) / len(c5_rows)
-    if c5_bake.returncode:
-        report.add("FAIL", "C5 real workload bake", c5_bake.stderr[-500:]); return 1
-    q_started = time.monotonic()
-    c5_query = call([str(semb), "query", "--stdin", str(c5_stem), "--top", "5", *base],
-                    stdin="\n".join(row["text"] for row in c5_rows) + "\n", timeout=420)
-    query_s_per_document = (time.monotonic() - q_started) / len(c5_rows)
-    try:
-        outputs = [json.loads(line) for line in c5_query.stdout.splitlines() if line]
-        labels = {row["label"]: row["class"] for row in c5_rows}
-        correct = sum(bool(out.get("hits")) and labels.get(out["hits"][0].get("id")) == c5_rows[i]["class"]
-                      for i, out in enumerate(outputs))
-        score = correct / len(c5_rows)
-        shape = len(outputs) == len(c5_rows) and all(len(out.get("hits", [])) == 5 for out in outputs)
-        report.add("PASS" if c5_query.returncode == 0 and shape and score >= float(FLOOR) else "FAIL", "C5 class-match@1",
-                   f"score={correct}/{len(c5_rows)}={score:.12f}; floor={float(FLOOR):.12f}; "
-                   f"bake_s_per_document={bake_s_per_document:.6f}; query_s_per_document={query_s_per_document:.6f}; top5_per_query={shape}")
-    except (json.JSONDecodeError, KeyError, IndexError) as exc:
-        report.add("FAIL", "C5 output", f"machine-readable top-5 JSONL required: {exc}")
     return 1 if report.failed else 0
 
 

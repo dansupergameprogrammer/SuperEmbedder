@@ -1170,6 +1170,13 @@ add_test(
 		--model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+add_test(
+	NAME te230_c5_real_workload
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te230_c5_real_workload.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+		--model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
 if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
-	set_tests_properties(te230_semb_cli_check PROPERTIES LABELS "real_artifact" TIMEOUT 420)
+	set_tests_properties(te230_c5_real_workload PROPERTIES LABELS "real_artifact")
 endif()
