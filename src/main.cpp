@@ -284,24 +284,32 @@ int Query(const std::vector<std::string>& args) {
   if (status != SEMB_OK) return Refuse("semb query", status);
   SearchBank search_bank;
   if (top && !LoadSearchBank(stem, &search_bank)) return Refuse("semb query bank", SEMB_ARTIFACT_UNREADABLE);
-  std::vector<std::string> texts;
-  if (stdin_mode) {
-    std::string line;
-    while (std::getline(std::cin, line)) texts.push_back(std::move(line));
-  } else {
-    texts.push_back(positional[1]);
-  }
-  for (const std::string& text : texts) {
+  auto emit = [&](const std::string& text) -> bool {
     std::vector<float> vector;
     status = QueryVector(handles.query, text, &vector);
-    if (status != SEMB_OK) return Refuse("semb_query_encode", status);
+    if (status != SEMB_OK) {
+      (void)Refuse("semb_query_encode", status);
+      return false;
+    }
     if (top) {
       const std::string output = TopHitsJson(search_bank, vector, top);
-      if (output.empty()) return Refuse("semb query bank", SEMB_ARTIFACT_UNREADABLE);
+      if (output.empty()) {
+        (void)Refuse("semb query bank", SEMB_ARTIFACT_UNREADABLE);
+        return false;
+      }
       std::cout << output << '\n' << std::flush;
     } else {
       std::cout << "VECTOR_HEX=" << Hex(vector) << '\n' << std::flush;
     }
+    return true;
+  };
+  if (stdin_mode) {
+    std::string line;
+    while (std::getline(std::cin, line)) {
+      if (!emit(line)) return 1;
+    }
+  } else if (!emit(positional[1])) {
+    return 1;
   }
   if (stdin_mode) std::cerr << "query_handle_opens=1\n";
   return 0;
