@@ -48,12 +48,17 @@
 // decodes to) and the geometry (`count`, `dims`) the header already
 // validated -- both already computed by the checks above, copied once,
 // never re-read from disk after open. `bank_internal_abi.h`'s
-// `semb_bank_debug_state` is the read side, kept internal/non-frozen
-// rather than added to the twelve verbs (sec 3.1, D-SLM4646).
+// `semb_bank_debug_state` and `semb_bank_ranked_state` are the read sides,
+// kept internal/non-frozen rather than added to the twelve verbs (sec 3.1,
+// D-SLM4646).
 struct semb_bank_opaque {
   std::array<uint8_t, 32> fingerprint{};
   int64_t count = 0;
   int64_t dims = 0;
+  std::vector<std::string> ids;
+  std::vector<const char*> id_data;
+  std::vector<size_t> id_lengths;
+  std::vector<float> rows;
   uint32_t live_queries = 0;
 };
 
@@ -631,13 +636,26 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
       std::lock_guard<std::mutex> lock(RegistryMutex());
       if (!AllocateHandleCookie(&cookie)) return SEMB_ALLOCATION_FAILED;
       auto handle = std::make_unique<semb_bank_opaque>();
-      // TE-191 F4: the handle owns its state -- copied once, here, from
-      // values this function already validated; nothing is re-read from
-      // disk after this point (semb_bank_debug_state, bank_internal_abi.h,
-      // is the read side).
+      // The handle owns its complete checked snapshot -- copied once, here,
+      // from ids and payload bytes this function already validated; nothing
+      // is re-read from disk after this point.  The internal read side lets
+      // callers rank exactly this snapshot rather than a second disk copy.
       handle->fingerprint = fingerprint_bytes;
       handle->count = count;
       handle->dims = dims;
+      handle->ids.reserve(ids_v->as_array.size());
+      for (const auto& id : ids_v->as_array) handle->ids.push_back(id.as_string);
+      handle->id_data.reserve(handle->ids.size());
+      handle->id_lengths.reserve(handle->ids.size());
+      for (const std::string& id : handle->ids) {
+        handle->id_data.push_back(id.data());
+        handle->id_lengths.push_back(id.size());
+      }
+      const size_t total = static_cast<size_t>(count) * static_cast<size_t>(dims);
+      handle->rows.resize(total);
+      for (size_t i = 0; i < total; ++i) {
+        handle->rows[i] = DecodeFloatLE(bin_bytes.data() + i * sizeof(float));
+      }
       Registry().emplace(cookie, std::move(handle));
     }
     *out = cookie;
@@ -701,5 +719,19 @@ extern "C" semb_status semb_bank_debug_state(semb_bank bank, uint8_t out_fingerp
   std::memcpy(out_fingerprint, state.fingerprint.data(), state.fingerprint.size());
   *out_count = state.count;
   *out_dims = state.dims;
+  return SEMB_OK;
+}
+
+extern "C" semb_status semb_bank_ranked_state(semb_bank bank, semb_bank_ranked_view* out) {
+  if (!bank || !out) return SEMB_NULL_ARGUMENT;
+  std::lock_guard<std::mutex> lock(RegistryMutex());
+  const auto found = Registry().find(bank);
+  if (found == Registry().end()) return SEMB_INVALID_HANDLE;
+  const semb_bank_opaque& state = *found->second;
+  out->ids = state.id_data.data();
+  out->id_lengths = state.id_lengths.data();
+  out->rows = state.rows.data();
+  out->count = state.count;
+  out->dims = state.dims;
   return SEMB_OK;
 }

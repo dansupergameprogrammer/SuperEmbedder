@@ -37,6 +37,23 @@ extern "C" {
 semb_status semb_bank_debug_state(semb_bank bank, uint8_t out_fingerprint[32],
                                    int64_t* out_count, int64_t* out_dims);
 
+// Views ids and decoded float32 rows retained by `bank` at checked open.
+// This is the validated snapshot itself: it performs no file I/O and its
+// returned storage remains owned by the handle.  `ids[row]` has exactly
+// `id_lengths[row]` bytes (it need not be NUL-terminated); `rows` is row-major
+// with `count * dims` floats.  The view remains valid while the caller keeps
+// the bank live (a checked query retains that lifetime).  `bank == NULL` or
+// `out == NULL` -> SEMB_NULL_ARGUMENT; no live handle -> SEMB_INVALID_HANDLE.
+struct semb_bank_ranked_view {
+  const char* const* ids;
+  const size_t* id_lengths;
+  const float* rows;
+  int64_t count;
+  int64_t dims;
+};
+
+semb_status semb_bank_ranked_state(semb_bank bank, semb_bank_ranked_view* out);
+
 }  // extern "C"
 
 #endif  // SEMB_BANK_INTERNAL_ABI_H

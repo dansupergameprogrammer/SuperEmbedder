@@ -20,6 +20,7 @@
 #include "json_lite.h"
 #include "semb_engine_pin.h"
 #include "superembedder/bake_abi.h"
+#include "superembedder/bank_internal_abi.h"
 #include "superembedder/semb.h"
 #include "superembedder/version.h"
 
@@ -249,45 +250,20 @@ std::string Hex(const std::vector<float>& vector) {
   return out;
 }
 
-struct SearchBank {
-  std::vector<std::string> ids;
-  std::vector<float> rows;
-  size_t dims = 0;
-};
-
-bool LoadSearchBank(const std::string& stem, SearchBank* bank) {
-  std::string header, payload;
-  if (!ReadFile(stem + ".wvbank.json", &header) || !ReadFile(stem + ".wvbank.bin", &payload)) return false;
-  try {
-    const semb::json::Value parsed = semb::json::Parse(header);
-    const semb::json::Value* ids = parsed.Find("ids");
-    const semb::json::Value* dims = parsed.Find("dims");
-    if (!ids || !dims || !ids->IsArray() || dims->kind != semb::json::Kind::kInt || dims->as_int <= 0) return false;
-    bank->dims = static_cast<size_t>(dims->as_int);
-    bank->ids.clear();
-    for (const auto& id : ids->as_array) {
-      if (!id.IsString()) return false;
-      bank->ids.push_back(id.as_string);
-    }
-    if (payload.size() != bank->ids.size() * bank->dims * sizeof(float)) return false;
-    bank->rows.resize(payload.size() / sizeof(float));
-    std::memcpy(bank->rows.data(), payload.data(), payload.size());
-    return true;
-  } catch (...) {
-    return false;
+std::string TopHitsJson(semb_bank bank, const std::vector<float>& query, size_t top) {
+  semb_bank_ranked_view snapshot{};
+  if (semb_bank_ranked_state(bank, &snapshot) != SEMB_OK || snapshot.count < 0 || snapshot.dims <= 0 ||
+      query.size() != static_cast<size_t>(snapshot.dims)) {
+    return {};
   }
-}
-
-std::string TopHitsJson(const SearchBank& bank, const std::vector<float>& query, size_t top) {
-  if (query.size() != bank.dims) return {};
   struct Hit { size_t index; double score; };
   std::vector<Hit> hits;
-  hits.reserve(bank.ids.size());
-  for (size_t row = 0; row < bank.ids.size(); ++row) {
+  hits.reserve(static_cast<size_t>(snapshot.count));
+  for (size_t row = 0; row < static_cast<size_t>(snapshot.count); ++row) {
     double dot = 0.0, query_norm = 0.0, row_norm = 0.0;
-    for (size_t dim = 0; dim < bank.dims; ++dim) {
+    for (size_t dim = 0; dim < static_cast<size_t>(snapshot.dims); ++dim) {
       const double q = query[dim];
-      const double r = bank.rows[row * bank.dims + dim];
+      const double r = snapshot.rows[row * static_cast<size_t>(snapshot.dims) + dim];
       dot += q * r;
       query_norm += q * q;
       row_norm += r * r;
@@ -302,7 +278,8 @@ std::string TopHitsJson(const SearchBank& bank, const std::vector<float>& query,
   semb::json::Value array = semb::json::Value::MakeArray();
   for (size_t i = 0; i < std::min(top, hits.size()); ++i) {
     semb::json::Value hit = semb::json::Value::MakeObject();
-    hit.Set("id", semb::json::Value::MakeString(bank.ids[hits[i].index]));
+    hit.Set("id", semb::json::Value::MakeString(
+        std::string(snapshot.ids[hits[i].index], snapshot.id_lengths[hits[i].index])));
     array.as_array.push_back(std::move(hit));
   }
   output.Set("hits", std::move(array));
@@ -359,8 +336,6 @@ int Query(const std::vector<std::string>& args) {
   const std::string stem = parsed.positional[0];
   semb_status status = OpenCheckedQuery(stem, parsed.model, parsed.tokenizer, &handles);
   if (status != SEMB_OK) return Refuse("semb query", status);
-  SearchBank search_bank;
-  if (top && !LoadSearchBank(stem, &search_bank)) return Refuse("semb query bank", SEMB_ARTIFACT_UNREADABLE);
   auto emit = [&](const std::string& text) -> bool {
     std::vector<float> vector;
     status = QueryVector(handles.query, text, &vector);
@@ -373,7 +348,7 @@ int Query(const std::vector<std::string>& args) {
                       static_cast<std::streamsize>(vector.size() * sizeof(float)));
       std::cout.flush();
     } else if (top) {
-      const std::string output = TopHitsJson(search_bank, vector, top);
+      const std::string output = TopHitsJson(handles.bank, vector, top);
       if (output.empty()) {
         (void)Refuse("semb query bank", SEMB_ARTIFACT_UNREADABLE);
         return false;
