@@ -1176,6 +1176,12 @@ add_test(
 		--model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+add_test(
+	NAME te230_c4_zero_gain_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te230_c4_zero_gain_check.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
 if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
 	set_tests_properties(te230_c5_real_workload PROPERTIES LABELS "real_artifact")
 endif()

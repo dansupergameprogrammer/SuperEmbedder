@@ -51,13 +51,34 @@ int main(int argc, char** argv) {
   const char* stem = Value(argc, argv, "--stem");
   const char* text = Value(argc, argv, "--text");
   const char* bake_corpus = Value(argc, argv, "--bake-corpus");
-  if (!model || !tokenizer || !stem || (!text && !bake_corpus)) {
-    std::fputs("usage: --model M --tokenizer T --stem S (--text Q | --bake-corpus JSONL)\n", stderr); return 2;
+  const bool encode_only = Value(argc, argv, "--encode-only") != nullptr;
+  if (!model || !tokenizer || (!encode_only && (!stem || (!text && !bake_corpus))) || (encode_only && !text)) {
+    std::fputs("usage: --model M --tokenizer T [--encode-only --text Q | --stem S (--text Q | --bake-corpus JSONL)]\n", stderr); return 2;
   }
   semb_config cfg{sizeof(cfg), model, std::strlen(model), tokenizer, std::strlen(tokenizer), 1};
   semb_encoder enc = nullptr;
   semb_status s = semb_encoder_open(&cfg, &enc);
   if (s != SEMB_OK) { PrintStatus("semb_encoder_open", s); return 1; }
+  if (encode_only) {
+    size_t required = 0;
+    semb_fingerprint fingerprint{sizeof(semb_fingerprint), {}};
+    s = semb_encode(enc, text, std::strlen(text), nullptr, 0, &required, &fingerprint);
+    if (s != SEMB_BUFFER_TOO_SMALL || required == 0) {
+      PrintStatus("semb_encode(size)", s); semb_encoder_close(enc); return 1;
+    }
+    std::vector<float> vector(required / sizeof(float));
+    s = semb_encode(enc, text, std::strlen(text), vector.data(), required, &required, &fingerprint);
+    if (s != SEMB_OK) {
+      PrintStatus("semb_encode(fill)", s); semb_encoder_close(enc); return 1;
+    }
+    size_t zero = 0;
+    for (float value : vector) if (value == 0.0f) ++zero;
+    std::printf("VECTOR_ZERO=%s zero_components=%zu total_components=%zu\n",
+                zero == vector.size() ? "true" : "false", zero, vector.size());
+    s = semb_encoder_close(enc);
+    if (s != SEMB_OK) { PrintStatus("semb_encoder_close", s); return 1; }
+    return 0;
+  }
   if (bake_corpus) {
     std::vector<std::string> ids, texts;
     std::vector<semb_document> docs;
