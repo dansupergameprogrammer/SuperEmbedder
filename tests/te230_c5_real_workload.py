@@ -65,6 +65,7 @@ def main(argv: list[str]) -> int:
             (ROOT / "tests" / "fixtures" / "c12b" / "corpus-239.jsonl").read_text(encoding="utf-8").splitlines()
             if line]
     labels = {row["label"]: row["class"] for row in rows}
+    texts = {row["label"]: row["text"] for row in rows}
     stem = scratch / "c5"
     base = ["--model", args.model, "--tokenizer", args.tokenizer]
     bake_started = time.monotonic()
@@ -79,32 +80,48 @@ def main(argv: list[str]) -> int:
         return 1
 
     query_started = time.monotonic()
-    query = call([str(semb), "query", "--stdin", str(stem), "--top", "6", *base],
-                 stdin="\n".join(row["text"] for row in rows) + "\n")
-    query_s_per_document = (time.monotonic() - query_started) / len(rows)
+    query = subprocess.Popen(
+        [str(semb), "query", "--stdin", str(stem), "--top", "6", *base],
+        cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8", errors="replace")
+    assert query.stdin is not None and query.stdout is not None and query.stderr is not None
+    query.stdin.write("\n".join(row["text"] for row in rows) + "\n")
+    query.stdin.close()
     try:
-        outputs = [json.loads(line) for line in query.stdout.splitlines() if line]
+        outputs: list[dict] = []
         displayed = []
         correct = 0
-        for row, output in zip(rows, outputs):
+        for index, line in enumerate(query.stdout):
+            emitted_s = time.monotonic() - query_started
+            output = json.loads(line)
+            if index >= len(rows):
+                raise ValueError(f"received unexpected query output {index + 1}")
+            row = rows[index]
             nonself = [hit for hit in output["hits"] if hit.get("id") != row["label"]][:5]
             displayed.append(nonself)
             first = first_nonself_hit(row["label"], output["hits"])
             correct += bool(first) and labels.get(first.get("id")) == row["class"]
-        shaped = len(outputs) == len(rows) and all(len(hits) == 5 for hits in displayed)
-        for row, hits in zip(rows, displayed):
+            outputs.append(output)
             observation = ", ".join(
-                f"{hit.get('id')} class={labels.get(hit.get('id'))!r} text={str(hit.get('text', ''))[:48]!r}"
-                for hit in hits)
-            print(f"[OBSERVED] C5 top5 excluding self query={row['label']}: {observation}")
+                f"{hit.get('id')} class={labels.get(hit.get('id'))!r} "
+                f"text={texts.get(hit.get('id'), str(hit.get('text', '')))[:48]!r}"
+                for hit in nonself)
+            print(f"[OBSERVED] C5 query={row['label']} query_wall_s={emitted_s:.6f} "
+                  f"top5 excluding self: {observation}")
+        stderr = query.stderr.read()
+        returncode = query.wait()
+        query_s_per_document = (time.monotonic() - query_started) / len(rows)
+        shaped = len(outputs) == len(rows) and all(len(hits) == 5 for hits in displayed)
         score = correct / len(rows)
-        apparatus = query.returncode == 0 and shaped
+        apparatus = returncode == 0 and shaped
         print(f"[{'QUARANTINED' if apparatus else 'BLOCKED'}] C5 class-match@1: "
               f"score={correct}/{len(rows)}={score:.12f}; floor={float(FLOOR):.12f}; "
               f"bake_s_per_document={bake_s_per_document:.6f}; "
-              f"query_s_per_document={query_s_per_document:.6f}")
+              f"query_s_per_document={query_s_per_document:.6f}; stderr={stderr[-240:]!r}")
         return 0 if apparatus else 1
-    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        query.kill()
+        query.wait()
         print(f"[BLOCKED] C5 class-match@1: machine-readable top-6 JSONL required: {exc}")
         return 1
 
