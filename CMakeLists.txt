@@ -105,6 +105,7 @@ configure_file(
 set(SEMB_LIBRARY_SOURCES
 	src/version.cpp
 	src/superembedder/encoder.cpp
+	src/superembedder/query.cpp
 	src/superembedder/ps1_pool.cpp
 	src/superembedder/ps_n_pool.cpp
 	src/superembedder/seam_serialize.cpp
@@ -115,6 +116,36 @@ set(SEMB_LIBRARY_SOURCES
 	src/superembedder/json_lite.cpp
 	src/superembedder/bank.cpp
 )
+
+# W-Q's committed population is data, not a second set of literals in the
+# query TU.  Configure verifies the fixture bytes against their manifest and
+# compiles those exact bytes into the library; an edited fixture therefore
+# stops configuration until its manifest hash is intentionally re-pinned.
+set(_semb_wq_fixture_dir "${CMAKE_SOURCE_DIR}/tests/fixtures/wq")
+set(_semb_wq_manifest_path "${_semb_wq_fixture_dir}/wq-queries.manifest.json")
+file(READ "${_semb_wq_manifest_path}" _semb_wq_manifest)
+string(JSON _semb_wq_truncation_cap GET "${_semb_wq_manifest}" truncation_content_cap)
+if(NOT _semb_wq_truncation_cap MATCHES "^[1-9][0-9]*$")
+	message(FATAL_ERROR "W-Q manifest truncation_content_cap must be a positive integer")
+endif()
+foreach(_semb_wq_fixture IN ITEMS wq-queries.jsonl wq-truncation-leg.jsonl)
+	string(JSON _semb_wq_expected_sha GET "${_semb_wq_manifest}" files "${_semb_wq_fixture}" sha256)
+	file(SHA256 "${_semb_wq_fixture_dir}/${_semb_wq_fixture}" _semb_wq_actual_sha)
+	if(NOT _semb_wq_actual_sha STREQUAL _semb_wq_expected_sha)
+		message(FATAL_ERROR
+			"W-Q fixture '${_semb_wq_fixture}' SHA-256 mismatch: expected ${_semb_wq_expected_sha}, got ${_semb_wq_actual_sha}")
+	endif()
+	file(READ "${_semb_wq_fixture_dir}/${_semb_wq_fixture}" _semb_wq_${_semb_wq_fixture})
+	string(FIND "${_semb_wq_${_semb_wq_fixture}}" ")SEMB_WQ\"" _semb_wq_raw_delimiter)
+	if(NOT _semb_wq_raw_delimiter EQUAL -1)
+		message(FATAL_ERROR "W-Q fixture '${_semb_wq_fixture}' contains the generated-source raw-string delimiter")
+	endif()
+endforeach()
+file(WRITE "${CMAKE_BINARY_DIR}/generated/semb_wq_population.h"
+"#pragma once\n\n#include <cstddef>\n#include <string_view>\n\nnamespace semb {\n\n"
+"inline constexpr std::string_view kWqJoinJsonl = R\"SEMB_WQ(${_semb_wq_wq-queries.jsonl})SEMB_WQ\";\n"
+"inline constexpr std::string_view kWqTruncationJsonl = R\"SEMB_WQ(${_semb_wq_wq-truncation-leg.jsonl})SEMB_WQ\";\n"
+"inline constexpr size_t kWqTruncationContentCap = ${_semb_wq_truncation_cap};\n\n}  // namespace semb\n")
 
 semb_compute_source_provenance(superembedder
 	SOURCES ${SEMB_LIBRARY_SOURCES}

@@ -103,6 +103,19 @@
 // 32-33, SEMB_STATUS_NEXT_FREE now 34. Provisional on this branch only,
 // same class as 28-31 above; the plan-of-record amendment naming them is
 // owed to the planner's next fold alongside 28-31's own.
+// TE-194 (U1 Slice 5, `Claude/Bach/briefs/te194-slice5-red.md`): one status
+// APPENDED for the bank/query cross-handle reference count
+// (`Claude/Plans/SuperEmbedder_Plan.md` sec 3.1, D-SLM4664:
+// "semb_bank_close while that count is nonzero is REFUSED with
+// SEMB_BANK_IN_USE") -- SEMB_BANK_IN_USE, ordinal 34, SEMB_STATUS_NEXT_FREE
+// now 35 ON THIS BRANCH. Written as an append AFTER ordinals 32-33
+// (`SEMB_BANK_METRIC_DTYPE_UNSUPPORTED`, `SEMB_BANK_DIGEST_MISMATCH`),
+// which TE-192 appends CONCURRENTLY on a sibling branch and are therefore
+// absent from this branch's own copy of the list below -- the merge is one
+// line: TE-192's two X() lines land between ordinal 31 and this one, and
+// nothing here needs to change. SEMB_BANK_IN_USE moves out of
+// kPlanStatusNames (below) into the real list; it is the only name this
+// round moves.
 //
 // STATUSES ARE PINNED BY NAME AND BY ORDINAL, AND THE CELLS COMPARE BY NAME.
 // Behavioural cells resolve every status through `semb_status_name` (StatusByName
@@ -167,7 +180,14 @@ typedef int32_t semb_status;
   X(SEMB_BANK_ZERO_NORM_ROW,               30) \
   X(SEMB_BANK_GEOMETRY_CEILING_EXCEEDED,   31) \
   X(SEMB_BANK_METRIC_DTYPE_UNSUPPORTED,    32) \
-  X(SEMB_BANK_DIGEST_MISMATCH,             33)
+  X(SEMB_BANK_DIGEST_MISMATCH,             33) \
+  /* TE-194 (U1 slice 5, D-SLM4664): a live semb_query-handle reference   */ \
+  /* count on the bank being closed. Ordinal 34 -- 32/33 are TE-192's    */ \
+  /* own concurrent append (SEMB_BANK_METRIC_DTYPE_UNSUPPORTED,          */ \
+  /* SEMB_BANK_DIGEST_MISMATCH) and are not yet in this branch's own     */ \
+  /* copy of this list; this line is written to land AFTER them so the  */ \
+  /* merge is additive (see this header's own comment block above).     */ \
+  X(SEMB_BANK_IN_USE,                      34)
 
 enum : int32_t {
 #define SEMB_CONTRACT_STATUS_ENUM_(name, value) name = value,
@@ -176,7 +196,7 @@ enum : int32_t {
   SEMB_STATUS_NEXT_FREE  // the sentinel: never returned, never a valid argument, never named
 };
 
-static_assert(SEMB_STATUS_NEXT_FREE == 34, "the contract pins 34 named statuses, ordinals 0-33 (TE-192 appends 32-33)");
+static_assert(SEMB_STATUS_NEXT_FREE == 35, "the contract pins 35 named statuses, ordinals 0-34 (TE-192 appends 32-33, TE-194 appends 34)");
 
 // sec 3.1 item 5: library-owned, opaque, not copyable, released only by
 // semb_encoder_close; a double close returns SEMB_INVALID_HANDLE.
@@ -237,7 +257,7 @@ inline const StatusEntry kStatusTable[] = {
 #undef SEMB_CONTRACT_STATUS_ENTRY_
 };
 inline constexpr size_t kStatusCount = sizeof(kStatusTable) / sizeof(kStatusTable[0]);
-static_assert(kStatusCount == 34, "34 named statuses (TE-192 appends 32-33)");
+static_assert(kStatusCount == 35, "35 named statuses (TE-192 appends 32-33, TE-194 appends SEMB_BANK_IN_USE at 34)");
 
 // The name every non-member int32_t resolves to (P-5: static storage, never NULL).
 inline constexpr const char* kUnknownStatusName = "SEMB_UNKNOWN";
@@ -254,12 +274,11 @@ inline constexpr const char* kCanonicalEndToken = "<|endoftext|>";
 // slice (their verbs are not in it; P-5 appends each when its verb lands).
 // TE-163: the four C18 names and the two C34 label names moved out of this
 // list into SEMB_CONTRACT_STATUS_LIST above, landing as ordinals 22-27.
-// SEMB_BANK_IN_USE stays here -- Slice 5's own (D-SLM4664: a live-query-
-// handle reference count on the bank, and no `semb_query` handle exists
-// yet to hold one).
+// TE-194: SEMB_BANK_IN_USE moves out of this list too, landing as ordinal
+// 34 above -- Slice 5 is where a `semb_query` handle first exists to hold
+// the bank's own reference count (D-SLM4664).
 inline const char* const kPlanStatusNames[] = {
     "SEMB_INPUT_TOO_SHORT",
-    "SEMB_BANK_IN_USE",
     "SEMB_ACCUMULATOR_OVERFLOW",
     "SEMB_EPOCH_BYTES_DIVERGED",
     "SEMB_EPOCH_LINEAGE_DIVERGED",
