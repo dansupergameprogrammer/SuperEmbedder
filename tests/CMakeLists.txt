@@ -1185,3 +1185,41 @@ add_test(
 if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
 	set_tests_properties(te230_c5_real_workload PROPERTIES LABELS "real_artifact" TIMEOUT 1800)
 endif()
+
+# ---------------------------------------------------------------------------
+# TE-237 (U1 slice 6 fix-round pins, Claude/Bach/briefs/te237-slice6-s3-pins.md):
+# the S-3 cross-handle construction (TE-236 D-SLM6642's named construction --
+# park one materializing semb_bank_open and prove close/acquire on a distinct
+# live bank can complete). Links `superembedder_testseam` (the hook the cell
+# parks at is the declared internal seam tests/support/semb_bank_open_seam.h
+# documents; its full contract is in
+# tests/te237_bank_cross_handle_test.cpp's header comment), so the
+# registration is DEFERRED exactly like te194/te222's own testseam targets --
+# deferred calls run in scheduling order and semb_add_workspace_tests() is
+# scheduled earlier in this file, so superembedder_testseam exists when this
+# function body runs. EXCLUDE_FROM_ALL: the semb_bank_test_seam_* surface is
+# undefined at this branch's own base fe0c0e0, so the driver builds it on
+# demand and reports the unresolved symbol(s) by name as RED-UNIMPLEMENTED,
+# the identical red-first shape tests/te194_query_workspace_check.py uses.
+# ---------------------------------------------------------------------------
+function(semb_add_te237_bank_cross_handle_tests)
+  if(NOT TARGET superembedder_testseam)
+    return()  # semb_add_workspace_tests() itself only runs when SEMB_LIBRARY_SOURCES is defined
+  endif()
+  set(_semb_te237_test_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
+  add_executable(te237_bank_cross_handle_test EXCLUDE_FROM_ALL
+                 "${_semb_te237_test_dir}/te237_bank_cross_handle_test.cpp")
+  target_link_libraries(te237_bank_cross_handle_test PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
+  target_include_directories(te237_bank_cross_handle_test PRIVATE "${_semb_te237_test_dir}")
+  set_target_properties(te237_bank_cross_handle_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+  add_test(
+    NAME te237_bank_cross_handle_check
+    COMMAND "${Python3_EXECUTABLE}" "${_semb_te237_test_dir}/te237_bank_cross_handle_check.py"
+      --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+    WORKING_DIRECTORY "${_semb_te237_test_dir}/.."
+  )
+endfunction()
+if(DEFINED SEMB_LIBRARY_SOURCES)
+  cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_te237_bank_cross_handle_tests)
+endif()

@@ -33,7 +33,10 @@ CLI choices where the plan deliberately leaves syntax/output open:
     CLI driver reads no `.wvbank.json`/`.wvbank.bin` itself (plan sec 3.1's
     checked path; TE-233's S-2);
   * `query --help` names every implemented output mode, `--raw` included,
-    and every conflicting mode combination is refused (TE-233's M-1);
+    and every conflicting mode combination is refused (TE-233's M-1) -- a
+    refusal is the exact status AND the exact `where` context
+    (`named_refusal`, tightened TE-237 for TE-236's M-3), never a bare
+    nonzero exit;
   * the corpus format rule selects JSONL for a `.jsonl` extension without
     regard to case (D-SLM6638, TE-235): a corpus named `.JSONL` bakes with
     the ids its rows carry, never as plain text with line-number ids.
@@ -213,6 +216,21 @@ def expect_status(report: Report, cell: str, proc: subprocess.CompletedProcess[s
                f"exit={proc.returncode}; expected {status}; stderr={proc.stderr[-400:]!r}")
 
 
+def named_refusal(proc: subprocess.CompletedProcess[str], context: str,
+                  status: str = "SEMB_NULL_ARGUMENT") -> bool:
+    """The suite's tightened refusal pin (TE-237, TE-236's M-3): a refusal is
+    the exact status AND the exact ``where`` context src/main.cpp's Refuse
+    prints (``<where>: <status> (<ordinal>)`` on stderr) -- never a bare
+    nonzero exit.  An unnamed crash or an unrelated refusal (a different
+    context, or a different status under the right context) must not pass,
+    which the old ``returncode != 0 and "SEMB_" in output`` shape let
+    through.  A module-level function (not an inline expression) so the
+    mutation harness can import and exercise it against constructed
+    outputs."""
+    text = proc.stdout + proc.stderr
+    return proc.returncode != 0 and status in text and context in text
+
+
 def copied_stem(source: Path, destination: Path) -> None:
     for suffix in (".wvbank.json", ".wvbank.bin", ".semb.json"):
         shutil.copyfile(Path(str(source) + suffix), Path(str(destination) + suffix))
@@ -383,18 +401,20 @@ def main(argv: list[str]) -> int:
                    "read as a malformed session instead of a one-shot query for the text `--stdin` -- output: "
                    f"{(stdin_boundary.stdout + stdin_boundary.stderr)[:120]!r}")
         # The review's exact command (TE-233 S-1, executed on this binary by
-        # the reviewer): option-shaped text with NO boundary must never
-        # succeed silently -- it emits the vector or refuses by name; exit 0
-        # without a vector is the regression this cell pins out.
+        # the reviewer): option-shaped text with NO boundary must refuse by
+        # name -- TE-237 (TE-236's M-3) pins the exact refusal D-SLM6637
+        # names: the context `semb query --help` and the status
+        # SEMB_NULL_ARGUMENT, never any nonzero exit (an unnamed crash or an
+        # unrelated refusal passed the old `not exit-0-vectorless` shape).
         silent = call([str(semb), "query", str(good), "--help", *base])
-        silent_hex = re.search(r"^VECTOR_HEX=([0-9a-f]+)$", silent.stdout, re.M)
-        silent_ok = not (silent.returncode == 0 and silent_hex is None)
+        silent_ok = named_refusal(silent, "semb query --help")
         report.add("PASS" if silent_ok else "FAIL",
-                   "S-1 option-shaped text without a boundary never exits 0 vectorless",
-                   "refused by name or answered with a vector -- never silent success" if silent_ok else
-                   f"RED: exit={silent.returncode} with no VECTOR_HEX and no refusal; the whole vector is scanned "
-                   "for `--help`, which prints usage and returns success -- the exact silent-success shape the "
-                   f"review executed at 6991a85 (output: {(silent.stdout + silent.stderr)[:120]!r})")
+                   "S-1 option-shaped text without a boundary refuses as `semb query --help: SEMB_NULL_ARGUMENT`",
+                   "exit 1 with the exact D-SLM6637 refusal context" if silent_ok else
+                   f"RED: exit={silent.returncode}; output={(silent.stdout + silent.stderr)[:160]!r}; the "
+                   "boundary-less option shape must refuse naming `semb query --help` and SEMB_NULL_ARGUMENT, "
+                   "not exit 0 vectorless (the silent-success shape the review executed at 6991a85) and not any "
+                   "unnamed nonzero exit")
     else:
         report.add("BLOCKED", "CLI one-shot bytes equal library", "CLI baseline triple and library vector are required")
         report.add("BLOCKED", "CLI stdin one handle", "CLI baseline triple and library vector are required")
@@ -403,7 +423,7 @@ def main(argv: list[str]) -> int:
         report.add("BLOCKED", "CLI query --raw writes the vector bytes", "CLI baseline triple and library vector are required")
         report.add("BLOCKED", "S-1 the boundary `--` makes option-shaped text queryable (--help)", "CLI baseline triple and library vector are required")
         report.add("BLOCKED", "S-1 the boundary `--` makes option-shaped text queryable (--stdin)", "CLI baseline triple and library vector are required")
-        report.add("BLOCKED", "S-1 option-shaped text without a boundary never exits 0 vectorless", "CLI baseline triple and library vector are required")
+        report.add("BLOCKED", "S-1 option-shaped text without a boundary refuses as `semb query --help: SEMB_NULL_ARGUMENT`", "CLI baseline triple and library vector are required")
     # C24: output directory begins empty; no final, partial, or temporary file survives refusal.
     empty = scratch / "empty.jsonl"; empty.write_text("", encoding="utf-8"); empty_stem = scratch / "empty" / "out"; empty_stem.parent.mkdir()
     c24 = call([str(semb), "bake", str(empty), "--out", str(empty_stem), *base])
@@ -503,21 +523,42 @@ def main(argv: list[str]) -> int:
         inspect_manifest = Path(str(good) + ".semb.json"); inspect = call([str(semb), "inspect", str(inspect_manifest)])
         report.add("PASS" if inspect.returncode == 0 and inspect_manifest.read_text(encoding="utf-8") in inspect.stdout else "FAIL",
                    "CLI inspect opens no encoder", "inspect succeeds while the configured model artifact is absent")
-        # TE-235 (TE-233 M-1): the output modes are exclusive; every
-        # conflicting combination is refused by name (nonzero exit naming a
-        # SEMB_ status, the suite's standing refusal convention), never
-        # silently resolved by branch order.
-        for flags in (["--hex", "--top", "5"], ["--raw", "--hex"], ["--raw", "--top", "5"], ["--raw", "--stdin"]):
-            clash = call([str(semb), "query", str(good), text, *flags, *base])
-            clash_ok = clash.returncode != 0 and "SEMB_" in (clash.stdout + clash.stderr)
+        # TE-235 (TE-233 M-1), tightened TE-237 (TE-236's M-3): the output
+        # modes are exclusive; every conflicting combination is refused by
+        # name -- the exact status SEMB_NULL_ARGUMENT AND both conflicting
+        # flag names in the refusal context (`semb query --raw --hex:
+        # SEMB_NULL_ARGUMENT (N)`), never a bare nonzero exit. Each command
+        # uses a MISSING model and tokenizer path, so a pass proves the
+        # refusal precedes any encoder or bank open: with the guard deleted,
+        # the command would proceed to open the missing model and refuse
+        # without the flag names, which this cell rejects -- the old
+        # `returncode != 0 and "SEMB_" in output` shape passed exactly that.
+        # `--raw --stdin` is driven with exactly the one positional a valid
+        # stdin session takes (the stem; no query text), so deleting the
+        # mode-conflict guard turns this cell red instead of the generic
+        # stdin-arity check keeping it green the way the two-positional
+        # command shape did.
+        missing_base = ["--model", str(scratch / "te230_missing_model.sslm"),
+                        "--tokenizer", str(scratch / "te230_missing_tokenizer.sslm")]
+        for flags, context in ((["--hex", "--top", "5"], "semb query --hex --top"),
+                               (["--raw", "--hex"], "semb query --raw --hex"),
+                               (["--raw", "--top", "5"], "semb query --raw --top"),
+                               (["--raw", "--stdin"], "semb query --raw --stdin")):
+            if "--stdin" in flags:
+                command = [str(semb), "query", str(good), *flags, *missing_base]
+            else:
+                command = [str(semb), "query", str(good), text, *flags, *missing_base]
+            clash = call(command)
+            clash_ok = named_refusal(clash, context)
             # `--raw --hex` at a silently-resolving base emits raw float bytes
             # on stdout; keep the quoted snippet console-printable (cp1252).
             snippet = (clash.stdout + clash.stderr)[:160].encode("ascii", "backslashreplace").decode("ascii")
             report.add("PASS" if clash_ok else "FAIL",
                        f"M-1 conflicting output modes refused by name ({' '.join(flags)})",
-                       "nonzero exit naming a SEMB_ status" if clash_ok else
-                       f"RED: exit={clash.returncode}; the combination is accepted and one branch wins silently "
-                       f"(output: {snippet!r})")
+                       f"exit 1 refusing as `{context}: SEMB_NULL_ARGUMENT` before any open" if clash_ok else
+                       f"RED: exit={clash.returncode}; output={snippet!r}; the combination must refuse naming "
+                       f"`{context}` and SEMB_NULL_ARGUMENT before any open -- accepted-and-silent, an unnamed "
+                       "nonzero exit, or a refusal without both flag names all fail this cell")
         # TE-235 (TE-233 S-2), behavioral half: a --stdin --top session
         # answers from the bank the checked handle validated even after the
         # pair files on disk are replaced between queries.  GREEN at 6991a85
