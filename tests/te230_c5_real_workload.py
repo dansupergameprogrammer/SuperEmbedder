@@ -11,6 +11,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -88,8 +89,15 @@ def main(argv: list[str]) -> int:
         cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=True, encoding="utf-8", errors="replace")
     assert query.stdin is not None and query.stdout is not None and query.stderr is not None
-    query.stdin.write("\n".join(row["text"] for row in rows) + "\n")
-    query.stdin.close()
+    # Feed standard input from its own thread: the CLI answers each line as it
+    # reads it, so writing all 239 lines before reading any output fills both
+    # pipes and deadlocks (executed: hung at 60 s where a concurrent reader
+    # finished 239 queries in 10.3 s on the synthetic pair).
+    def feed() -> None:
+        query.stdin.write("\n".join(row["text"] for row in rows) + "\n")
+        query.stdin.close()
+
+    threading.Thread(target=feed, daemon=True).start()
     try:
         outputs: list[dict] = []
         displayed = []
@@ -110,7 +118,7 @@ def main(argv: list[str]) -> int:
                 f"text={texts.get(hit.get('id'), str(hit.get('text', '')))[:48]!r}"
                 for hit in nonself)
             print(f"[OBSERVED] C5 query={row['label']} query_wall_s={emitted_s:.6f} "
-                  f"top5 excluding self: {observation}")
+                  f"top5 excluding self: {observation}", flush=True)
         stderr = query.stderr.read()
         returncode = query.wait()
         query_s_per_document = (time.monotonic() - query_started) / len(rows)
