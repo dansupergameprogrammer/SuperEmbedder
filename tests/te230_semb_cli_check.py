@@ -224,11 +224,14 @@ def named_refusal(proc: subprocess.CompletedProcess[str], context: str,
     nonzero exit.  An unnamed crash or an unrelated refusal (a different
     context, or a different status under the right context) must not pass,
     which the old ``returncode != 0 and "SEMB_" in output`` shape let
-    through.  A module-level function (not an inline expression) so the
+    through.  Anchored (TE-238's M-3, D-SLM6644): exit 1 and ONE stderr line
+    that is exactly ``<context>: <status> (<ordinal>)`` -- the context and
+    status as unrelated substrings, split across lines or streams, do not
+    pass.  A module-level function (not an inline expression) so the
     mutation harness can import and exercise it against constructed
     outputs."""
-    text = proc.stdout + proc.stderr
-    return proc.returncode != 0 and status in text and context in text
+    line = re.compile(r"^" + re.escape(context) + r": " + re.escape(status) + r" \(\d+\)\r?$", re.M)
+    return proc.returncode == 1 and line.search(proc.stderr) is not None
 
 
 def copied_stem(source: Path, destination: Path) -> None:

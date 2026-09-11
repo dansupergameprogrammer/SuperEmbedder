@@ -14,7 +14,8 @@ The mechanism tokenizer-pair fixture is sufficient (the cross-handle
 construction does not depend on which artifact is open), so this driver
 runs one leg, not a mechanism/product split.
 
-Exit codes: 0 PASS/MISSING PREREQUISITE/RED-UNIMPLEMENTED; 1 FAIL.
+Exit codes: 0 PASS/MISSING PREREQUISITE; 1 FAIL or RED-UNIMPLEMENTED (a
+red-first cell reads as a failing ctest until the suite is green).
 """
 from __future__ import annotations
 
