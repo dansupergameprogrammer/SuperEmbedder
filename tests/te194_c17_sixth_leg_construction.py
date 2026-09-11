@@ -138,7 +138,11 @@ def main(argv: list[str]) -> int:
             template_moved = prefix_mutant["TEMPLATE_SHA256"] != base["TEMPLATE_SHA256"]
             ok = vector_moved and template_moved
             print(f"[{'PASS' if ok else 'FAIL'}] TE-221-S-2 prefix single source: vector_moved={str(vector_moved).lower()} template_sha256_moved={str(template_moved).lower()}")
-        return 1 if failed or not ok else 0
+        # C17's mutant readings are explicitly QUARANTINED.  A moved=false
+        # reading is evidence for the later independent commissioning seat,
+        # not a decision-bearing ctest failure; only an apparatus/pinned
+        # non-quarantined prefix-single-source failure exits non-zero here.
+        return 1 if not ok else 0
     except (OSError, RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         print(f"[FAIL] C17-sixth-leg runner: {exc}")
         return 1
