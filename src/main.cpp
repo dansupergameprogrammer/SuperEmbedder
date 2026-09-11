@@ -12,6 +12,11 @@
 #include <string_view>
 #include <vector>
 
+#if defined(_WIN32)
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 #include "json_lite.h"
 #include "semb_engine_pin.h"
 #include "superembedder/bake_abi.h"
@@ -272,9 +277,10 @@ int Query(const std::vector<std::string>& args) {
   const char* tokenizer = Option(args, "--tokenizer");
   if (!model || !tokenizer) return Refuse("semb query", SEMB_NULL_ARGUMENT);
   const bool stdin_mode = HasOption(args, "--stdin");
+  const bool raw = HasOption(args, "--raw");
   std::vector<std::string> positional;
   for (size_t i = 0; i < args.size(); ++i) {
-    if (args[i] == "--stdin" || args[i] == "--hex") continue;
+    if (args[i] == "--stdin" || args[i] == "--hex" || args[i] == "--raw") continue;
     if ((args[i] == "--model" || args[i] == "--tokenizer" || args[i] == "--top") && i + 1 < args.size()) {
       ++i;
       continue;
@@ -289,6 +295,12 @@ int Query(const std::vector<std::string>& args) {
     const auto parsed = std::from_chars(top_value, top_value + std::strlen(top_value), top);
     if (parsed.ec != std::errc{} || *parsed.ptr != '\0' || top == 0) return Refuse("semb query --top", SEMB_NULL_ARGUMENT);
   }
+  if (raw && (stdin_mode || top != 0)) return Refuse("semb query --raw", SEMB_NULL_ARGUMENT);
+#if defined(_WIN32)
+  if (raw && _setmode(_fileno(stdout), _O_BINARY) == -1) {
+    return Refuse("semb query --raw", SEMB_ARTIFACT_UNREADABLE);
+  }
+#endif
   Handles handles;
   const std::string stem = positional[0];
   semb_status status = OpenCheckedQuery(stem, model, tokenizer, &handles);
@@ -302,7 +314,11 @@ int Query(const std::vector<std::string>& args) {
       (void)Refuse("semb_query_encode", status);
       return false;
     }
-    if (top) {
+    if (raw) {
+      std::cout.write(reinterpret_cast<const char*>(vector.data()),
+                      static_cast<std::streamsize>(vector.size() * sizeof(float)));
+      std::cout.flush();
+    } else if (top) {
       const std::string output = TopHitsJson(search_bank, vector, top);
       if (output.empty()) {
         (void)Refuse("semb query bank", SEMB_ARTIFACT_UNREADABLE);
