@@ -20,8 +20,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from u1_raw_text_cells_check import ensure_pair
-
 ROOT = Path(__file__).resolve().parent.parent
 STATUSES = {
     "fingerprint": "SEMB_FINGERPRINT_MISMATCH",
@@ -83,10 +81,15 @@ def main(argv: list[str]) -> int:
     report = Report(); scratch = args.build_dir / "_scratch" / "te230_cli"
     shutil.rmtree(scratch, ignore_errors=True); scratch.mkdir(parents=True)
     try:
-        pair = args.build_dir / "_scratch" / "u1_pair"
-        ensure_pair(pair)
+        pair = ROOT / "build" / "_scratch" / "te222_c17_pair"
+        model_path, tokenizer_path = pair / "u1_pair_model.sslm", pair / "u1_pair_tokenizer.sslm"
+        if not model_path.exists() or not tokenizer_path.exists():
+            fixture = ROOT / "tests" / "fixtures" / "wq" / "regenerate_c17_highcap_pair_fixture.py"
+            generated = call([sys.executable, str(fixture), "--lock", "superslm.lock", "--out-dir", str(pair)], timeout=480)
+            if generated.returncode:
+                raise RuntimeError((generated.stdout + generated.stderr)[-3000:])
         model, tokenizer = str(pair / "u1_pair_model.sslm"), str(pair / "u1_pair_tokenizer.sslm")
-        report.add("PASS", "synthetic tokenizer-pair fixture", str(pair))
+        report.add("PASS", "cap-512 synthetic tokenizer-pair fixture", str(pair))
     except Exception as exc:
         model = tokenizer = ""
         report.add("FAIL", "synthetic tokenizer-pair fixture", f"{type(exc).__name__}: {exc}")
@@ -146,7 +149,7 @@ def main(argv: list[str]) -> int:
             stem = scratch / f"library_c18_{kind}"; copied_stem(library_good, stem); mutate(stem, kind)
             expect_status(report, f"C18/{kind}/library", call([str(probe), "--model", model, "--tokenizer", tokenizer, "--stem", str(stem), "--text", text]), status)
         else:
-            report.add("BLOCKED", f"C18/{kind}/library", "synthetic pair refuses the W-B corpus at its context cap")
+            report.add("BLOCKED", f"C18/{kind}/library", "cap-512 fixture library bake did not produce a triple")
         if files_ok:
             cli_stem = scratch / f"cli_c18_{kind}"; copied_stem(good, cli_stem); mutate(cli_stem, kind)
             expect_status(report, f"C18/{kind}/query", call([str(semb), "query", str(cli_stem), text, "--hex", *base]), status)
