@@ -61,10 +61,12 @@ def main(argv: list[str]) -> int:
     cli = call([str(semb), "bake", str(corpus), "--out", str(cli_stem),
                 "--model", str(model), "--tokenizer", str(tokenizer)])
     cli_absent = not any(Path(str(cli_stem) + suffix).exists() for suffix in TRIPLE)
-    cli_red = cli.returncode == 0 and cli_absent
-    print(f"[{'RED-UNIMPLEMENTED' if cli_red else 'FAIL'}] C4 CLI bake: "
-          f"exit={cli.returncode}; triple_absent={cli_absent}; stub has not reached SEMB_BANK_ZERO_NORM_ROW")
-    return 0 if zero and library_ok and cli_red else 1
+    cli_ok = cli.returncode != 0 and "SEMB_BANK_ZERO_NORM_ROW" in (cli.stdout + cli.stderr) and cli_absent
+    stub = cli.returncode == 0 and "semb " in cli.stdout
+    state = "PASS" if cli_ok else ("RED-UNIMPLEMENTED" if stub else "FAIL")
+    print(f"[{state}] C4 CLI bake zero row: exit={cli.returncode}; triple_absent={cli_absent}; "
+          f"required=SEMB_BANK_ZERO_NORM_ROW with no file; output={(cli.stdout + cli.stderr)[-300:]!r}")
+    return 0 if zero and library_ok and cli_ok else 1
 
 
 if __name__ == "__main__":
