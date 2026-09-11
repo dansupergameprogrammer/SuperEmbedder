@@ -1,8 +1,11 @@
 // src/main.cpp -- Slice 6's `semb` command-line drivers over the frozen C ABI.
 #include <algorithm>
+#include <atomic>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -46,6 +49,54 @@ bool ReadFile(const std::string& path, std::string* out) {
   out->resize(static_cast<size_t>(size));
   stream.seekg(0);
   return size == 0 || static_cast<bool>(stream.read(out->data(), size));
+}
+
+// Verify reuses the shipping bake primitive instead of duplicating either
+// corpus- or row-digest construction in the CLI. Its private directory lives
+// under the system temp root, never beside the bank being checked, and its
+// destructor removes every temporary triple on success and every refusal.
+class TemporaryBakeDirectory {
+ public:
+  bool Create() {
+    std::error_code error;
+    const std::filesystem::path root = std::filesystem::temp_directory_path(error);
+    if (error) return false;
+    static std::atomic<unsigned long long> counter{0};
+    const auto ticks = static_cast<unsigned long long>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    for (unsigned int attempt = 0; attempt < 128; ++attempt) {
+      path_ = root / ("semb-verify-" + std::to_string(ticks) + "-" +
+                      std::to_string(counter.fetch_add(1, std::memory_order_relaxed)));
+      if (std::filesystem::create_directory(path_, error)) return true;
+      if (error && error != std::errc::file_exists) return false;
+      error.clear();
+    }
+    return false;
+  }
+
+  const std::filesystem::path& path() const { return path_; }
+
+  ~TemporaryBakeDirectory() {
+    if (!path_.empty()) {
+      std::error_code error;
+      std::filesystem::remove_all(path_, error);
+    }
+  }
+
+ private:
+  std::filesystem::path path_;
+};
+
+bool ManifestField(const std::string& manifest, const char* field, std::string* out) {
+  try {
+    const semb::json::Value parsed = semb::json::Parse(manifest);
+    const semb::json::Value* value = parsed.Find(field);
+    if (!value || !value->IsString()) return false;
+    *out = value->as_string;
+    return true;
+  } catch (...) {
+    return false;
+  }
 }
 
 bool LoadCorpus(const std::string& path, std::vector<std::string>* ids,
@@ -259,15 +310,46 @@ int Query(const std::vector<std::string>& args) {
 int Verify(const std::vector<std::string>& args) {
   const char* model = Option(args, "--model");
   const char* tokenizer = Option(args, "--tokenizer");
+  const char* corpus = Option(args, "--corpus");
   std::vector<std::string> positional;
   for (size_t i = 0; i < args.size(); ++i) {
-    if ((args[i] == "--model" || args[i] == "--tokenizer") && i + 1 < args.size()) { ++i; continue; }
+    if ((args[i] == "--model" || args[i] == "--tokenizer" || args[i] == "--corpus") && i + 1 < args.size()) {
+      ++i;
+      continue;
+    }
     positional.push_back(args[i]);
   }
-  if (!model || !tokenizer || positional.size() != 1) return Refuse("semb verify", SEMB_NULL_ARGUMENT);
+  if (!model || !tokenizer || !corpus || positional.size() != 1) return Refuse("semb verify", SEMB_NULL_ARGUMENT);
   Handles handles;
-  const semb_status status = OpenCheckedQuery(positional[0], model, tokenizer, &handles);
+  semb_status status = OpenCheckedQuery(positional[0], model, tokenizer, &handles);
   if (status != SEMB_OK) return Refuse("semb verify", status);
+
+  std::vector<std::string> ids, texts;
+  std::vector<semb_document> docs;
+  if (!LoadCorpus(corpus, &ids, &texts, &docs)) return Refuse("semb verify corpus", SEMB_ARTIFACT_UNREADABLE);
+  TemporaryBakeDirectory scratch;
+  if (!scratch.Create()) return Refuse("semb verify scratch", SEMB_ARTIFACT_UNREADABLE);
+  const std::string rebaked_stem = (scratch.path() / "rebaked").string();
+  status = semb_bake_to_path(handles.encoder, docs.data(), docs.size(), rebaked_stem.data(), rebaked_stem.size());
+  if (status != SEMB_OK) return Refuse("semb verify re-encode", status);
+
+  std::string bank_manifest, rebaked_manifest;
+  if (!ReadFile(positional[0] + ".semb.json", &bank_manifest) ||
+      !ReadFile(rebaked_stem + ".semb.json", &rebaked_manifest)) {
+    return Refuse("semb verify manifest", SEMB_ARTIFACT_UNREADABLE);
+  }
+  std::string bank_corpus_digest, rebaked_corpus_digest, bank_row_digest, rebaked_row_digest;
+  if (!ManifestField(bank_manifest, "corpus_digest", &bank_corpus_digest) ||
+      !ManifestField(rebaked_manifest, "corpus_digest", &rebaked_corpus_digest) ||
+      !ManifestField(bank_manifest, "row_digest", &bank_row_digest) ||
+      !ManifestField(rebaked_manifest, "row_digest", &rebaked_row_digest)) {
+    return Refuse("semb verify manifest", SEMB_ARTIFACT_UNREADABLE);
+  }
+  if (bank_corpus_digest != rebaked_corpus_digest) {
+    std::cerr << "semb verify: SEMB_CORPUS_DIGEST_MISMATCH\n";
+    return 1;
+  }
+  if (bank_row_digest != rebaked_row_digest) return Refuse("semb verify", SEMB_BANK_DIGEST_MISMATCH);
   return 0;
 }
 
