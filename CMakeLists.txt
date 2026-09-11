@@ -182,8 +182,8 @@ semb_verify_source_provenance(superembedder SIDECAR "${SEMB_SOURCE_PROVENANCE_SI
 
 
 # ---------------------------------------------------------------------------
-# The semb CLI. A stub in this slice: it prints its version and the pinned
-# engine's tag. Its verbs (bake/query/verify) are U1's.
+# The semb CLI exposes Slice 6's bake, query, verify, and inspect verbs over
+# the checked SuperEmbedder ABI.
 # ---------------------------------------------------------------------------
 add_executable(semb src/main.cpp)
 target_link_libraries(semb PRIVATE superembedder)
