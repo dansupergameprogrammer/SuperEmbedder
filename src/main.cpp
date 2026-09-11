@@ -46,6 +46,66 @@ bool HasOption(const std::vector<std::string>& args, const char* name) {
   return std::find(args.begin(), args.end(), name) != args.end();
 }
 
+struct QueryArguments {
+  const char* model = nullptr;
+  const char* tokenizer = nullptr;
+  const char* top = nullptr;
+  bool help = false;
+  bool stdin_mode = false;
+  bool hex = false;
+  bool raw = false;
+  std::vector<std::string> positional;
+};
+
+// Query deliberately parses left-to-right.  The `--` boundary ends option
+// parsing, so option-shaped query text is data there; before it, each known
+// option spelling remains control syntax even when options follow positionals.
+bool ParseQueryArguments(const std::vector<std::string>& args, QueryArguments* out,
+                         const char** bad_option) {
+  bool options = true;
+  for (size_t i = 0; i < args.size(); ++i) {
+    const std::string& argument = args[i];
+    if (!options) {
+      out->positional.push_back(argument);
+      continue;
+    }
+    if (argument == "--") {
+      options = false;
+      continue;
+    }
+    if (argument == "--help") {
+      out->help = true;
+      continue;
+    }
+    if (argument == "--stdin") {
+      out->stdin_mode = true;
+      continue;
+    }
+    if (argument == "--hex") {
+      out->hex = true;
+      continue;
+    }
+    if (argument == "--raw") {
+      out->raw = true;
+      continue;
+    }
+    const char** value = nullptr;
+    if (argument == "--model") value = &out->model;
+    if (argument == "--tokenizer") value = &out->tokenizer;
+    if (argument == "--top") value = &out->top;
+    if (value) {
+      if (i + 1 == args.size() || args[i + 1] == "--") {
+        *bad_option = argument.c_str();
+        return false;
+      }
+      *value = args[++i].c_str();
+      continue;
+    }
+    out->positional.push_back(argument);
+  }
+  return true;
+}
+
 bool ReadFile(const std::string& path, std::string* out) {
   std::ifstream stream(path, std::ios::binary | std::ios::ate);
   if (!stream) return false;
@@ -268,42 +328,36 @@ int Bake(const std::vector<std::string>& args) {
 }
 
 int Query(const std::vector<std::string>& args) {
-  if (HasOption(args, "--help")) {
+  if (args.size() == 1 && args[0] == "--help") {
     std::cout << "usage: semb query [--stdin] <name> [<text>] [--hex | --top k] --model <sslm> --tokenizer <sslm>\n"
                  "One-shot query is a documented diagnostic; --stdin reuses one checked query handle.\n";
     return 0;
   }
-  const char* model = Option(args, "--model");
-  const char* tokenizer = Option(args, "--tokenizer");
-  if (!model || !tokenizer) return Refuse("semb query", SEMB_NULL_ARGUMENT);
-  const bool stdin_mode = HasOption(args, "--stdin");
-  const bool raw = HasOption(args, "--raw");
-  std::vector<std::string> positional;
-  for (size_t i = 0; i < args.size(); ++i) {
-    if (args[i] == "--stdin" || args[i] == "--hex" || args[i] == "--raw") continue;
-    if ((args[i] == "--model" || args[i] == "--tokenizer" || args[i] == "--top") && i + 1 < args.size()) {
-      ++i;
-      continue;
-    }
-    positional.push_back(args[i]);
-  }
-  if ((stdin_mode && positional.size() != 1) || (!stdin_mode && positional.size() != 2)) {
+  QueryArguments parsed;
+  const char* bad_option = nullptr;
+  if (!ParseQueryArguments(args, &parsed, &bad_option)) return Refuse(bad_option, SEMB_NULL_ARGUMENT);
+  if (parsed.help) return Refuse("semb query --help", SEMB_NULL_ARGUMENT);
+  if (!parsed.model || !parsed.tokenizer) return Refuse("semb query", SEMB_NULL_ARGUMENT);
+  if ((parsed.stdin_mode && parsed.positional.size() != 1) ||
+      (!parsed.stdin_mode && parsed.positional.size() != 2)) {
     return Refuse("semb query", SEMB_NULL_ARGUMENT);
   }
   size_t top = 0;
-  if (const char* top_value = Option(args, "--top")) {
-    const auto parsed = std::from_chars(top_value, top_value + std::strlen(top_value), top);
-    if (parsed.ec != std::errc{} || *parsed.ptr != '\0' || top == 0) return Refuse("semb query --top", SEMB_NULL_ARGUMENT);
+  if (parsed.top) {
+    const auto top_parsed = std::from_chars(parsed.top, parsed.top + std::strlen(parsed.top), top);
+    if (top_parsed.ec != std::errc{} || *top_parsed.ptr != '\0' || top == 0) {
+      return Refuse("semb query --top", SEMB_NULL_ARGUMENT);
+    }
   }
-  if (raw && (stdin_mode || top != 0)) return Refuse("semb query --raw", SEMB_NULL_ARGUMENT);
+  if (parsed.raw && (parsed.stdin_mode || top != 0)) return Refuse("semb query --raw", SEMB_NULL_ARGUMENT);
 #if defined(_WIN32)
-  if (raw && _setmode(_fileno(stdout), _O_BINARY) == -1) {
+  if (parsed.raw && _setmode(_fileno(stdout), _O_BINARY) == -1) {
     return Refuse("semb query --raw", SEMB_ARTIFACT_UNREADABLE);
   }
 #endif
   Handles handles;
-  const std::string stem = positional[0];
-  semb_status status = OpenCheckedQuery(stem, model, tokenizer, &handles);
+  const std::string stem = parsed.positional[0];
+  semb_status status = OpenCheckedQuery(stem, parsed.model, parsed.tokenizer, &handles);
   if (status != SEMB_OK) return Refuse("semb query", status);
   SearchBank search_bank;
   if (top && !LoadSearchBank(stem, &search_bank)) return Refuse("semb query bank", SEMB_ARTIFACT_UNREADABLE);
@@ -314,7 +368,7 @@ int Query(const std::vector<std::string>& args) {
       (void)Refuse("semb_query_encode", status);
       return false;
     }
-    if (raw) {
+    if (parsed.raw) {
       std::cout.write(reinterpret_cast<const char*>(vector.data()),
                       static_cast<std::streamsize>(vector.size() * sizeof(float)));
       std::cout.flush();
@@ -330,15 +384,15 @@ int Query(const std::vector<std::string>& args) {
     }
     return true;
   };
-  if (stdin_mode) {
+  if (parsed.stdin_mode) {
     std::string line;
     while (std::getline(std::cin, line)) {
       if (!emit(line)) return 1;
     }
-  } else if (!emit(positional[1])) {
+  } else if (!emit(parsed.positional[1])) {
     return 1;
   }
-  if (stdin_mode) std::cerr << "query_handle_opens=1\n";
+  if (parsed.stdin_mode) std::cerr << "query_handle_opens=1\n";
   return 0;
 }
 
