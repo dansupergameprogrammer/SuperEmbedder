@@ -98,6 +98,11 @@ def main(argv: list[str]) -> int:
         query.stdin.close()
 
     threading.Thread(target=feed, daemon=True).start()
+    # Drain standard error concurrently too: the encoder writes its preflight
+    # report there at open, and an undrained pipe blocks the CLI the same way.
+    stderr_chunks: list[str] = []
+    drain = threading.Thread(target=lambda: stderr_chunks.append(query.stderr.read()), daemon=True)
+    drain.start()
     try:
         outputs: list[dict] = []
         displayed = []
@@ -119,7 +124,8 @@ def main(argv: list[str]) -> int:
                 for hit in nonself)
             print(f"[OBSERVED] C5 query={row['label']} query_wall_s={emitted_s:.6f} "
                   f"top5 excluding self: {observation}", flush=True)
-        stderr = query.stderr.read()
+        drain.join()
+        stderr = "".join(stderr_chunks)
         returncode = query.wait()
         query_s_per_document = (time.monotonic() - query_started) / len(rows)
         shaped = len(outputs) == len(rows) and all(len(hits) == 5 for hits in displayed)
