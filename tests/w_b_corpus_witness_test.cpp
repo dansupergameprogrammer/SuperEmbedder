@@ -901,12 +901,16 @@ int main(int argc, char** argv) {
   //
   //   model_sha            = SHA-256(the model artifact's own file bytes)
   //   tokenizer_sha         = SHA-256(the tokenizer artifact's own file bytes)
-  //   template_sha256       = SHA-256(u64_le(0) || u64_le(len(prefix)) || prefix)
+  //   template_sha256       = SHA-256(u64_le(0) || u64_le(len(prefix)) || prefix
+  //                                   || u64_le(len(end)) || end)
   //                           -- document_frame_bytes is empty under PS-N
   //                           (D-SLM4726); prefix is the compiled-in query
   //                           prefix literal sec 2.1 states verbatim: "Instruct:
   //                           Given a web search query, retrieve relevant
-  //                           passages that answer the query\nQuery:"
+  //                           passages that answer the query\nQuery:"; end is
+  //                           the compiled-in end-token literal sec 3.2 states,
+  //                           "<|endoftext|>" (D-8, adopted D-SLM7185; U1
+  //                           Slice 7 step 3)
   //   witness_sha           = SHA-256(wa_digest || wb_digest || wq_digest)
   //                           -- wa_digest is semb_wa_digest()'s own output;
   //                           wb_digest is semb_wb_digest(enc, ...)'s own
@@ -917,49 +921,37 @@ int main(int argc, char** argv) {
   //                           TU's own contract types) -- W-Q's leg folds
   //                           from the product's own accessor exactly the
   //                           way W-B's does (TE-228)
-  //   certification_epoch   = SHA-256 of the U1 pending placeholder sentinel
-  //                           certification_epoch hashes until
-  //                           docs/certified-builds.json exists (sec 3.3's
-  //                           own field row)
+  //   certification_epoch   = SHA-256 of docs/certified-builds.json's exact
+  //                           committed bytes, read by this cell from the
+  //                           repository file (sec 3.3's field row, sec
+  //                           4.1a; D-SLM7192; U1 Slice 7 step 4)
   //
-  //   inner       = SHA-256(tag || u64_le(32)||model_sha || u64_le(32)||tokenizer_sha
+  //   fingerprint = SHA-256(u64_le(32)||model_sha || u64_le(32)||tokenizer_sha
   //                          || u64_le(32)||template_sha256 || u64_le(32)||witness_sha
   //                          || u64_le(32)||certification_epoch)
-  //   fingerprint = tag || inner[0..23]
   //
-  // where `tag` is `SEMB_FINGERPRINT_PROVISIONAL_TAG` ("SEMBP001",
-  // `include/superembedder/semb.h`'s own PUBLIC macro -- U1's raw-text
-  // slice marks every fingerprint provisional this way, by design, until
-  // the certified derivation replaces it). The one pending-sentinel byte
-  // string this cell reads from `src/superembedder/encoder.cpp` rather
-  // than from the plan is `kCertificationPendingSentinel` -- a private
-  // literal with no public accessor, and an equality oracle cannot be
-  // built without its exact bytes -- read once, at authoring time, and
-  // NOT the source of this cell's composition ARITHMETIC (the field order,
-  // the length-prefixing, the hashing scheme), which comes from the plan
-  // and the review's F-4. The mutation-proof below (this round's own
-  // casebook) is what confirms the cell is actually sensitive to W-B's own
-  // fold rather than passing by construction of a wrong formula.
+  // the full 32-byte digest over the five length-prefixed fields, no tag and
+  // no truncation (sec 3.3; `SEMBP001` retires at U1 Slice 7 step 5). The
+  // expected value takes no input from the product beyond the three witness
+  // accessor digests: the literals are typed from the plan and the
+  // certification document is read from the repository. Until steps 3, 4
+  // and 5 have all landed this cell is RED by design (TE-264). The
+  // mutation-proof below (this round's own casebook) is what confirms the
+  // cell is actually sensitive to W-B's own fold rather than passing by
+  // construction of a wrong formula.
   // =========================================================================
   {
-    // "SEMBP001" -- include/superembedder/semb.h's own PUBLIC
-    // SEMB_FINGERPRINT_PROVISIONAL_TAG macro value (not read from that
-    // header directly: including superembedder/semb.h in this TU would
-    // redeclare semb_status/semb_encoder over the test contract's own
-    // independent declarations, exactly the conflict
-    // include/superembedder/wb_digest_abi.h's own header comment names).
-    constexpr char kTag[] = "SEMBP001";
-    static_assert(sizeof(kTag) - 1 == 8, "SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE is 8");
     // W-Q's leg comes from the product's encoder-scoped accessor below,
     // declared in this TU's own contract types -- the same standing the W-B
     // leg has through semb_wb_digest in this same composition (TE-228).
-    constexpr char kCertificationPendingSentinel[] =
-        "SEMB-CERTIFIED-BUILDS-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
     // sec 2.1's own literal, verbatim (confirmed against the plan, not
-    // against src/superembedder/encoder.cpp's own kQueryPrefix).
+    // against src/superembedder/query.cpp's own kQueryPrefix).
     constexpr char kQueryPrefix[] =
         "Instruct: Given a web search query, retrieve relevant passages that answer the "
         "query\nQuery:";
+    // sec 3.2's compiled-in end-token literal (D-8's third template field).
+    constexpr char kEndToken[] = "<|endoftext|>";
+    const std::vector<uint8_t> cert_doc = ReadFile("docs/certified-builds.json");
 
     auto sha256 = [](const void* data, size_t n, uint8_t out[32]) {
       superslm::Sha256 h;
@@ -973,9 +965,11 @@ int main(int argc, char** argv) {
 
     const std::vector<uint8_t> model_bytes = ReadFile(a.model);
     const std::vector<uint8_t> tokenizer_bytes = ReadFile(a.tokenizer);
-    if (model_bytes.empty() || tokenizer_bytes.empty()) {
+    if (model_bytes.empty() || tokenizer_bytes.empty() || cert_doc.empty()) {
       Verdict(false, "(fingerprint) semb_fingerprint equals the independently-recomputed five-field composition",
-              "cannot read model/tokenizer artifact bytes");
+              cert_doc.empty() ? "docs/certified-builds.json is absent or empty in the repository (U1 Slice 7 step 4 "
+                                 "writes it); the certification_epoch field cannot be recomputed"
+                               : "cannot read model/tokenizer artifact bytes");
     } else {
       uint8_t model_sha[32], tokenizer_sha[32];
       sha256(model_bytes.data(), model_bytes.size(), model_sha);
@@ -987,6 +981,8 @@ int main(int argc, char** argv) {
         PutU64LE(&buf, 0);  // document_frame_bytes: empty under PS-N (D-SLM4726)
         PutU64LE(&buf, sizeof(kQueryPrefix) - 1);
         buf.insert(buf.end(), kQueryPrefix, kQueryPrefix + sizeof(kQueryPrefix) - 1);
+        PutU64LE(&buf, sizeof(kEndToken) - 1);
+        buf.insert(buf.end(), kEndToken, kEndToken + sizeof(kEndToken) - 1);
         sha256(buf.data(), buf.size(), template_sha256);
       }
 
@@ -1002,25 +998,21 @@ int main(int argc, char** argv) {
         bool composed = false;
         std::string wq_why;
         if (Is(swq, "SEMB_OK") && Is(swb, "SEMB_OK")) {
-          uint8_t witness_sha[32], certification_epoch[32], inner[32];
+          uint8_t witness_sha[32], certification_epoch[32];
           std::vector<uint8_t> witness;
           witness.insert(witness.end(), wa, wa + 32);
           witness.insert(witness.end(), wb, wb + 32);
           witness.insert(witness.end(), wq, wq + 32);
           sha256(witness.data(), witness.size(), witness_sha);
-          sha256(kCertificationPendingSentinel, sizeof(kCertificationPendingSentinel) - 1,
-                 certification_epoch);
+          sha256(cert_doc.data(), cert_doc.size(), certification_epoch);
 
           std::vector<uint8_t> composition;
-          composition.insert(composition.end(), kTag, kTag + sizeof(kTag) - 1);
           update_field(&composition, model_sha);
           update_field(&composition, tokenizer_sha);
           update_field(&composition, template_sha256);
           update_field(&composition, witness_sha);
           update_field(&composition, certification_epoch);
-          sha256(composition.data(), composition.size(), inner);
-          std::memcpy(expected, kTag, sizeof(kTag) - 1);
-          std::memcpy(expected + sizeof(kTag) - 1, inner, 24);
+          sha256(composition.data(), composition.size(), expected);
 
           std::vector<uint8_t> storage(static_cast<size_t>(a.dims) * sizeof(float) + 16);
           float* vector = reinterpret_cast<float*>(
