@@ -117,6 +117,13 @@
 // kPlanStatusNames (below) into the real list; it is the only name this
 // round moves.
 //
+// TE-264 (U1 Slice 7 step 1, `Claude/Plans/te140-u1-remainder-sequencing.md`
+// sec 4.7; D-SLM6663): one status APPENDED for `semb verify`'s corpus-digest
+// refusal -- SEMB_CORPUS_DIGEST_MISMATCH, ordinal 35, SEMB_STATUS_NEXT_FREE
+// now 36. The CLI printed this refusal without an ordinal because no enum
+// member carried it; the append gives it one. Nothing moves out of
+// kPlanStatusNames (it was never listed there).
+//
 // STATUSES ARE PINNED BY NAME AND BY ORDINAL, AND THE CELLS COMPARE BY NAME.
 // Behavioural cells resolve every status through `semb_status_name` (StatusByName
 // below) so that a cell is red for its own reason -- a behaviour that differs
@@ -187,7 +194,10 @@ typedef int32_t semb_status;
   /* SEMB_BANK_DIGEST_MISMATCH) and are not yet in this branch's own     */ \
   /* copy of this list; this line is written to land AFTER them so the  */ \
   /* merge is additive (see this header's own comment block above).     */ \
-  X(SEMB_BANK_IN_USE,                      34)
+  X(SEMB_BANK_IN_USE,                      34) \
+  /* TE-264 (U1 Slice 7 step 1, D-SLM6663): `semb verify`'s corpus-digest */ \
+  /* refusal, appended at the next free ordinal.                          */ \
+  X(SEMB_CORPUS_DIGEST_MISMATCH,           35)
 
 enum : int32_t {
 #define SEMB_CONTRACT_STATUS_ENUM_(name, value) name = value,
@@ -196,7 +206,7 @@ enum : int32_t {
   SEMB_STATUS_NEXT_FREE  // the sentinel: never returned, never a valid argument, never named
 };
 
-static_assert(SEMB_STATUS_NEXT_FREE == 35, "the contract pins 35 named statuses, ordinals 0-34 (TE-192 appends 32-33, TE-194 appends 34)");
+static_assert(SEMB_STATUS_NEXT_FREE == 36, "the contract pins 36 named statuses, ordinals 0-35 (TE-192 appends 32-33, TE-194 appends 34, TE-264 appends 35)");
 
 // sec 3.1 item 5: library-owned, opaque, not copyable, released only by
 // semb_encoder_close; a double close returns SEMB_INVALID_HANDLE.
@@ -257,7 +267,7 @@ inline const StatusEntry kStatusTable[] = {
 #undef SEMB_CONTRACT_STATUS_ENTRY_
 };
 inline constexpr size_t kStatusCount = sizeof(kStatusTable) / sizeof(kStatusTable[0]);
-static_assert(kStatusCount == 35, "35 named statuses (TE-192 appends 32-33, TE-194 appends SEMB_BANK_IN_USE at 34)");
+static_assert(kStatusCount == 36, "36 named statuses (TE-192 appends 32-33, TE-194 appends SEMB_BANK_IN_USE at 34, TE-264 appends SEMB_CORPUS_DIGEST_MISMATCH at 35)");
 
 // The name every non-member int32_t resolves to (P-5: static storage, never NULL).
 inline constexpr const char* kUnknownStatusName = "SEMB_UNKNOWN";

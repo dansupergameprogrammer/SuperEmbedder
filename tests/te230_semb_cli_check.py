@@ -11,9 +11,9 @@ CLI choices where the plan deliberately leaves syntax/output open:
     re-encodes the corpus and compares row digests (plan sec 3.1 / C9); the
     `--corpus` argument is required, not optional (D-SLM6630);
   * a corpus whose digest disagrees with the manifest's `corpus_digest` is
-    refused as `SEMB_CORPUS_DIGEST_MISMATCH` -- a PROPOSED status (D-SLM6631)
-    that is not yet in the frozen `semb_status` enum and is filed for the
-    planner to ratify or rename;
+    refused as `semb verify: SEMB_CORPUS_DIGEST_MISMATCH (35)` with exit 1
+    -- the status appended to the frozen `semb_status` enum at ordinal 35
+    (D-SLM6663; U1 Slice 7 step 1, TE-264);
   * a plain-text corpus is one document per line with ids = line numbers;
     the numbering base the plan leaves open is pinned to ZERO, the smallest
     reading (D-SLM6632): the first line's id is "0", as a decimal string;
@@ -232,6 +232,20 @@ def named_refusal(proc: subprocess.CompletedProcess[str], context: str,
     outputs."""
     line = re.compile(r"^" + re.escape(context) + r": " + re.escape(status) + r" \(\d+\)\r?$", re.M)
     return proc.returncode == 1 and line.search(proc.stderr) is not None
+
+
+# TE-264 (U1 Slice 7 step 1): `semb verify`'s corpus-digest refusal in the
+# pinned `<context>: <status> (<ordinal>)` form, SEMB_CORPUS_DIGEST_MISMATCH
+# appended at enum ordinal 35 (`Claude/Plans/te140-u1-remainder-sequencing.md`
+# sec 4.7 step 1; D-SLM6663).
+CORPUS_DIGEST_REFUSAL_LINE = "semb verify: SEMB_CORPUS_DIGEST_MISMATCH (35)"
+
+
+def verify_corpus_digest_refusal(proc: subprocess.CompletedProcess[str]) -> bool:
+    """Exit 1 and one stderr line that is exactly CORPUS_DIGEST_REFUSAL_LINE.
+    The line without an ordinal, or with any other ordinal, does not pass."""
+    lines = [line.rstrip("\r") for line in proc.stderr.splitlines()]
+    return proc.returncode == 1 and lines.count(CORPUS_DIGEST_REFUSAL_LINE) == 1
 
 
 def copied_stem(source: Path, destination: Path) -> None:
@@ -467,11 +481,18 @@ def main(argv: list[str]) -> int:
         last = json.loads(rows[-1]); last["text"] += " -- edited by the digest cell"
         edited.write_text("\n".join(rows[:-1] + [json.dumps(last)]) + "\n", encoding="utf-8")
         mismatch = call([str(semb), "verify", str(good), "--corpus", str(edited), *base])
-        mismatch_ok = mismatch.returncode != 0 and "SEMB_CORPUS_DIGEST_MISMATCH" in (mismatch.stdout + mismatch.stderr)
+        # TE-264 (U1 Slice 7 step 1; D-SLM6663): the refusal carries the
+        # pinned `<context>: <status> (<ordinal>)` form every other refusal
+        # line carries, with SEMB_CORPUS_DIGEST_MISMATCH at enum ordinal 35,
+        # and the pinned refusal exit (1).  The expected line is typed here
+        # from the plan, not read from the product's enum.
+        mismatch_ok = verify_corpus_digest_refusal(mismatch)
         report.add("PASS" if mismatch_ok else "FAIL", "verify edited corpus is refused by the corpus digest",
-                   "a corpus that is not the one baked is refused as SEMB_CORPUS_DIGEST_MISMATCH (D-SLM6631, proposed)" if mismatch_ok else
-                   f"RED: the edited corpus must be refused naming the corpus digest; exit={mismatch.returncode}; "
-                   f"{(mismatch.stdout + mismatch.stderr)[-200:]!r}")
+                   "a corpus that is not the one baked is refused with the exact line "
+                   f"{CORPUS_DIGEST_REFUSAL_LINE!r} and exit 1" if mismatch_ok else
+                   f"RED: the edited corpus must be refused with exactly one stderr line "
+                   f"{CORPUS_DIGEST_REFUSAL_LINE!r} and exit 1; exit={mismatch.returncode}; "
+                   f"'semb verify' stderr lines={[l for l in mismatch.stderr.splitlines() if l.startswith('semb verify')]!r}")
         # A bank consistent on disk but not what this encoder emits: flip a
         # payload byte and rewrite the manifest row_digest to SHA-256 of the
         # new payload.  semb_bank_open recomputes exactly that digest
