@@ -1,6 +1,6 @@
 {
   "schema": "semb_tokenizer_artifact_manifest_v1",
-  "minted": "2026-09-04",
+  "minted": "2026-09-18",
   "minted_by": "tools/tokenizer/regenerate_qwen3_tokenizer_artifact.py --mint",
   "artifact": {
     "name": "qwen3-embedding-0.6b-tokenizer.sslm",
@@ -15,13 +15,13 @@
   },
   "converter": {
     "tool": "tools/convert_tokenizer.py",
-    "engine_tag": "v1.4.0",
-    "engine_commit": "faef137de9502ee1951e8853c6518649288ae0dd",
-    "clone_head": "faef137de9502ee1951e8853c6518649288ae0dd",
-    "emit_command": "C:\\Users\\dansu\\AppData\\Local\\Programs\\Python\\Python313\\python.exe convert_tokenizer.py --ckpt D:\\hf_cache\\hub\\models--Qwen--Qwen3-Embedding-0.6B\\snapshots\\97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3 --emit D:\\SuperEmbedder\\.worktrees\\te92-u1-tokenizer-suite\\build\\_scratch\\qwen3-embedding-0.6b-tokenizer.sslm"
+    "engine_tag": "v1.5.0",
+    "engine_commit": "321be4634e14fa5e541bfb8611f06cd7fbb2ae9a",
+    "clone_head": "321be4634e14fa5e541bfb8611f06cd7fbb2ae9a",
+    "emit_command": "C:\\Users\\dansu\\AppData\\Local\\Programs\\Python\\Python313\\python.exe convert_tokenizer.py --ckpt D:\\hf_cache\\hub\\models--Qwen--Qwen3-Embedding-0.6B\\snapshots\\97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3 --emit D:\\_te259\\tokenizer\\qwen3-embedding-0.6b-tokenizer.sslm"
   },
   "verification": {
-    "command": "C:\\Users\\dansu\\AppData\\Local\\Programs\\Python\\Python313\\python.exe convert_tokenizer.py --ckpt D:\\hf_cache\\hub\\models--Qwen--Qwen3-Embedding-0.6B\\snapshots\\97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3 --verify D:\\SuperEmbedder\\.worktrees\\te92-u1-tokenizer-suite\\tests\\fixtures\\tokenizer\\tokenizer_golden_corpus.jsonl --verify-post-processor D:\\SuperEmbedder\\.worktrees\\te92-u1-tokenizer-suite\\tests\\fixtures\\tokenizer\\tokenizer_golden_corpus.jsonl",
+    "command": "C:\\Users\\dansu\\AppData\\Local\\Programs\\Python\\Python313\\python.exe convert_tokenizer.py --ckpt D:\\hf_cache\\hub\\models--Qwen--Qwen3-Embedding-0.6B\\snapshots\\97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3 --verify D:\\SuperEmbedder\\.worktrees\\te229-seam-check-args\\tests\\fixtures\\tokenizer\\tokenizer_golden_corpus.jsonl --verify-post-processor D:\\SuperEmbedder\\.worktrees\\te229-seam-check-args\\tests\\fixtures\\tokenizer\\tokenizer_golden_corpus.jsonl",
     "exit_code": 0,
     "bpe_parity": "PASS",
     "post_processor_parity": "PASS",
