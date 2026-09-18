@@ -7,7 +7,7 @@ is bit-identical from the bank onward; SuperEmbedder makes the path bit-identica
 from the raw text in.
 
 **Status: the U1 public raw-text encoder slice is real and pinned to SuperSLM
-v1.4.0.** `include/superembedder/semb.h` exposes the frozen C ABI for
+v1.5.0.** `include/superembedder/semb.h` exposes the frozen C ABI for
 encoder open/close, dimension discovery, raw UTF-8 encoding, and status names.
 Open reads the model and tokenizer artifacts exactly once, retains their bytes,
 validates the vocabulary join, and preallocates the declared workspace pool.
