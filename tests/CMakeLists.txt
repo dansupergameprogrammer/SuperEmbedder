@@ -1274,3 +1274,17 @@ endforeach()
 # epoch-edit edits the committed docs/certified-builds.json in place for the
 # length of one probe run and restores it; nothing else may read it meanwhile.
 set_tests_properties(te264_fingerprint_epoch_edit_check PROPERTIES RUN_SERIAL TRUE)
+
+# Step 4 (d) (D-SLM7206): configure refuses a missing and an unparseable
+# docs/certified-builds.json by name; the unchanged document configures.
+add_test(
+	NAME te264_c42_configure_legs_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te264_c42_configure_legs_check.py"
+		--repo-root "${CMAKE_SOURCE_DIR}"
+		--engine-prefix "${SEMB_ENGINE_PREFIX}"
+		--cmake-executable "${CMAKE_COMMAND}"
+		--generator "${CMAKE_GENERATOR}"
+		--ninja-executable "${CMAKE_MAKE_PROGRAM}"
+		--python-executable "${Python3_EXECUTABLE}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
