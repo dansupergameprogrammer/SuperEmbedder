@@ -40,25 +40,29 @@
 #
 # c39_seam_digest: SHA-256 over `semb_seam_serialize_document`'s own
 # output bytes (W-B alone) for the document below, through the engine's
-# portable `superslm::Sha256Hash`. Recomputed at the v1.4.0 pin from the
+# portable `superslm::Sha256Hash`. Recomputed at the v1.5.0 pin from the
 # BUILT c39_seam_digest_test's own code path (never re-derived by hand):
-# two independent MSVC process invocations produced this exact digest,
-# byte for byte. The prior v1.3.0 anchor moved because the engine pin and
-# regenerated artifact moved.
+# two independent process invocations under each of MSVC 19.33 and
+# clang-cl 18.1.8 produced this exact digest, byte for byte. The anchor
+# moves whenever the engine pin moves the regenerated artifact's bytes or
+# the forward, which the v1.5.0 pin does.
 #
 # witness_sha: SHA-256(W-A digest || W-B digest || W-Q placeholder
-# digest), sec 4.4b's own composed fingerprint. Recomputed at v1.4.0 via
+# digest), sec 4.4b's own composed fingerprint. Recomputed at v1.5.0 via
 # `semb_witness --model build/_scratch/synthetic_te62_c39.sslm --tokens
-# 3,17,42,5,90 --chunk-budget 0` after the pin-bump construction passed.
+# 3,17,42,5,90 --chunk-budget 0` (two processes under each compiler), and
+# reproduced by both independent baselines of the pin-bump construction
+# (`tools/engine_side_wa_perturbation.py`), whose C36(a) and C38 readings
+# all held.
 #
 # Both rows: the document is `tests/c39_seam_digest_test.cpp`'s own
 # committed 5-token document (kTokenIds = {3, 17, 42, 5, 90}) at
 # chunk_budget=0 (one whole-document call), against the regenerated
 # synthetic artifact `build/_scratch/synthetic_te62_c39.sslm` (pinned tag
-# v1.4.0, `tests/fixtures/regenerate_synthetic_artifact.py`'s own output).
+# v1.5.0, `tests/fixtures/regenerate_synthetic_artifact.py`'s own output).
 # Artifact fingerprint (SHA-256 of that .sslm file's own bytes,
 # independently computed via Python hashlib, not read from any field this
-# build emits): 2ae330e348950505e7d897450268f5e735a34082785214521fd23d3713a22882.
+# build emits): 2ea564f73f5878db7923f7482706619fd16879e057882a63511360a7dc964930.
 
-c39_seam_digest 639a448c405023bca7bbb54ec9de6d64264ac25f41e491385ccb407f9380cab9
-witness_sha c76a5602a88b6eab4c91eacb9e54191a14e4f26c026a87ac841a74b183d90a84
+c39_seam_digest 8d900f62f27e56a3178a22acc6026cb9f545082b5456e907457135d8e493ed1d
+witness_sha ccfa2a3c45ebbfd97602c7d61fb3f59e24b091c5e565f197f8e0436a3cd5683e
