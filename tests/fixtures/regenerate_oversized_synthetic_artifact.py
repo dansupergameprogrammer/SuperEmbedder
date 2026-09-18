@@ -23,10 +23,11 @@ that function itself calls (`reference_pipeline.pipeline.ModelConfig`,
 `.fixture_model`; `convert_model.build_sections`; `sslm_format.build_artifact`)
 and supplies its OWN config, with `hidden_size=128` -- twice
 `kSembWitnessMaxHidden`, so the domain check is exercised well past its
-own boundary, not merely one byte over it. Every other field is scaled
-proportionally from the T-2199 config (`head_dim=16 * num_attention_heads=8
-= hidden_size=128`; `num_key_value_heads=4`, an even GQA group size of 2,
-matching the T-2199 config's own 4/2 ratio) so the SAME domain checks
+own boundary, not merely one byte over it. Every other field is derived
+from `hidden_size` (`num_attention_heads = hidden_size / head_dim` with
+`head_dim=128`, the only head width the pinned engine admits for a QK-norm
+(fused-K) artifact; `num_key_value_heads` half of that, an even GQA group
+size of 2, matching the T-2199 config's own 4/2 ratio) so the SAME domain checks
 `reference_pipeline` already exercises on the small fixture (RoPE pairwise
 rotation, GQA group-size divisibility) are satisfied here too -- this is
 not a novel shape, only a scaled one. No `SCHEMA_MASKS`/damped-greedy
@@ -58,7 +59,7 @@ DEFAULT_REMOTE = "https://github.com/dansupergameprogrammer/SuperSLM.git"
 # default rises with it, twice the NEW ceiling (2048), the same "well past
 # its own boundary, not merely one byte over it" margin the original 128
 # value held against the retired 64 ceiling. hidden_size = num_attention_heads
-# * head_dim = 128 * 16 = 2048; the GQA group size (2) and every other
+# * head_dim = 16 * 128 = 2048; the GQA group size (2) and every other
 # domain ratio reference_pipeline's own checks require are unchanged.
 OVERSIZED_HIDDEN = 2048
 
@@ -107,7 +108,8 @@ def generate(tools_dir: Path, out_path: Path, hidden_size: int = OVERSIZED_HIDDE
     # kSembWitnessMaxHidden exactly) that seam_hidden_capacity_test.cpp's
     # own must-accept needs -- its sibling, c3_accumulator_bound_test.cpp's
     # F-2 cell, already tests exactly that boundary shape by name, and
-    # this fixture generator did not. `head_dim=16` fixed; every other
+    # this fixture generator did not. `head_dim=128` fixed (the only head
+    # width the pinned engine admits for a QK-norm artifact); every other
     # dimension DERIVED from `hidden_size` by one plain rule each, stated
     # here rather than as a self-contradicting trailing comment (N-8: the
     # prior comment read "scaled 4x with hidden_size, T-2199's own ratio
@@ -119,11 +121,9 @@ def generate(tools_dir: Path, out_path: Path, hidden_size: int = OVERSIZED_HIDDE
     #     group size, 2, T-2199's own 4/2 config uses)
     #   intermediate_size   = 2 * hidden_size            (one plain rule,
     #     not a ratio borrowed from a different config's own numbers)
-    # At hidden_size=128 (this module's own OVERSIZED_HIDDEN default) this
-    # reproduces the exact prior hardcoded values (8, 4, 16, 256) bit for
-    # bit -- verified by re-running F-7's own cell against this
-    # generalised generator, unchanged digest.
-    head_dim = 16
+    # Both sizes seam_hidden_capacity_test.cpp requests (OVERSIZED_HIDDEN
+    # and kSembWitnessMaxHidden) divide by head_dim into an even head count.
+    head_dim = 128
     if hidden_size % head_dim != 0:
         raise ValueError(f"hidden_size={hidden_size} is not a multiple of head_dim={head_dim}")
     num_attention_heads = hidden_size // head_dim
@@ -148,7 +148,8 @@ def generate(tools_dir: Path, out_path: Path, hidden_size: int = OVERSIZED_HIDDE
     )
     model = pipeline.fixture_model(cfg)
     sections, _fold_err = convert_model.build_sections(model)  # no damped-greedy: not this fixture's concern
-    data, fingerprint = sslm_format.build_artifact(sections)
+    data, fingerprint = sslm_format.build_artifact(
+        sections, flags=convert_model.artifact_flags_for_model(model))
     out_path.write_bytes(data)
     print(f"wrote {out_path}: {len(data)} bytes, hidden_size={hidden_size}, "
           f"fingerprint={fingerprint}")

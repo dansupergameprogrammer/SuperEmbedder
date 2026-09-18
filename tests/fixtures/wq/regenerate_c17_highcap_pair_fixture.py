@@ -31,13 +31,14 @@ def generate_highcap_model(tools_dir: Path, out_path: Path) -> None:
     sslm_format = importlib.import_module("sslm_format")
     config = pipeline.ModelConfig(
         hidden_size=32, num_hidden_layers=8, num_attention_heads=4,
-        num_key_value_heads=2, head_dim=8, intermediate_size=64,
+        num_key_value_heads=2, head_dim=128, intermediate_size=64,
         vocab_size=base.PAIR_VOCAB_SIZE, rope_theta=10000.0,
         rms_norm_eps=1e-6, tie_word_embeddings=True, context_cap=512,
     )
     model = pipeline.fixture_model(config)
     sections, _ = convert_model.build_sections(model)
-    data, fingerprint = sslm_format.build_artifact(sections)
+    data, fingerprint = sslm_format.build_artifact(
+        sections, flags=convert_model.artifact_flags_for_model(model))
     out_path.write_bytes(data)
     print(f"wrote {out_path}: {len(data)} bytes, context_cap=512, fingerprint={fingerprint}")
 

@@ -19,8 +19,13 @@ deleted afterward, artifact never committed):
                                     + 3 specials = 265, rounded to the same
                                     multiple of 128 real Qwen configs use);
                                     every other field unchanged (hidden 32,
-                                    8 layers, heads 4/2, head_dim 8,
-                                    intermediate 64, context_cap 64)
+                                    8 layers, heads 4/2, intermediate 64,
+                                    context_cap 64) except head_dim 128:
+                                    the pinned engine admits a QK-norm
+                                    (fused-K) artifact only at head_dim
+                                    128, and the header flags come from
+                                    the engine's own
+                                    artifact_flags_for_model()
   <out-dir>/u1_pair_tokenizer.sslm  tools/convert_tokenizer.py's REAL
                                     emit_artifact() run over the committed
                                     synthetic checkpoint
@@ -141,12 +146,13 @@ def generate_model(tools_dir: Path, out_path: Path) -> None:
     # in the pinned clone), vocab widened to PAIR_VOCAB_SIZE and nothing else.
     cfg = pipeline.ModelConfig(
         hidden_size=32, num_hidden_layers=8, num_attention_heads=4,
-        num_key_value_heads=2, head_dim=8, intermediate_size=64, vocab_size=PAIR_VOCAB_SIZE,
+        num_key_value_heads=2, head_dim=128, intermediate_size=64, vocab_size=PAIR_VOCAB_SIZE,
         rope_theta=10000.0, rms_norm_eps=1e-6, tie_word_embeddings=True, context_cap=64,
     )
     model = pipeline.fixture_model(cfg)
     sections, _fold_err = convert_model.build_sections(model)
-    data, fingerprint = sslm_format.build_artifact(sections)
+    data, fingerprint = sslm_format.build_artifact(
+        sections, flags=convert_model.artifact_flags_for_model(model))
     out_path.write_bytes(data)
     print(f"wrote {out_path}: {len(data)} bytes, vocab_size={PAIR_VOCAB_SIZE}, fingerprint={fingerprint}")
 
