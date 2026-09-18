@@ -1223,3 +1223,36 @@ endfunction()
 if(DEFINED SEMB_LIBRARY_SOURCES)
   cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_te237_bank_cross_handle_tests)
 endif()
+
+# ---------------------------------------------------------------------------
+# TE-264 (U1 Slice 7 red suite, `Claude/Plans/te140-u1-remainder-sequencing.md`
+# sec 4.7 steps 1-6). Appended as one contiguous block.
+# ---------------------------------------------------------------------------
+
+# Step 2 (D-SLM7197, D-SLM7205): semb_encode composes through ComposeBatch as
+# a batch of one. The structural half reads semb_encode's body.
+add_test(
+	NAME te264_raw_entry_composition_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te264_raw_entry_composition_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# Step 2's committed raw-equals-batch cell (D-SLM7204): over the 239 corpus
+# documents and the 16 W-B documents, semb_encode's vector equals the
+# semb_encode_batch row for the same text, byte for byte. Green before and
+# after step 2; registered only when the real artifact is configured.
+add_executable(te264_raw_equals_batch_test te264_raw_equals_batch_test.cpp)
+target_link_libraries(te264_raw_equals_batch_test PRIVATE superembedder superslm::superslm)
+target_include_directories(te264_raw_equals_batch_test PRIVATE
+	"${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/src/superembedder")
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+	add_test(
+		NAME te264_raw_equals_batch_real_artifact
+		COMMAND te264_raw_equals_batch_test
+			--model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
+			--corpus "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/corpus-239.jsonl"
+			--corpus-manifest "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/corpus-239.manifest.json"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+	set_tests_properties(te264_raw_equals_batch_real_artifact PROPERTIES LABELS "real_artifact" TIMEOUT 3600)
+endif()
