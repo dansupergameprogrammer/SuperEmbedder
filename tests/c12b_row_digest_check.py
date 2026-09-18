@@ -192,7 +192,7 @@ def main(argv: List[str]) -> int:
     ap.add_argument("--build-dir", required=True)
     ap.add_argument("--model", default=os.environ.get("SEMB_C12B_MODEL", ""),
                     help="the real Qwen3-Embedding-0.6B .sslm (R1); env SEMB_C12B_MODEL")
-    ap.add_argument("--anchors", default=str(FIXTURES / "anchors-qwen3-embedding-0.6b-v1.4.0.tsv"))
+    ap.add_argument("--anchors", default=str(FIXTURES / "anchors-qwen3-embedding-0.6b-v1.5.0.tsv"))
     ap.add_argument("--mint-anchors", action="store_true",
                     help="R1: write --anchors from the chunk leg's rows (a minting run, not a grading run)")
     ap.add_argument("--engine-pin", default="", help="R1 anchor header: the engine tag@commit this run built against")

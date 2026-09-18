@@ -7,7 +7,9 @@
 // entry `semb_encode(utf8, len)` must produce, bit for bit, the vector the
 // EXISTING interim token-id path produces from the same document's content
 // token ids (`semb_interim_encode_ps_n`, include/superembedder/encoder_abi.h,
-// the path C12b graded 239/239 at v1.4.0 -- TE-91, D-SLM6310), where the
+// the path C12b grades per row against its pinned anchor table,
+// tests/fixtures/c12b/anchors-*.tsv -- first graded 239/239 by TE-91,
+// D-SLM6310), where the
 // content ids come from an oracle that takes NO input from the engine's C++
 // tokenizer:
 //
