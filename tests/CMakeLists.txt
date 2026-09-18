@@ -1256,3 +1256,21 @@ if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
 	)
 	set_tests_properties(te264_raw_equals_batch_real_artifact PROPERTIES LABELS "real_artifact" TIMEOUT 3600)
 endif()
+
+# Steps 3, 4 (a), 4 (e) and 5: one probe bakes on one encoder handle and the
+# driver compares the manifest's clear components and the two ABI fingerprint
+# values with oracles typed from the plan and read from repository files.
+add_executable(te264_fingerprint_probe te264_fingerprint_probe.cpp)
+target_link_libraries(te264_fingerprint_probe PRIVATE superembedder superslm::superslm)
+foreach(_semb_te264_cell IN ITEMS template epoch epoch-edit untagged)
+	string(REPLACE "-" "_" _semb_te264_name "${_semb_te264_cell}")
+	add_test(
+		NAME te264_fingerprint_${_semb_te264_name}_check
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te264_fingerprint_final_check.py"
+			--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}" --cell ${_semb_te264_cell}
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+endforeach()
+# epoch-edit edits the committed docs/certified-builds.json in place for the
+# length of one probe run and restores it; nothing else may read it meanwhile.
+set_tests_properties(te264_fingerprint_epoch_edit_check PROPERTIES RUN_SERIAL TRUE)
