@@ -44,6 +44,11 @@ invocation -- see run_bake_probe() below, not the full suite), and asserts
 the named refusal fires and nothing is written; then restores the original
 constant, rebuilds, and asserts the SAME bake now succeeds and writes.
 
+THE PAIR IT BAKES WITH is the real candidate artifact and its converter-
+emitted tokenizer (--model, --tokenizer; SEMB_C12B_MODEL and
+SEMB_U1_TOKENIZER at configure). When either is empty, both legs report
+MISSING PREREQUISITE and nothing is cloned or built.
+
 Exit codes: 0 every evaluated leg PASS, MISSING PREREQUISITE, or
 RED-UNIMPLEMENTED (a red-first result is not a driver failure -- see
 u1_batch_contract_check.py's own convention); 1 any FAIL.
@@ -168,9 +173,8 @@ def run_mutation_leg(table: Table, repo_root: Path, engine_prefix: str, cmake: s
             # CLI, reused rather than a second harness invented for this cell.
             scratch = build_dir / "_scratch" / "c34_probe"
             scratch.mkdir(parents=True, exist_ok=True)
-            probe_args = [str(exe_candidates[0]), "--model", model or str(clone_dir / "build" / "_scratch" / "u1_pair" / "u1_pair_model.sslm"),
-                          "--tokenizer", tokenizer or str(clone_dir / "build" / "_scratch" / "u1_pair" / "u1_pair_tokenizer.sslm"),
-                          "--dims", "1024" if model else "32", "--scratch", str(scratch),
+            probe_args = [str(exe_candidates[0]), "--model", model, "--tokenizer", tokenizer,
+                          "--dims", "1024", "--scratch", str(scratch),
                           "--wb-corpus", str(clone_dir / "tests" / "fixtures" / "wb" / "wb-corpus.jsonl")]
             proc = subprocess.run(probe_args, cwd=clone_dir, capture_output=True, text=True, timeout=1800)
             out = proc.stdout
@@ -211,6 +215,14 @@ def main(argv: List[str]) -> int:
     args = ap.parse_args(argv)
     repo_root = Path(args.repo_root)
     table = Table()
+
+    if not args.model or not args.tokenizer:
+        for leg in LEGS:
+            table.add(leg["name"], "MISSING PREREQUISITE",
+                      "requires --model and --tokenizer naming the real candidate artifact and its "
+                      "converter-emitted tokenizer (SEMB_C12B_MODEL, SEMB_U1_TOKENIZER)")
+        print("\nte163_c34_manifest_honesty_check: no hard FAIL (MISSING PREREQUISITE)")
+        return 0
 
     for leg in LEGS:
         run_mutation_leg(table, repo_root, args.engine_prefix, args.cmake_executable, args.cxx_compiler,

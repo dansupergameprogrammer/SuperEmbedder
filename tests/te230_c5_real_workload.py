@@ -3,6 +3,13 @@
 This intentionally measures rather than gates the class-match floor: a
 non-regression result needs a calibrated product population, while a bad
 score remains a conductor-owned quarantine observation.
+
+The workload needs the real pair. When --model or --tokenizer is empty (a
+tree configured without SEMB_C12B_MODEL and SEMB_U1_TOKENIZER), it reports
+MISSING PREREQUISITE and exits 0 without building or baking anything.
+
+Exit codes: 0 QUARANTINED (the apparatus ran end to end) or MISSING
+PREREQUISITE; 1 BLOCKED.
 """
 from __future__ import annotations
 
@@ -53,6 +60,10 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--model", required=True)
     ap.add_argument("--tokenizer", required=True)
     args = ap.parse_args(argv)
+    if not args.model or not args.tokenizer:
+        print("[MISSING PREREQUISITE] C5 class-match@1: requires --model and --tokenizer naming the real "
+              "candidate artifact and its converter-emitted tokenizer (SEMB_C12B_MODEL, SEMB_U1_TOKENIZER)")
+        return 0
     scratch = args.build_dir / "_scratch" / "te230_c5"
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)

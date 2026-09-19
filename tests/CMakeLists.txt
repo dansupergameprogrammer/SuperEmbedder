@@ -997,6 +997,13 @@ add_test(
 		--tokenizer "${SEMB_U1_TOKENIZER}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+# Both legs bake with the real pair; with either path empty the driver
+# reports MISSING PREREQUISITE (non-failing). Labelled real_artifact only
+# when the pair is configured: the conditional form c12b_row_digest_check's
+# comment sets out, used by every real-artifact cell in this file.
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+	set_tests_properties(te163_c34_manifest_honesty_check PROPERTIES LABELS "real_artifact")
+endif()
 
 # ---------------------------------------------------------------------------
 # TE-196 (U1 slice 4 fix round): the manifest-binding driver -- the cells
@@ -1155,6 +1162,8 @@ add_test(
 		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+# C5 needs the real pair; with either path empty the driver reports MISSING
+# PREREQUISITE (non-failing) and builds nothing.
 if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
 	set_tests_properties(te230_c5_real_workload PROPERTIES LABELS "real_artifact" TIMEOUT 1800)
 endif()

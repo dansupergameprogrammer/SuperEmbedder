@@ -31,9 +31,13 @@ the executed witness (W-A, W-B and W-Q), and the certification epoch — the
 SHA-256 of `docs/certified-builds.json` as the build compiled it in. Every bank
 manifest records the same value as `encoder_fingerprint`, and opening a query
 against a bank baked by a different encoder is refused with
-`SEMB_FINGERPRINT_MISMATCH`. Banks baked before this fingerprint (their
-fingerprints begin with the eight bytes `SEMBP001`) are refused the same way and
-must be re-baked.
+`SEMB_FINGERPRINT_MISMATCH`. Banks baked before the certification epoch was
+derived from that document record a placeholder epoch in their manifests
+(`certification_epoch` is
+`fbfde55166495bb2bcbd63a3688a0b7e091fc0b301ad916a3603c835ba46a30c`), so their
+`encoder_fingerprint` differs from the current encoder's. Opening a query
+against one is refused with `SEMB_FINGERPRINT_MISMATCH`, and such banks must be
+re-baked.
 
 The certified set is interim: the MSVC 19.33 and clang-cl 18.1.8 builds on one
 AVX2 host, which bake the 239-document corpus to identical bytes (evidence in

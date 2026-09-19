@@ -63,9 +63,10 @@ developer shell so `cl`, `ninja` and `cmake` are on PATH):
       fingerprint components from its manifest.
   leg      --leg i|vi|x|ix|xiii|p --bank-from A --query-on B --model M --tokenizer T
       runs one leg; exit 0 PASS, 1 FAIL, 2 INEVALUABLE. For (i) and (vi) this
-      phase also bakes the corpus on B (if not already baked) and queries it
-      on A, so a fresh "leg i"/"leg vi" invocation after B's "identity" phase
-      takes the full bake-plus-query time of both installations, not just B's.
+      phase also bakes the corpus on B, on every invocation (overwriting any
+      earlier bake at B's bank/corpus), and queries A's bank with the corpus
+      texts from both A and B, so every "leg i"/"leg vi" invocation takes B's
+      full corpus bake plus a full corpus query on each installation.
 
 Order for one full reading: install A (msvc, none), install P (--rev <the
 provisional revision>), install B_i, B_vi, B_x, B_ix, B_xiii; bake A and P;
