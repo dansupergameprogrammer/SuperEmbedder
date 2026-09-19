@@ -985,7 +985,7 @@ int main(int argc, char** argv) {
     }
   }
 
-  // ---- K-14 the fingerprint IN/OUT struct: preserved size, stable, provisional-tagged (P-2/P-3) --
+  // ---- K-14 the fingerprint IN/OUT struct: preserved size, stable, untagged (P-2/P-3) --
   {
     semb_encoder e1 = OpenPair(a, st, "K-14 (setup 1)");
     if (e1) {

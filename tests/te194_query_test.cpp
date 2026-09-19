@@ -554,7 +554,7 @@ int main(int argc, char** argv) {
     // `<|endoftext|>`; certification_epoch is the SHA-256 of
     // docs/certified-builds.json's exact bytes, read from the repository; the
     // fingerprint is the full 32-byte SHA-256 over the five length-prefixed
-    // fields, untagged. RED by design until steps 3, 4 and 5 have all landed.
+    // fields, untagged. RED by design until steps 3, 4 and 5 all landed.
     constexpr char kEndToken[] = "<|endoftext|>";
     const std::string cert_doc = ReadFile("docs/certified-builds.json");
     std::vector<uint8_t> template_stream;

@@ -107,12 +107,10 @@ namespace {
 
 constexpr char kCanonicalEndToken[] = "<|endoftext|>";
 
-// TE-166 (U1 slice 4): manifest provenance fields with no mechanism that
-// computes them yet -- present, never omitted, never fabricated (this
-// round's own contract header, tests/semb_bake_abi_contract.h: "a field
-// whose producing mechanism lands at a later slice carries the same
-// provisional sentinel the fingerprint already carries for it"). Named
-// per field so each is independently greppable later.
+// Manifest provenance labels 1.0 does not compute -- present, never omitted,
+// never fabricated: each carries a named `SEMB-...` label in place of a
+// value (tests/semb_bake_abi_contract.h). None is a fingerprint input.
+// Named per field so each is independently greppable.
 //
 // object_code_sha / engine_object_code_sha: "the SHA-256 of THIS process's
 // own compiled object code" has no runtime-readable source in this tree --
@@ -122,19 +120,18 @@ constexpr char kCanonicalEndToken[] = "<|endoftext|>";
 // covered-source list would make the closure the digest is computed over
 // include the digest's own output file, which does not exist at the
 // moment the closure is scanned -- a genuine circularity, not a gap left
-// idle. semb_source_sha is therefore ALSO pending here (see below), and
-// object_code_sha/engine_object_code_sha (no producing mechanism exists
-// anywhere in this tree yet) are pending unconditionally.
-constexpr char kObjectCodeShaPendingSentinel[] =
-    "SEMB-OBJECT-CODE-SHA-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
-constexpr char kEngineObjectCodeShaPendingSentinel[] =
-    "SEMB-ENGINE-OBJECT-CODE-SHA-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
+// idle. semb_source_sha therefore also carries a label here (see below).
+// Computing object_code_sha, engine_object_code_sha and the CPU tier is
+// 1.x scope (D-SLM7212).
+constexpr char kObjectCodeShaUncomputedLabel[] = "SEMB-OBJECT-CODE-SHA-NOT-COMPUTED-IN-1.0";
+constexpr char kEngineObjectCodeShaUncomputedLabel[] =
+    "SEMB-ENGINE-OBJECT-CODE-SHA-NOT-COMPUTED-IN-1.0";
 constexpr char kSourceShaPendingSentinel[] =
     "SEMB-SOURCE-SHA-PENDING-SELF-REFERENTIAL-CLOSURE-AFTER-U1-RAW-ENCODER-SLICE";
 // No CPU-tier accessor is exposed by this library or by SuperSLM's public
 // surface (the engine's own CPUID+XGETBV dispatch, matmul.h/matmul.cpp,
 // is internal to SuperSLM and not reachable from here).
-constexpr char kCpuTierPendingSentinel[] = "SEMB-CPU-TIER-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
+constexpr char kCpuTierUncomputedLabel[] = "SEMB-CPU-TIER-NOT-COMPUTED-IN-1.0";
 
 // C34 legs (e)/(h) (sec 3.4's label-check table): the value THIS primitive
 // is about to write into label:engine_path_id / label:ps_version,
@@ -1458,11 +1455,11 @@ extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* 
     witness.Set("corpus_digest", js::Value::MakeString(Hex(corpus_digest.data(), 32)));
     witness.Set("wa_digest", js::Value::MakeString(Hex(wa_sha, 32)));
     witness.Set("wb_digest", js::Value::MakeString(Hex(h->wb_digest.data(), 32)));
-    witness.Set("cpu_tier", js::Value::MakeString(kCpuTierPendingSentinel));
+    witness.Set("cpu_tier", js::Value::MakeString(kCpuTierUncomputedLabel));
 
     js::Value provenance = js::Value::MakeObject();
-    provenance.Set("object_code_sha", js::Value::MakeString(kObjectCodeShaPendingSentinel));
-    provenance.Set("engine_object_code_sha", js::Value::MakeString(kEngineObjectCodeShaPendingSentinel));
+    provenance.Set("object_code_sha", js::Value::MakeString(kObjectCodeShaUncomputedLabel));
+    provenance.Set("engine_object_code_sha", js::Value::MakeString(kEngineObjectCodeShaUncomputedLabel));
     provenance.Set("semb_source_sha", js::Value::MakeString(kSourceShaPendingSentinel));
     provenance.Set("engine_tree_sha", js::Value::MakeString(SEMB_ENGINE_PIN_TREE_SHA));
     provenance.Set("engine_path_sha", js::Value::MakeString(SEMB_ENGINE_PATH_SHA));
@@ -1495,7 +1492,7 @@ extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* 
     manifest.Set("dtype", js::Value::MakeString("float32"));
     manifest.Set("row_digest", js::Value::MakeString(Hex(row_digest.data(), 32)));
     manifest.Set("corpus_digest", js::Value::MakeString(Hex(corpus_digest.data(), 32)));
-    manifest.Set("machine_tier", js::Value::MakeString(kCpuTierPendingSentinel));
+    manifest.Set("machine_tier", js::Value::MakeString(kCpuTierUncomputedLabel));
     js::Value token_counts = js::Value::MakeArray();
     for (size_t i = 0; i < n; ++i) token_counts.as_array.push_back(js::Value::MakeInt(per_row_token_counts[i]));
     manifest.Set("per_row_token_counts", std::move(token_counts));

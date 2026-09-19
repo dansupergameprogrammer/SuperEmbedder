@@ -24,9 +24,9 @@
 //      seam bytes -> SHA-256 -> the value this cell asserts against the
 //      store's own lineage.tsv row for the SAME document id, under the
 //      fingerprint the LIVE handle emits (semb_fingerprint via
-//      semb_encoder_open/semb_encode -- the provisional tag is part of the
-//      key today, sub-plan sec 4.3 "D-8 gating": correct, since a later
-//      fingerprint composition change is a new append, never a re-mint).
+//      semb_encoder_open/semb_encode -- the untagged five-field fingerprint
+//      since U1 Slice 7; a fingerprint composition change is a new append,
+//      never a re-mint, sub-plan sec 4.3).
 //
 // This recomputation takes NO input from whatever entry point minted the
 // store's own founding entry (the builder's own job, sub-plan sec 4.3

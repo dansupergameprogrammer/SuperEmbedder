@@ -37,10 +37,9 @@
 //
 // STATED AS FACT, THE BUILDER'S OWN OBLIGATION AND THIS HEADER'S OWN
 // CLAIM: the same handle-derived value this accessor returns for a given
-// live `enc` IS the value `ComputeProvisionalFingerprint`
+// live `enc` IS the value `ComputeManifestFingerprintComponents`
 // (`src/superembedder/encoder.cpp`) hashes into that handle's own
-// `witness_sha`, in place of the literal `kWbPendingSentinel` it hashes
-// today. Whether the builder recomputes it fresh on every call or returns
+// `witness_sha`. Whether the builder recomputes it fresh on every call or returns
 // the value the handle already derived at `semb_encoder_open` is the
 // builder's own mechanism, not this header's concern (D-SLM3978's no-
 // cache rule binds the FINGERPRINT derivation, not how many times this
@@ -59,9 +58,9 @@
 // `semb_encode_document_for_witness` + `semb_seam_serialize_document`
 // (both ALREADY built, TE-63) over the handle's own sixteen committed W-B
 // documents (`tests/fixtures/wb/wb-corpus.jsonl`, TE-145) exactly the way
-// `semb_wa_digest` already drives W-A's own population, and to replace
-// `kWbPendingSentinel` in `ComputeProvisionalFingerprint` with this same
-// value.
+// `semb_wa_digest` already drives W-A's own population, and to fold this
+// same value into `witness_sha` (built at TE-147; the fingerprint's one
+// derivation is `ComputeManifestFingerprintComponents` since U1 Slice 7).
 //
 // SYMBOLS THIS HEADER USES BUT DOES NOT DECLARE: `semb_status` and
 // `semb_encoder`, exactly the convention `tests/semb_batch_abi_contract.h`

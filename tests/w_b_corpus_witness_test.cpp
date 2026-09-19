@@ -888,7 +888,8 @@ int main(int argc, char** argv) {
   // TE-160/S-2: the emitted `semb_fingerprint` pinned against the five-field
   // composition, independently recomputed. TE-148's review (S-2) found no
   // cell anywhere asserts the emitted fingerprint depends on W-B: reverting
-  // `ComputeProvisionalFingerprint` to hash the retired `kWbPendingSentinel`
+  // the fingerprint derivation (then `ComputeProvisionalFingerprint`) to
+  // hash the retired `kWbPendingSentinel`
   // left all twelve W-B cells green, because none of them reads the
   // fingerprint at all. This cell closes that gap.
   //
@@ -931,11 +932,11 @@ int main(int argc, char** argv) {
   //                          || u64_le(32)||certification_epoch)
   //
   // the full 32-byte digest over the five length-prefixed fields, no tag and
-  // no truncation (sec 3.3; `SEMBP001` retires at U1 Slice 7 step 5). The
+  // no truncation (sec 3.3; `SEMBP001` retired at U1 Slice 7 step 5). The
   // expected value takes no input from the product beyond the three witness
   // accessor digests: the literals are typed from the plan and the
-  // certification document is read from the repository. Until steps 3, 4
-  // and 5 have all landed this cell is RED by design (TE-264). The
+  // certification document is read from the repository. It was RED by
+  // design until U1 Slice 7's steps 3, 4 and 5 all landed (TE-264). The
   // mutation-proof below (this round's own casebook) is what confirms the
   // cell is actually sensitive to W-B's own fold rather than passing by
   // construction of a wrong formula.

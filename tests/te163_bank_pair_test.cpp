@@ -263,8 +263,8 @@ std::vector<std::pair<std::string, std::string>> LoadJsonlCorpus(const fs::path&
 // ---------------------------------------------------------------------------
 // The manifest's own required field set (Claude/Bach/briefs/te163-slice4-red.md,
 // this round's own contract header tests/semb_bake_abi_contract.h): every
-// field present, none omitted, a provisional field carrying the SAME
-// sentinel convention the fingerprint already carries for it.
+// field present, none omitted, a field 1.0 does not compute carrying a named
+// `SEMB-...` label rather than a value.
 // ---------------------------------------------------------------------------
 bool ManifestHasAllFields(const json_mini::Value& m, std::string* missing) {
   static const char* kTop[] = {
@@ -507,35 +507,38 @@ int main(int argc, char** argv) {
                     top_level_corpus_digest.substr(0, 16) + "...");
       }
 
-      // TE-187 bare cell 5 (row 5(c), D-SLM6409(c)): through Slice 4,
-      // object_code_sha, engine_object_code_sha, and machine_tier (the
-      // top-level field; provenance.witness.cpu_tier carries the same
-      // convention) still carry the pending-sentinel convention rather
-      // than a computed value -- a guard-vitality claim about what must
-      // NOT YET be true, violated by any one of the three carrying a
-      // computed value ahead of U2. semb_source_sha is explicitly excluded
-      // -- its own circularity is deferred to Slice 7 (D-SLM6443 item 2)
-      // -- never added to this cell's scope until that slice.
+      // TE-187 bare cell 5 (row 5(c), D-SLM6409(c)); label convention
+      // renamed at U1 Slice 7 step 8 (D-SLM7212): object_code_sha,
+      // engine_object_code_sha, and machine_tier (the top-level field;
+      // provenance.witness.cpu_tier carries the same convention) carry the
+      // named not-computed label rather than a computed value -- a
+      // guard-vitality claim about what must NOT be true in 1.0, violated
+      // by any one of the three carrying a computed or fabricated value.
+      // Computing them is 1.x scope. semb_source_sha is excluded: its own
+      // circularity is D-SLM6443 item 2's, and canonicalizing it is cut to
+      // 1.x (D-SLM7198).
       {
-        auto is_pending_sentinel = [](const std::string& v) {
-          return v.rfind("SEMB-", 0) == 0 && v.find("-PENDING-") != std::string::npos;
+        auto is_uncomputed_label = [](const std::string& v) {
+          static const std::string kSuffix = "-NOT-COMPUTED-IN-1.0";
+          return v.rfind("SEMB-", 0) == 0 && v.size() > kSuffix.size() &&
+                 v.compare(v.size() - kSuffix.size(), kSuffix.size(), kSuffix) == 0;
         };
         const std::string object_code_sha = manifest["provenance"]["object_code_sha"].s();
         const std::string engine_object_code_sha = manifest["provenance"]["engine_object_code_sha"].s();
         const std::string machine_tier = manifest["machine_tier"].s();
         const std::string witness_cpu_tier = manifest["provenance"]["witness"]["cpu_tier"].s();
-        Verdict(is_pending_sentinel(object_code_sha),
-                label + "/cell1 provenance.object_code_sha still carries the pending-sentinel convention "
-                        "(D-SLM6409(c), not yet computed through Slice 4)", object_code_sha);
-        Verdict(is_pending_sentinel(engine_object_code_sha),
-                label + "/cell1 provenance.engine_object_code_sha still carries the pending-sentinel convention "
-                        "(D-SLM6409(c), not yet computed through Slice 4)", engine_object_code_sha);
-        Verdict(is_pending_sentinel(machine_tier),
-                label + "/cell1 the top-level machine_tier still carries the pending-sentinel convention "
-                        "(D-SLM6409(c), not yet computed through Slice 4)", machine_tier);
-        Verdict(is_pending_sentinel(witness_cpu_tier),
-                label + "/cell1 provenance.witness.cpu_tier still carries the pending-sentinel convention "
-                        "(D-SLM6409(c), not yet computed through Slice 4)", witness_cpu_tier);
+        Verdict(is_uncomputed_label(object_code_sha),
+                label + "/cell1 provenance.object_code_sha carries the not-computed-in-1.0 label "
+                        "(D-SLM6409(c), D-SLM7212)", object_code_sha);
+        Verdict(is_uncomputed_label(engine_object_code_sha),
+                label + "/cell1 provenance.engine_object_code_sha carries the not-computed-in-1.0 label "
+                        "(D-SLM6409(c), D-SLM7212)", engine_object_code_sha);
+        Verdict(is_uncomputed_label(machine_tier),
+                label + "/cell1 the top-level machine_tier carries the not-computed-in-1.0 label "
+                        "(D-SLM6409(c), D-SLM7212)", machine_tier);
+        Verdict(is_uncomputed_label(witness_cpu_tier),
+                label + "/cell1 provenance.witness.cpu_tier carries the not-computed-in-1.0 label "
+                        "(D-SLM6409(c), D-SLM7212)", witness_cpu_tier);
       }
     } else if (bake_cap_refused) {
       Missing(label + "/cell1 header/payload/manifest pins, payload identity, SuperFAISS must-accept",

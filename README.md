@@ -17,13 +17,29 @@ span unchanged, appends that artifact-pinned token exactly once, runs the
 C12b-proven PS-N path, and returns caller-owned aligned float32 bytes.
 
 The token-id seam remains available internally for the witness and C12b cells;
-it is no longer the public header. The `semb` CLI is still the version/pin stub,
-and bake/bank/query plus the final certified fingerprint epoch remain later U1/U2
-slices. Fingerprints returned by this raw slice are machine-detectably provisional:
-their first eight digest bytes are `SEMBP001`, exposed as
-`SEMB_FINGERPRINT_PROVISIONAL_TAG` in the public header. They must be rejected as
-final `.wvbank` compatibility keys; the tag is removed only when all five certified
-fields are real.
+it is no longer the public header. The `semb` CLI bakes a corpus into a
+`.wvbank` bank (`semb bake`), encodes queries against a bank (`semb query`),
+re-encodes a bank's corpus and compares it with the bank (`semb verify`), and
+prints a bank's manifest (`semb inspect`). A document longer than the model's
+context is refused by name (`SEMB_CONTEXT_CAP_EXCEEDED`), never truncated; a
+query is cut to the context after its instruction prefix is applied.
+
+The encoder fingerprint, returned by `semb_encode` and `semb_fingerprint_of`, is
+the SHA-256 over five length-prefixed components: the model artifact's bytes,
+the tokenizer artifact's bytes, the template literals the composition applies,
+the executed witness (W-A, W-B and W-Q), and the certification epoch — the
+SHA-256 of `docs/certified-builds.json` as the build compiled it in. Every bank
+manifest records the same value as `encoder_fingerprint`, and opening a query
+against a bank baked by a different encoder is refused with
+`SEMB_FINGERPRINT_MISMATCH`. Banks baked before this fingerprint (their
+fingerprints begin with the eight bytes `SEMBP001`) are refused the same way and
+must be re-baked.
+
+The certified set is interim: the MSVC 19.33 and clang-cl 18.1.8 builds on one
+AVX2 host, which bake the 239-document corpus to identical bytes (evidence in
+`docs/certification/interim/`). `python tools/check_certified_builds.py --root .`
+checks the committed certification package. The release set (AVX-512, AVX2 and
+SSE2) is certified before the 1.0 tag.
 
 ## Relationship to the sibling projects
 
@@ -83,9 +99,13 @@ sec 4.4d item 4; D-SLM6161 holds hosted CI scarce):
   `tests/witness_structural_matrix.py` checks the durable C36(a)/C38 script
   contract and commissions C38's verdict logic via `--selftest-only`; it does
   not repeat the clone/build recipe under every `ctest` run.
-- **C35's own two-installation construction** (`Claude/Plans/SuperEmbedder_Plan.md`
-  sec 8, C35) — two independent SuperEmbedder installations, each built
-  against its own `tools/pin-superslm` run, exercising the thirteen
-  configurations sec 8 names. **Not yet built** (§5's readiness table
-  routes it to U1/U2); this section is where its own runnable script is
-  named once it lands, alongside the perturbation script above.
+- **C35's two-installation construction** (`tests/c35_two_installation_harness.py`;
+  `Claude/Plans/SuperEmbedder_Plan.md` sec 8, C35) — two independent
+  SuperEmbedder installations, each built against its own `tools/pin-superslm`
+  engine prefix; the 239-document corpus is baked on one and queried from the
+  other. Its 1.0 legs: an identical rebuild and an MSVC-against-clang-cl pair
+  must accept; an edited epilogue, an edited non-inline engine `.cpp`, a
+  one-byte certification-document edit and a bank baked by the provisional
+  build must each be refused with `SEMB_FINGERPRINT_MISMATCH`. It runs in
+  phases from a Visual Studio developer shell, never in CI; the phase order is
+  in the script's docstring.

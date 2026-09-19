@@ -58,12 +58,11 @@
 //   same way).
 //
 //   <path_stem>.semb.json -- sec 3.4's manifest, every field present, none
-//   omitted (a field whose producing mechanism lands at a later slice
-//   carries the same provisional sentinel the fingerprint already carries
-//   for it -- present, never omitted, never fabricated):
-//     encoder_fingerprint          -- hex, the untagged SHA-256 over the five
-//                                      clear components; distinct from the
-//                                      tagged ABI value semb_encode and
+//   omitted (a field 1.0 does not compute carries a named `SEMB-...` label
+//   -- present, never omitted, never fabricated):
+//     encoder_fingerprint          -- hex, the SHA-256 over the five clear
+//                                      components, each length-prefixed; the
+//                                      same value semb_encode and
 //                                      semb_fingerprint_of return
 //     model_sha, tokenizer_sha,
 //       template_sha256, witness_sha,
