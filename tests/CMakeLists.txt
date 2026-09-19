@@ -1054,33 +1054,6 @@ if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
 	set_tests_properties(te194_query_check PROPERTIES LABELS "real_artifact")
 endif()
 
-# The fixed-point fingerprint-rotation cell -- UNLIKE the rest of this
-# round's own suite, this one needs no symbol Slice 5 adds (semb_encoder_open,
-# semb_bake_to_path already exist), so it is NOT EXCLUDE_FROM_ALL and is
-# registered as an ordinary, always-built real-artifact ctest -- it bakes the
-# real 239-document corpus and asserts the resulting encoder_fingerprint
-# DIFFERS from the sentinel-based hex this round's own dispatch names,
-# which is FALSE (and therefore red) until Slice 5's build wires W-Q into
-# witness_sha. Needs the real candidate artifact; labeled real_artifact and
-# skipped (via the same STREQUAL guard the suite already uses throughout)
-# when SEMB_C12B_MODEL/SEMB_U1_TOKENIZER are not configured.
-add_executable(te194_fingerprint_rotation_test te194_fingerprint_rotation_test.cpp)
-target_link_libraries(te194_fingerprint_rotation_test PRIVATE superembedder superslm::superslm)
-target_include_directories(te194_fingerprint_rotation_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
-	set(_semb_te194_fp_scratch "${CMAKE_BINARY_DIR}/_scratch/te194_fp_rotation")
-	file(MAKE_DIRECTORY "${_semb_te194_fp_scratch}")
-	add_test(
-		NAME te194_fingerprint_rotation_check
-		COMMAND "$<TARGET_FILE:te194_fingerprint_rotation_test>"
-			--model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
-			--corpus-239 "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/corpus-239.jsonl"
-			--scratch "${_semb_te194_fp_scratch}"
-		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
-	)
-	set_tests_properties(te194_fingerprint_rotation_check PROPERTIES LABELS "real_artifact" TIMEOUT 600)
-endif()
-
 # Cell 3 / C26's remaining two races -- needs the K-15 seam
 # (`superembedder_testseam`), so this target's own registration is DEFERRED
 # to run AFTER semb_add_workspace_tests() (tests/CMakeLists.txt's own

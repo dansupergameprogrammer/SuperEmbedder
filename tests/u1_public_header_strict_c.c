@@ -63,8 +63,6 @@ int semb_u1_public_header_strict_c_probe(void) {
   sum += (int)ok;
   sum += (int)SEMB_STATUS_NEXT_FREE;
   sum += (int)sizeof(fp.digest);
-  sum += (int)SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE;
-  sum += (int)(sizeof(SEMB_FINGERPRINT_PROVISIONAL_TAG) - 1u);
   sum += enc == NULL;
 
   /* Every field just assigned is read back here -- a stronger probe than

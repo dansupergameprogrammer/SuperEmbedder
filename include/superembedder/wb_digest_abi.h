@@ -62,9 +62,9 @@ extern "C" {
 //   else                         -> the 32 bytes written, SEMB_OK
 //
 // The same value this accessor returns for a live `enc` is what
-// `ComputeProvisionalFingerprint` (src/superembedder/encoder.cpp) folds
-// into that handle's own `witness_sha`, in place of the literal
-// `kWbPendingSentinel` it hashed before this round.
+// `ComputeManifestFingerprintComponents` (src/superembedder/encoder.cpp)
+// folds into that handle's own `witness_sha`, and so into its encoder
+// fingerprint.
 //
 // TE-165 (D-SLM6390 items 1-3, re-opening TE-159's C-2/D-SLM6354 on
 // TE-161's own measurement, N-3/D-SLM6385): this digest is derived by

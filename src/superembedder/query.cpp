@@ -21,8 +21,7 @@
 extern "C" semb_status semb_bank_acquire_query(semb_bank bank, const uint8_t fingerprint[32]);
 extern "C" semb_status semb_bank_release_query(semb_bank bank);
 namespace semb {
-semb_status EncoderManifestFingerprint(semb_encoder enc, uint8_t out[32]);
-semb_status EncoderAbiFingerprint(semb_encoder enc, uint8_t out[32]);
+semb_status EncoderFingerprint(semb_encoder enc, uint8_t out[32]);
 semb_status EncoderAcquireQuery(semb_encoder enc);
 semb_status EncoderReleaseQuery(semb_encoder enc);
 semb_status EncoderDims(semb_encoder enc, uint32_t* out_dims);
@@ -168,7 +167,7 @@ extern "C" semb_status semb_query_open(semb_encoder enc, semb_bank bank, semb_qu
   if (out) *out = nullptr;
   if (!enc || !bank || !out) return SEMB_NULL_ARGUMENT;
   uint8_t fingerprint[32];
-  const semb_status fingerprint_status = semb::EncoderManifestFingerprint(enc, fingerprint);
+  const semb_status fingerprint_status = semb::EncoderFingerprint(enc, fingerprint);
   if (fingerprint_status != SEMB_OK) return fingerprint_status;
   const semb_status encoder_status = semb::EncoderAcquireQuery(enc);
   if (encoder_status != SEMB_OK) return encoder_status;
@@ -254,7 +253,7 @@ extern "C" semb_status semb_query_close(semb_query q) {
 extern "C" semb_status semb_fingerprint_of(semb_encoder enc, semb_fingerprint* out) {
   if (!enc || !out) return SEMB_NULL_ARGUMENT;
   if (out->struct_size != sizeof(semb_fingerprint)) return SEMB_STRUCT_SIZE_MISMATCH;
-  // The ABI form is intentionally tagged. Query open uses the separate
-  // untagged accessor above, never this consumer-facing value.
-  return semb::EncoderAbiFingerprint(enc, out->digest);
+  // The encoder fingerprint: the value semb_encode returns, every manifest
+  // this encoder bakes records, and semb_query_open compares (plan sec 3.3).
+  return semb::EncoderFingerprint(enc, out->digest);
 }

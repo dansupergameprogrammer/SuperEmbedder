@@ -29,9 +29,10 @@
 //          join (`TokenizerView::VocabSize() <= model vocab_size`, else
 //          SEMB_TOKENIZER_MODEL_MISMATCH) bounds it by construction.
 //   * P-2  `semb_fingerprint` is `{struct_size, digest[32]}`, opaque.
-//   * P-3  The U1 provisional tag `SEMBP001` in digest[0..7] is a value
-//          convention, not a layout feature (K-14b asserts it until the
-//          five-field derivation lands and flips that cell).
+//   * P-3  digest is the untagged five-field encoder_fingerprint (sec 3.3),
+//          the value every baked manifest records. The U1 provisional tag
+//          `SEMBP001`, retired at U1 Slice 7 step 5, never occupies
+//          digest[0..7] (K-14b asserts its absence).
 //   * P-4  SEMB_ENGINE_REFUSED is reserved for a status that ORIGINATES in
 //          the engine; SuperEmbedder's own refusals are named for what it
 //          found: SEMB_ARTIFACT_UNREADABLE, SEMB_TOKENIZER_MODEL_MISMATCH,
@@ -233,7 +234,7 @@ struct semb_config {
 // fingerprint is one opaque 32-byte value, written only on SEMB_OK.
 struct semb_fingerprint {
   uint32_t struct_size;         // sizeof(semb_fingerprint), validated exactly
-  uint8_t digest[32];           // encoder_fingerprint (sec 3.3); SEMBP001 in [0..7] while provisional (P-3)
+  uint8_t digest[32];           // encoder_fingerprint (sec 3.3), untagged (P-3)
 };
 
 static_assert(sizeof(semb_status) == 4, "semb_status is a 32-bit status");
@@ -272,8 +273,9 @@ static_assert(kStatusCount == 36, "36 named statuses (TE-192 appends 32-33, TE-1
 // The name every non-member int32_t resolves to (P-5: static storage, never NULL).
 inline constexpr const char* kUnknownStatusName = "SEMB_UNKNOWN";
 
-// The provisional fingerprint tag (P-3): a value convention, not a member.
-inline constexpr char kProvisionalFingerprintTag[8] = {'S', 'E', 'M', 'B', 'P', '0', '0', '1'};
+// The retired U1 provisional fingerprint tag (P-3): K-14b asserts digest[0..7]
+// never equals these eight bytes.
+inline constexpr char kRetiredProvisionalFingerprintTag[8] = {'S', 'E', 'M', 'B', 'P', '0', '0', '1'};
 
 // The compiled-in end-token literal open resolves through the tokenizer
 // artifact (plan sec 3.2; P-1).

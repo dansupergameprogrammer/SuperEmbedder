@@ -19,8 +19,8 @@ typedef struct semb_bank_opaque* semb_bank;
 
 // A bank-bound query handle. It is library-owned and distinct from both the
 // encoder and bank handles; query encodes can only occur after open compared
-// the encoder's untagged five-component identity against the bank's retained
-// manifest identity.
+// the encoder's fingerprint against the bank's retained manifest
+// encoder_fingerprint.
 typedef struct semb_query_opaque* semb_query;
 
 // Closed and append-only: existing names and ordinals never move.
@@ -115,13 +115,11 @@ struct semb_document {
   size_t utf8_len;
 };
 
-// U1's ABI-facing raw fingerprint is tagged in-band: digest[0..7] equals this
-// eight-byte tag. It is returned only by semb_encode and semb_fingerprint_of.
-// Persistent manifests and semb_query_open compare the untagged SHA-256 over
-// the five clear components; consumers MUST NOT compare this tagged ABI value
-// to a manifest's encoder_fingerprint.
-#define SEMB_FINGERPRINT_PROVISIONAL_TAG "SEMBP001"
-#define SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE 8u
+// The encoder fingerprint: SHA-256 over the five clear components (model_sha,
+// tokenizer_sha, template_sha256, witness_sha, certification_epoch), each
+// length-prefixed. semb_encode and semb_fingerprint_of return it, every bank
+// manifest records it as encoder_fingerprint, and semb_query_open refuses a
+// bank whose encoder_fingerprint differs with SEMB_FINGERPRINT_MISMATCH.
 
 semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* out);
 semb_status semb_encoder_close(semb_encoder enc);

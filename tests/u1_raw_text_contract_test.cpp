@@ -1001,8 +1001,9 @@ int main(int argc, char** argv) {
       Verdict(s1 == st.ok && s2 == st.ok && s3 == st.ok && same && written && f1.struct_size == sizeof(semb_fingerprint),
               "K-14a the fingerprint is written on SEMB_OK, is the HANDLE's (identical across documents), struct_size preserved (P-2)",
               std::string(Name(s1)) + " digest=" + Hex(f1.digest, 8) + "... " + (same ? "identical" : "DIFFERS across documents"));
-      Verdict(std::memcmp(f1.digest, semb_contract::kProvisionalFingerprintTag, sizeof(semb_contract::kProvisionalFingerprintTag)) == 0,
-              "K-14b this incomplete U1 identity is machine-detectably provisional: digest[0..7] == SEMBP001 (P-3; flips when the five-field derivation lands)",
+      Verdict(std::memcmp(f1.digest, semb_contract::kRetiredProvisionalFingerprintTag,
+                          sizeof(semb_contract::kRetiredProvisionalFingerprintTag)) != 0,
+              "K-14b the fingerprint is the untagged five-field value: digest[0..7] != the retired provisional tag SEMBP001 (P-3)",
               "prefix=" + Hex(f1.digest, 8));
       semb_encoder e2 = OpenPair(a, st, "K-14c (setup 2)");
       if (e2) {

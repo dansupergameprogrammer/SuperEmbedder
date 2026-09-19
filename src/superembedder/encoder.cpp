@@ -59,7 +59,6 @@ struct semb_encoder_s {
   uint32_t vocab_size = 0;
   uint32_t context_cap = 0;
   size_t chunk_budget = 0;
-  std::array<uint8_t, 32> fingerprint{};
   // W-B's own digest for this handle's artifacts, derived once at open (see
   // ComputeWbDigest's own comment) and returned by semb_wb_digest without a
   // second computation -- D-SLM3978's no-cache rule binds the FINGERPRINT
@@ -68,19 +67,19 @@ struct semb_encoder_s {
   // handle (witness_abi.h's own semb_wb_digest comment).
   std::array<uint8_t, 32> wb_digest{};
   std::array<uint8_t, 32> wq_digest{};
-  // TE-166 (U1 slice 4): the manifest's own five clear-text fingerprint
-  // components and the PURE sec 3.3 encoder_fingerprint (SHA-256 over the
-  // five, length-prefixed, no tag) -- derived once at open, alongside
-  // `fingerprint` above (the ABI-facing, U1-provisional-tagged value),
-  // never re-derived at bake (D-SLM3978's no-cache rule: no re-read of a
-  // file another field was derived from). See
+  // The five clear-text fingerprint components the manifest records and the
+  // encoder fingerprint over them (sec 3.3) -- derived once at open, never
+  // re-derived at bake (D-SLM3978's no-cache rule: no re-read of a file
+  // another field was derived from). `fingerprint` is the one value
+  // semb_encode and semb_fingerprint_of return, every baked manifest's
+  // encoder_fingerprint, and what semb_query_open compares. See
   // ComputeManifestFingerprintComponents's own comment.
   std::array<uint8_t, 32> manifest_model_sha{};
   std::array<uint8_t, 32> manifest_tokenizer_sha{};
   std::array<uint8_t, 32> manifest_template_sha256{};
   std::array<uint8_t, 32> manifest_witness_sha{};
   std::array<uint8_t, 32> manifest_certification_epoch{};
-  std::array<uint8_t, 32> manifest_fingerprint{};
+  std::array<uint8_t, 32> fingerprint{};
   std::atomic<uint32_t> active_calls{0};
   // A query is a library-owned child handle.  It retains the encoder for
   // its full lifetime, independently of an encode call currently in flight.
@@ -107,9 +106,6 @@ struct semb_encoder_s {
 namespace {
 
 constexpr char kCanonicalEndToken[] = "<|endoftext|>";
-constexpr char kProvisionalFingerprintTag[] = SEMB_FINGERPRINT_PROVISIONAL_TAG;
-static_assert(sizeof(kProvisionalFingerprintTag) - 1 ==
-              SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE);
 
 // TE-166 (U1 slice 4): manifest provenance fields with no mechanism that
 // computes them yet -- present, never omitted, never fabricated (this
@@ -620,84 +616,32 @@ bool ComputeWbDigest(semb_encoder_s* h, std::array<uint8_t, 32>* out_digest) {
   return true;
 }
 
+// The encoder fingerprint's one derivation (plan sec 3.3): the five
+// clear-text components the manifest records, and `encoder_fingerprint` --
+// SHA-256 over the five, each length-prefixed, in this order: model_sha,
+// tokenizer_sha, template_sha256, witness_sha, certification_epoch. The same
+// 32 bytes are returned by semb_encode and semb_fingerprint_of, written to
+// every manifest this encoder bakes, and compared by semb_query_open against
+// a bank's manifest.
+//
 // model_sha and tokenizer_sha are computed by the CALLER, from the exact
 // owned buffers semb_encoder_open reads once (sec 3.3's one-read rule) --
 // BEFORE model_bytes is moved into the interim encoder's own open, which
-// must happen before W-B's own forward can run. wb_digest is
-// ComputeWbDigest's own output, likewise computed by the caller once the
+// must happen before W-B's own forward can run. wb_digest and wq_digest are
+// the witness legs' outputs, likewise computed by the caller once the
 // interim encoder and the tokenizer's resolved end-token id are both
 // available (sec 3.1: "derives all five fingerprint fields ... runs the
-// witness", moved here from before the interim open per this round's own
-// open-sequence change).
-std::array<uint8_t, 32> ComputeProvisionalFingerprint(
-    const uint8_t model_sha[32], const uint8_t tokenizer_sha[32],
-    const std::array<uint8_t, 32>& wb_digest, const std::array<uint8_t, 32>& wq_digest) {
-  uint8_t wa_sha[32], wq_sha[32];
-  uint8_t wb_sha[32];
-  semb_wa_digest(wa_sha);
-  std::memcpy(wb_sha, wb_digest.data(), 32);
-  std::memcpy(wq_sha, wq_digest.data(), 32);
-
-  uint8_t witness_sha[32];
-  {
-    superslm::Sha256 hash;
-    hash.Update(wa_sha, 32);
-    hash.Update(wb_sha, 32);
-    hash.Update(wq_sha, 32);
-    hash.Final(witness_sha);
-  }
-  const auto certification_epoch = ComputeCertificationEpoch();
-  const auto template_sha = ComputeTemplateDigest();
-
-  uint8_t digest[32];
-  superslm::Sha256 hash;
-  // This is deliberately not the final five-field wire value. Domain-separate
-  // the provisional derivation and reserve an unmistakable public prefix so a
-  // consumer can reject it without relying on README prose.
-  hash.Update(reinterpret_cast<const uint8_t*>(kProvisionalFingerprintTag),
-              SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE);
-  UpdateField(&hash, model_sha);
-  UpdateField(&hash, tokenizer_sha);
-  UpdateField(&hash, template_sha.data());
-  UpdateField(&hash, witness_sha);
-  UpdateField(&hash, certification_epoch.data());
-  hash.Final(digest);
-
-  std::array<uint8_t, 32> out{};
-  std::memcpy(out.data(), kProvisionalFingerprintTag,
-              SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE);
-  std::memcpy(out.data() + SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE, digest,
-              out.size() - SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE);
-  return out;
-}
-
-// TE-166 (U1 slice 4): the manifest's own five clear-text components and
-// the PURE sec 3.3 `encoder_fingerprint` formula -- SHA-256 over the five,
-// length-prefixed, IN THIS ORDER, NO TAG. Distinct from
-// ComputeProvisionalFingerprint above, whose output is the ABI-facing
-// `semb_fingerprint` value `semb_encode` returns: that value additionally
-// tags its first 8 bytes per the U1 provisional boundary (semb.h's own
-// SEMB_FINGERPRINT_PROVISIONAL_TAG comment) and hashes the tag INTO the
-// digest, so it is a different 32 bytes by construction. The manifest's
-// own `encoder_fingerprint` is checked by `tests/te163_bank_pair_test.cpp`
-// cell 3 against an INDEPENDENT recomputation from the manifest's five
-// clear-text fields under this exact untagged formula
-// (RecomputeFingerprintFromManifest), which is what fixes this function's
-// own output rather than the tagged ABI value.
-//
-// Recomputes the same five components ComputeProvisionalFingerprint
-// derives (semb_wa_digest, the caller's own wb_digest, the W-Q pending
-// sentinel, the pending certification epoch, the template digest) --
-// cheap next to ComputeWbDigest's own real forward, and keeps this
-// function independent of ComputeProvisionalFingerprint's own internals
-// rather than threading an output parameter through it.
+// witness"). witness_sha is SHA-256(wa_digest || wb_digest || wq_digest).
+// `tests/te163_bank_pair_test.cpp` cell 3 recomputes encoder_fingerprint
+// independently from a manifest's five clear-text fields
+// (RecomputeFingerprintFromManifest).
 struct ManifestFingerprintComponents {
   std::array<uint8_t, 32> model_sha;
   std::array<uint8_t, 32> tokenizer_sha;
   std::array<uint8_t, 32> template_sha256;
   std::array<uint8_t, 32> witness_sha;
   std::array<uint8_t, 32> certification_epoch;
-  std::array<uint8_t, 32> pure_fingerprint;
+  std::array<uint8_t, 32> fingerprint;
 };
 
 ManifestFingerprintComponents ComputeManifestFingerprintComponents(
@@ -726,7 +670,7 @@ ManifestFingerprintComponents ComputeManifestFingerprintComponents(
   UpdateField(&fp_hash, c.template_sha256.data());
   UpdateField(&fp_hash, c.witness_sha.data());
   UpdateField(&fp_hash, c.certification_epoch.data());
-  fp_hash.Final(c.pure_fingerprint.data());
+  fp_hash.Final(c.fingerprint.data());
   return c;
 }
 
@@ -931,13 +875,12 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
 
     std::array<uint8_t, 32> wq_digest{};
     if (!semb_compute_wq_digest(h, &wq_digest)) return SEMB_ENGINE_REFUSED;
-    h->fingerprint = ComputeProvisionalFingerprint(model_sha, tokenizer_sha, wb_digest, wq_digest);
     h->wb_digest = wb_digest;
     h->wq_digest = wq_digest;
-    // TE-166 (U1 slice 4): the manifest's own components, derived from the
-    // SAME one-read-owned buffers (model_sha/tokenizer_sha) and the SAME
-    // wb_digest just computed above -- never a second read, never a
-    // second forward.
+    // The five components and the fingerprint, derived from the SAME
+    // one-read-owned buffers (model_sha/tokenizer_sha) and the SAME witness
+    // digests just computed above -- never a second read, never a second
+    // forward.
     {
       const ManifestFingerprintComponents mc =
           ComputeManifestFingerprintComponents(model_sha, tokenizer_sha, wb_digest, wq_digest);
@@ -946,7 +889,7 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
       h->manifest_template_sha256 = mc.template_sha256;
       h->manifest_witness_sha = mc.witness_sha;
       h->manifest_certification_epoch = mc.certification_epoch;
-      h->manifest_fingerprint = mc.pure_fingerprint;
+      h->fingerprint = mc.fingerprint;
     }
     // The handle is now complete. Publish it: ready first (release order,
     // so every field written above -- including fingerprint and wb_digest
@@ -1102,15 +1045,7 @@ semb_status EncoderReleaseQuery(semb_encoder enc) {
   return SEMB_OK;
 }
 
-semb_status EncoderManifestFingerprint(semb_encoder enc, uint8_t out[32]) {
-  if (!enc || !out) return SEMB_NULL_ARGUMENT;
-  HandleLease lease(enc);
-  if (!lease.get()) return SEMB_INVALID_HANDLE;
-  std::memcpy(out, lease.get()->manifest_fingerprint.data(), 32);
-  return SEMB_OK;
-}
-
-semb_status EncoderAbiFingerprint(semb_encoder enc, uint8_t out[32]) {
+semb_status EncoderFingerprint(semb_encoder enc, uint8_t out[32]) {
   if (!enc || !out) return SEMB_NULL_ARGUMENT;
   HandleLease lease(enc);
   if (!lease.get()) return SEMB_INVALID_HANDLE;
@@ -1536,7 +1471,7 @@ extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* 
     provenance.Set("witness", std::move(witness));
 
     js::Value manifest = js::Value::MakeObject();
-    manifest.Set("encoder_fingerprint", js::Value::MakeString(Hex(h->manifest_fingerprint.data(), 32)));
+    manifest.Set("encoder_fingerprint", js::Value::MakeString(Hex(h->fingerprint.data(), 32)));
     manifest.Set("model_sha", js::Value::MakeString(Hex(h->manifest_model_sha.data(), 32)));
     manifest.Set("tokenizer_sha", js::Value::MakeString(Hex(h->manifest_tokenizer_sha.data(), 32)));
     manifest.Set("template_sha256", js::Value::MakeString(Hex(h->manifest_template_sha256.data(), 32)));
