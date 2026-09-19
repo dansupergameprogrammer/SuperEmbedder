@@ -18,6 +18,7 @@ include(EngineGuards)   # find_package(superslm), the two version guards, proven
 include(BuildFlags)     # the precise-FP flag (directory-wide) + semb_assert_precise_fp() (C14)
 include(SourceProvenance)  # semb_source_sha (C34)
 include(ToolchainPin)   # the certified {compiler id, version} pairs (N-4, D-SLM6386)
+include(CertifiedBuilds)  # docs/certified-builds.json compiled in for certification_epoch (C42-derive)
 
 # C38's pin-bump-only construction needs to place one compile definition on
 # exactly one downstream target. The pinned SuperSLM tag is never modified:

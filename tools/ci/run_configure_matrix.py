@@ -68,10 +68,16 @@ def copy_repo(dest: Path) -> Path:
     'tests' which is not an existing directory," not the leg's own
     intended construction. tests/CMakeLists.txt needs nothing this
     function was not already copying (cmake/, include/, src/, tools/,
-    superslm.lock)."""
+    superslm.lock).
+
+    TE-265: "docs" added to the copy list. Configure now reads
+    docs/certified-builds.json and refuses by name when it is missing
+    (cmake/CertifiedBuilds.cmake, SEMB_CERTIFIED_BUILDS_MISSING), so a copy
+    that omits it fails every leg at that check instead of at the leg's own
+    construction."""
     rmtree(dest)
     dest.mkdir(parents=True)
-    for item in ("CMakeLists.txt", "cmake", "include", "src", "tests", "tools", "superslm.lock",
+    for item in ("CMakeLists.txt", "cmake", "docs", "include", "src", "tests", "tools", "superslm.lock",
                  ".gitattributes"):
         src = REPO_ROOT / item
         if not src.exists():

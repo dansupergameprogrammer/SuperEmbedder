@@ -23,6 +23,9 @@
 // source-closure scan -- safe to include here, unlike generated/semb_provenance.h
 // (see semb_bake_to_path's own provenance-block comment for why THAT one is not).
 #include "semb_engine_pin.h"
+// Generated at configure time the same way (cmake/CertifiedBuilds.cmake ->
+// semb_certified_builds.h.in): docs/certified-builds.json's exact bytes.
+#include "semb_certified_builds.h"
 
 #include <array>
 #include <atomic>
@@ -104,10 +107,6 @@ struct semb_encoder_s {
 namespace {
 
 constexpr char kCanonicalEndToken[] = "<|endoftext|>";
-// W-B's own sentinel retired, TE-147: ComputeProvisionalFingerprint now
-// takes a real, handle-derived wb_digest (ComputeWbDigest, below) instead
-constexpr char kCertificationPendingSentinel[] =
-    "SEMB-CERTIFIED-BUILDS-PENDING-AFTER-U1-RAW-ENCODER-SLICE";
 constexpr char kProvisionalFingerprintTag[] = SEMB_FINGERPRINT_PROVISIONAL_TAG;
 static_assert(sizeof(kProvisionalFingerprintTag) - 1 ==
               SEMB_FINGERPRINT_PROVISIONAL_TAG_SIZE);
@@ -344,6 +343,16 @@ std::array<uint8_t, 32> ComputeTemplateDigest() {
   UpdateLengthPrefixed(&hash, std::string_view(kCanonicalEndToken));
   std::array<uint8_t, 32> out{};
   hash.Final(out.data());
+  return out;
+}
+
+// certification_epoch (plan sec 3.3, sec 4.1a): SHA-256 of the certification
+// document's exact bytes as this build compiled them in
+// (cmake/CertifiedBuilds.cmake). Never read from a file at run time, so a
+// document edited after the build cannot change what this build reports.
+std::array<uint8_t, 32> ComputeCertificationEpoch() {
+  std::array<uint8_t, 32> out{};
+  Hash(semb::kCertifiedBuildsDocument, semb::kCertifiedBuildsDocumentSize, out.data());
   return out;
 }
 
@@ -637,9 +646,7 @@ std::array<uint8_t, 32> ComputeProvisionalFingerprint(
     hash.Update(wq_sha, 32);
     hash.Final(witness_sha);
   }
-  uint8_t certification_epoch[32];
-  Hash(kCertificationPendingSentinel, sizeof(kCertificationPendingSentinel) - 1,
-       certification_epoch);
+  const auto certification_epoch = ComputeCertificationEpoch();
   const auto template_sha = ComputeTemplateDigest();
 
   uint8_t digest[32];
@@ -653,7 +660,7 @@ std::array<uint8_t, 32> ComputeProvisionalFingerprint(
   UpdateField(&hash, tokenizer_sha);
   UpdateField(&hash, template_sha.data());
   UpdateField(&hash, witness_sha);
-  UpdateField(&hash, certification_epoch);
+  UpdateField(&hash, certification_epoch.data());
   hash.Final(digest);
 
   std::array<uint8_t, 32> out{};
@@ -711,8 +718,7 @@ ManifestFingerprintComponents ComputeManifestFingerprintComponents(
     hash.Update(wq_sha, 32);
     hash.Final(c.witness_sha.data());
   }
-  Hash(kCertificationPendingSentinel, sizeof(kCertificationPendingSentinel) - 1,
-       c.certification_epoch.data());
+  c.certification_epoch = ComputeCertificationEpoch();
 
   superslm::Sha256 fp_hash;
   UpdateField(&fp_hash, c.model_sha.data());

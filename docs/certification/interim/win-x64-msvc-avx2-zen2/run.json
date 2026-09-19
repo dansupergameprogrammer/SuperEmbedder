@@ -1,0 +1,13 @@
+{
+  "buildId": "win-x64-msvc-avx2-zen2",
+  "runId": "te265-interim-2026-09-18",
+  "date": "2026-09-18",
+  "toolchain": "MSVC 19.33.31631.0",
+  "enginePin": {
+    "tag": "v1.5.0",
+    "commit": "321be4634e14fa5e541bfb8611f06cd7fbb2ae9a",
+    "engine_tree_sha": "acaf4b0f22362868422eb9f370ebee280f6820b2fff55953301d3b9060f094e0"
+  },
+  "rowDigest": "e8ad5d05c31eced1afa8967f0babc72212718effea9e19b0c46d2282e9bcde72",
+  "tokenIdDigest": "e440e227fb5bdd3cc58895ac4fa536e533c8e5988fc993c4f3286e36680de835"
+}
