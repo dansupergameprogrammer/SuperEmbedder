@@ -425,6 +425,24 @@ bool SkippedIdCollides(const std::vector<semb_document>& kept,
   return false;
 }
 
+// TE-317 round 3 (N-4): SkippedIdCollides above is a CLI-only concept the
+// library cannot see -- the empty twin never reaches it, so the library's
+// own step-10 duplicate check never fires on this collision. Refusing
+// SEMB_DOCUMENT_ID_DUPLICATE from the collision alone, unconditionally,
+// preempts whatever the library would have refused FIRST, in its own
+// per-document index order over `kept`, if some other kept document also
+// has a defect (bad id, or invalid UTF-8 text) at an earlier position. A
+// collision is only safe to refuse preemptively when nothing else in kept
+// would fail the library's own checks; otherwise the real call must run
+// so the library reports its own first failure, in its own order.
+bool AnyKeptDocumentHasALibraryDefect(const std::vector<semb_document>& kept) {
+  for (const semb_document& doc : kept) {
+    if (!IdWouldPassStep9(doc)) return true;
+    if (doc.utf8_len > 0 && !ValidUtf8(doc.utf8, doc.utf8_len)) return true;
+  }
+  return false;
+}
+
 // TE-320 S-4/M-1: the sidecar, `<stem>.skipped.json`, matches the plan's own
 // format (`Claude/Plans/te267-u2-release-plan.md` U2-8) -- a JSON array,
 // one object per skipped id, `{"id": ..., "reason": "empty_text"}`. JSON's
@@ -444,14 +462,21 @@ std::string SkippedSidecarJson(const std::vector<std::string>& skipped_ids) {
   return semb::json::Write(array);
 }
 
-// TE-320 M-3: written to a temp file beside the sidecar's own final path,
-// then renamed into place -- the pattern the library's own bank-triple
-// writer uses (AtomicTripleWriter::Commit, encoder.cpp) -- so a write
-// failure partway through never leaves a truncated `.skipped.json` in
-// place of a prior one. TE-320 S-1: called on EVERY successful bake, not
-// only when something was skipped, so a clean re-bake at a stem that
-// previously had skips overwrites the old sidecar with `[]` instead of
-// leaving it stale.
+// TE-320 M-3, hardened round 3 (N-2): written to a temp file beside the
+// sidecar's own final path, then renamed into place -- the pattern the
+// library's own bank-triple writer uses (AtomicTripleWriter::Commit,
+// encoder.cpp) -- so a write failure partway through never leaves a
+// truncated `.skipped.json` in place of a prior one. The stream is CLOSED
+// explicitly and checked AFTER close, before the rename: a sidecar is
+// small enough that every byte sits in the stream's own buffer until the
+// close-time flush, so a disk-full (or similar) failure at that flush is
+// invisible to any check made right after `<<` -- confirmed by execution
+// (WSL GCC, a `.tmp` path symlinked to `/dev/full`): checking only after
+// `<<` reports success and renames the failed write over a prior good
+// sidecar; checking after an explicit `close()` reports failure and never
+// renames. TE-320 S-1: called on EVERY successful bake, not only when
+// something was skipped, so a clean re-bake at a stem that previously had
+// skips overwrites the old sidecar with `[]` instead of leaving it stale.
 bool WriteSkippedSidecar(const std::string& stem, const std::vector<std::string>& skipped_ids) {
   const std::string path = stem + ".skipped.json";
   const std::string temp_path = path + ".tmp";
@@ -459,7 +484,12 @@ bool WriteSkippedSidecar(const std::string& stem, const std::vector<std::string>
     std::ofstream sidecar(temp_path, std::ios::binary | std::ios::trunc);
     if (!sidecar) return false;
     sidecar << SkippedSidecarJson(skipped_ids);
-    if (!sidecar) return false;
+    sidecar.close();
+    if (!sidecar) {
+      std::error_code cleanup_error;
+      std::filesystem::remove(temp_path, cleanup_error);
+      return false;
+    }
   }
   std::error_code error;
   std::filesystem::rename(temp_path, path, error);
@@ -471,36 +501,16 @@ bool WriteSkippedSidecar(const std::string& stem, const std::vector<std::string>
   return true;
 }
 
-// TE-320 S-3/S-4: plan sec U2-8's own stderr shape, one line per skipped id.
+// TE-320 S-3/S-4, hardened round 3 (N-3): plan sec U2-8's own stderr shape,
+// one line per skipped id -- the id printed as a JSON string (the same
+// `semb::json::Write`/`WriteEscapedString` the sidecar uses), not raw. A
+// raw id may legally contain LF, CR or an ESC byte (valid UTF-8, no NUL,
+// accepted by the library), which would otherwise split one line into two
+// or inject a terminal control sequence; JSON-quoting escapes all of them.
 void ReportSkipped(const std::vector<std::string>& skipped_ids) {
   for (const std::string& id : skipped_ids) {
-    std::cerr << "skipped " << id << ": SEMB_INPUT_EMPTY\n";
-  }
-}
-
-enum class SidecarReadResult { kAbsent, kOk, kMalformed };
-
-// TE-320 S-3: reads a bank's own `<stem>.skipped.json` for `semb verify`'s
-// comparison. Absent is a distinct, valid outcome -- a bank baked before
-// this sidecar existed, or (post S-1) one baked with nothing to skip --
-// and per the ruling an absent sidecar names the empty set, not an error.
-// Present-but-unparseable is a genuine integrity problem and is refused by
-// name rather than silently treated as empty.
-SidecarReadResult ReadSkippedSidecarIds(const std::string& stem, std::vector<std::string>* out_ids) {
-  std::string content;
-  if (!ReadFile(stem + ".skipped.json", &content)) return SidecarReadResult::kAbsent;
-  try {
-    const semb::json::Value parsed = semb::json::Parse(content);
-    if (!parsed.IsArray()) return SidecarReadResult::kMalformed;
-    for (const semb::json::Value& entry : parsed.as_array) {
-      if (!entry.IsObject()) return SidecarReadResult::kMalformed;
-      const semb::json::Value* id = entry.Find("id");
-      if (!id || !id->IsString()) return SidecarReadResult::kMalformed;
-      out_ids->push_back(id->as_string);
-    }
-    return SidecarReadResult::kOk;
-  } catch (...) {
-    return SidecarReadResult::kMalformed;
+    std::cerr << "skipped " << semb::json::Write(semb::json::Value::MakeString(id))
+              << ": SEMB_INPUT_EMPTY\n";
   }
 }
 
@@ -523,7 +533,9 @@ int Bake(const std::vector<std::string>& args) {
   // originally-empty corpus (docs.empty()) is unrelated to this rule and
   // falls through to the library unchanged, which refuses it SEMB_CORPUS_EMPTY.
   if (!docs.empty() && kept.empty()) return Refuse("semb bake", SEMB_INPUT_EMPTY);
-  if (SkippedIdCollides(kept, skipped_ids)) return Refuse("semb bake", SEMB_DOCUMENT_ID_DUPLICATE);
+  if (SkippedIdCollides(kept, skipped_ids) && !AnyKeptDocumentHasALibraryDefect(kept)) {
+    return Refuse("semb bake", SEMB_DOCUMENT_ID_DUPLICATE);
+  }
   Handles handles;
   semb_status status = OpenEncoder(model, tokenizer, &handles);
   if (status != SEMB_OK) return Refuse("semb_encoder_open", status);
@@ -642,25 +654,22 @@ int Verify(const std::vector<std::string>& args) {
   std::vector<std::string> skipped_ids;
   FilterEmptyDocuments(ids, docs, &kept, &skipped_ids);
   if (!docs.empty() && kept.empty()) return Refuse("semb verify", SEMB_INPUT_EMPTY);
-  if (SkippedIdCollides(kept, skipped_ids)) return Refuse("semb verify", SEMB_DOCUMENT_ID_DUPLICATE);
-  // TE-320 S-3: report exactly as bake does, so the README's "both commands
-  // report on stderr" claim is true, and check the corpus's own skip set
-  // against the bank's `<stem>.skipped.json` (an absent sidecar names the
-  // empty set). Bake and verify can each independently pass this filter
-  // while disagreeing about WHICH documents were empty -- e.g. the corpus
-  // gained extra empty documents after the bake -- and without this check
-  // that disagreement re-encodes to a byte-identical bank and verify says
-  // nothing. SEMB_CORPUS_DIGEST_MISMATCH is the existing status for "this
-  // corpus is not the bank's corpus", which is exactly this case.
+  if (SkippedIdCollides(kept, skipped_ids) && !AnyKeptDocumentHasALibraryDefect(kept)) {
+    return Refuse("semb verify", SEMB_DOCUMENT_ID_DUPLICATE);
+  }
+  // TE-317 round 3 (conductor direction, D-SLM7433, revising TE-320's own
+  // S-3 remedy): verify's contract is "re-baking this corpus under the same
+  // skip rule reproduces this bank", which the row/corpus digest comparison
+  // below already decides -- it does NOT also read the bank's sidecar. The
+  // sidecar is informational only, is not one of the files the library
+  // writes or checks, and nothing ties a specific sidecar to a specific
+  // bank; a bank moved as its three files (no sidecar), or a re-bake whose
+  // sidecar write failed and left a stale one, must not change this
+  // verdict, and a corpus with different empty documents than the one baked
+  // still verifies OK precisely because it re-bakes to the identical kept
+  // set (TE-324 N-1). Verify still reports its own skips on stderr, exactly
+  // as bake does.
   if (!skipped_ids.empty()) ReportSkipped(skipped_ids);
-  std::vector<std::string> bank_skipped_ids;
-  if (ReadSkippedSidecarIds(positional[0], &bank_skipped_ids) == SidecarReadResult::kMalformed) {
-    return Refuse("semb verify sidecar", SEMB_ARTIFACT_UNREADABLE);
-  }
-  if (std::unordered_set<std::string>(bank_skipped_ids.begin(), bank_skipped_ids.end()) !=
-      std::unordered_set<std::string>(skipped_ids.begin(), skipped_ids.end())) {
-    return Refuse("semb verify", SEMB_CORPUS_DIGEST_MISMATCH);
-  }
   TemporaryBakeDirectory scratch;
   if (!scratch.Create()) return Refuse("semb verify scratch", SEMB_ARTIFACT_UNREADABLE);
   auto finish = [&](int result) {

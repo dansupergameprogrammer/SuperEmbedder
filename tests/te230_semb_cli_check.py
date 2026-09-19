@@ -46,17 +46,29 @@ CLI choices where the plan deliberately leaves syntax/output open:
     document with a malformed id is refused by the library for that
     defect, never skipped (D-SLM7405, TE-317; corrected TE-320 S-2). A
     skipped id colliding with a kept or another skipped id refuses
-    SEMB_DOCUMENT_ID_DUPLICATE (TE-320 M-2). Skips are reported one line
-    per id on stderr (`skipped <id>: SEMB_INPUT_EMPTY`, plan
-    `te267-u2-release-plan.md` U2-8's own shape) and recorded in a
+    SEMB_DOCUMENT_ID_DUPLICATE, UNLESS some other kept document would
+    itself fail the library's own per-document checks (a bad id or
+    invalid UTF-8 text), in which case the real call runs and the library
+    reports that document's own defect instead -- the CLI's own collision
+    check never preempts a refusal the library would give first (TE-320
+    M-2; corrected TE-317 round 3 N-4). Skips are reported one line per
+    id on stderr, the id printed as an escaped JSON string so a legal LF,
+    CR or ESC byte in an id cannot split or corrupt the line (`skipped
+    "<id>": SEMB_INPUT_EMPTY`, plan `te267-u2-release-plan.md` U2-8's own
+    shape; TE-320 S-4, corrected TE-317 round 3 N-3), and recorded in a
     `<stem>.skipped.json` sidecar (a JSON array of `{"id", "reason"}`)
-    written atomically (temp file plus rename) on EVERY successful bake,
-    never left stale from a prior bake at the same stem (TE-320 S-1,
-    S-4, M-1, M-3); a non-empty corpus left with nothing to bake after
-    skipping still refuses SEMB_INPUT_EMPTY. `semb verify` skips
-    identically on its re-encode, reports the same way, and refuses
-    SEMB_CORPUS_DIGEST_MISMATCH when its own skip set differs from the
-    bank's sidecar -- an absent sidecar names the empty set (TE-320 S-3).
+    written atomically on EVERY successful bake (temp file, closed and
+    checked AFTER close -- not merely after the write -- then renamed
+    into place, so a flush failure at close cannot report success or
+    replace a good prior sidecar; TE-320 S-1, S-4, M-1, M-3, hardened
+    TE-317 round 3 N-2); a non-empty corpus left with nothing to bake
+    after skipping still refuses SEMB_INPUT_EMPTY. `semb verify` skips
+    identically on its re-encode and reports the same way, but its
+    corpus-identity verdict comes ONLY from the existing row/corpus
+    digest comparison -- it does not read the sidecar at all, which is
+    informational only (conductor direction D-SLM7433, TE-317 round 3,
+    revising TE-320's own S-3 remedy after TE-324 found it made verify's
+    verdict depend on a file outside the bank that nothing binds to it).
     Every other per-document refusal (invalid UTF-8 text, empty/invalid
     id, duplicate id among non-empty documents) and the library's own
     all-or-nothing batch refusal are unchanged.
@@ -682,12 +694,12 @@ def main(argv: list[str]) -> int:
         mixed_corpus.write_text("\n".join(mixed_rows) + "\n", encoding="utf-8")
         mixed_stem = scratch / "mixed_bank"
         mixed_bake = call([str(semb), "bake", str(mixed_corpus), "--out", str(mixed_stem), *base])
-        skip_line_ok = (mixed_bake.returncode == 0 and "skipped 447488: SEMB_INPUT_EMPTY" in mixed_bake.stderr)
+        skip_line_ok = (mixed_bake.returncode == 0 and 'skipped "447488": SEMB_INPUT_EMPTY' in mixed_bake.stderr)
         report.add("PASS" if skip_line_ok else "FAIL",
                    "TE-317 bake skips one empty document among good ones and reports it",
                    f"exit 0, stderr names the id: {mixed_bake.stderr.strip()!r}" if skip_line_ok else
                    f"RED: exit={mixed_bake.returncode}; stderr={mixed_bake.stderr[-300:]!r}; expected exit 0 with "
-                   "the line 'skipped 447488: SEMB_INPUT_EMPTY' (plan U2-8's own stderr shape)")
+                   'the line \'skipped "447488": SEMB_INPUT_EMPTY\' (plan U2-8\'s own stderr shape, id JSON-quoted per N-3)')
         # T-2 (TE-320): the sidecar's exact content, not a substring -- the
         # JSON array (S-4/M-1) holds exactly one entry, with both fields.
         sidecar = Path(str(mixed_stem) + ".skipped.json")
@@ -812,42 +824,114 @@ def main(argv: list[str]) -> int:
                    f"RED: exit={all_empty_bake.returncode}; stderr={all_empty_bake.stderr[-300:]!r}; "
                    f"leftovers={[p.name for p in all_empty_leftovers]}")
         # Re-bake the mixed corpus once more (the stale-sidecar cell above
-        # left `mixed_stem` clean) so the round-trip and mismatch cells
-        # below verify against a bank whose sidecar matches this corpus.
+        # left `mixed_stem` clean) so the round-trip cells below verify
+        # against a freshly baked bank.
         mixed_bake_2 = call([str(semb), "bake", str(mixed_corpus), "--out", str(mixed_stem), *base])
         if mixed_bake_2.returncode == 0:
             # TE-320 S-3: verify reports its own skips on stderr, exactly as
-            # bake does, and accepts when its skip set matches the bank's
-            # sidecar.
+            # bake does, and accepts its own real corpus.
             mixed_verify = call([str(semb), "verify", str(mixed_stem), "--corpus", str(mixed_corpus), *base])
-            mixed_verify_ok = mixed_verify.returncode == 0 and "skipped 447488: SEMB_INPUT_EMPTY" in mixed_verify.stderr
+            mixed_verify_ok = mixed_verify.returncode == 0 and 'skipped "447488": SEMB_INPUT_EMPTY' in mixed_verify.stderr
             report.add("PASS" if mixed_verify_ok else "FAIL",
                        "TE-317/S-3 verify skips identically, reports it, and the bank verifies OK",
                        "exit 0, stderr names the skipped id" if mixed_verify_ok else
                        f"RED: exit={mixed_verify.returncode}; {(mixed_verify.stdout + mixed_verify.stderr)[-300:]!r}; "
                        "verify must skip the same document bake did AND report it, or its re-encode is refused "
                        "SEMB_INPUT_EMPTY instead of comparing digests")
-            # TE-320 S-3: a corpus that skips a DIFFERENT set than the bank's
-            # own sidecar is not the bank's corpus -- refused, not silently
-            # accepted (probe 6b's finding: extra empty documents at verify
-            # time previously verified OK and said nothing).
+            # TE-317 round 3 (conductor direction D-SLM7433, revising TE-320's
+            # own S-3 remedy after TE-324's N-1): verify's corpus-identity
+            # verdict comes ONLY from the row/corpus digest comparison it
+            # already made before this ticket -- it does not read the bank's
+            # sidecar at all. A corpus with extra empty documents the bank
+            # never saw re-bakes to the IDENTICAL kept set (the extra
+            # documents contribute nothing), so it verifies OK -- the
+            # opposite of round 2's own cell, which this replaces.
             extra_empty_corpus = scratch / "mixed_plus_extra_empty.jsonl"
             extra_empty_corpus.write_text(
                 mixed_corpus.read_text(encoding="utf-8") +
                 "\n".join(json.dumps({"id": f"X{i}", "text": ""}) for i in range(3)) + "\n",
                 encoding="utf-8")
-            mismatch_verify = call([str(semb), "verify", str(mixed_stem), "--corpus", str(extra_empty_corpus), *base])
-            mismatch_ok = verify_corpus_digest_refusal(mismatch_verify)
-            report.add("PASS" if mismatch_ok else "FAIL",
-                       "TE-320 S-3 verify refuses when its skip set differs from the bank's sidecar",
-                       "refused `semb verify: SEMB_CORPUS_DIGEST_MISMATCH (35)`" if mismatch_ok else
-                       f"RED: exit={mismatch_verify.returncode}; "
-                       f"{(mismatch_verify.stdout + mismatch_verify.stderr)[-300:]!r}; a corpus with extra empty "
-                       "documents the bank never saw must not verify OK")
+            extra_verify = call([str(semb), "verify", str(mixed_stem), "--corpus", str(extra_empty_corpus), *base])
+            extra_verify_ok = extra_verify.returncode == 0
+            report.add("PASS" if extra_verify_ok else "FAIL",
+                       "TE-317 round 3 a corpus with extra empty documents re-bakes identically and verifies OK",
+                       "the extra empty documents contribute nothing kept; digests match, verify accepts" if extra_verify_ok else
+                       f"RED: exit={extra_verify.returncode}; {(extra_verify.stdout + extra_verify.stderr)[-300:]!r}; "
+                       "under D-SLM7433 this corpus re-bakes to the identical kept set and must verify OK")
+            # TE-317 round 3, requirement 1 (N-1's path (a)): a bank moved or
+            # copied as its three library-written files, with no sidecar at
+            # all, verifies OK against its real corpus -- verify's verdict
+            # cannot depend on a file the library never writes and this
+            # project's own copied_stem() helper never copies.
+            copied_bank_stem = scratch / "mixed_copied_no_sidecar"
+            copied_stem(mixed_stem, copied_bank_stem)
+            copied_has_no_sidecar = not Path(str(copied_bank_stem) + ".skipped.json").exists()
+            copied_verify = call([str(semb), "verify", str(copied_bank_stem), "--corpus", str(mixed_corpus), *base])
+            copied_verify_ok = copied_has_no_sidecar and copied_verify.returncode == 0
+            report.add("PASS" if copied_verify_ok else "FAIL",
+                       "TE-317 round 3 a copied bank (three files, no sidecar) verifies OK against its real corpus",
+                       "the copy carries no sidecar; verify accepts on the digest comparison alone" if copied_verify_ok else
+                       f"RED: sidecar_present={not copied_has_no_sidecar}; exit={copied_verify.returncode}; "
+                       f"{(copied_verify.stdout + copied_verify.stderr)[-300:]!r}")
+            # TE-317 round 3, requirement 1 (N-1's path (b)): a bank whose
+            # sidecar is STALE (names ids that are not this bank's, as a
+            # failed re-bake's sidecar write would leave) still verifies OK
+            # by the digests alone -- the sidecar's content is never read.
+            stale_bank_stem = scratch / "mixed_stale_sidecar"
+            copied_stem(mixed_stem, stale_bank_stem)
+            Path(str(stale_bank_stem) + ".skipped.json").write_text(
+                json.dumps([{"id": "totally-unrelated-id", "reason": "empty_text"}]), encoding="utf-8")
+            stale_verify = call([str(semb), "verify", str(stale_bank_stem), "--corpus", str(mixed_corpus), *base])
+            stale_verify_ok = stale_verify.returncode == 0
+            report.add("PASS" if stale_verify_ok else "FAIL",
+                       "TE-317 round 3 a bank with a stale sidecar verifies by the digests alone",
+                       "a sidecar naming an unrelated id is never read; verify accepts on the digest comparison" if stale_verify_ok else
+                       f"RED: exit={stale_verify.returncode}; {(stale_verify.stdout + stale_verify.stderr)[-300:]!r}")
+            # An unparseable sidecar (not even valid JSON) must be ignored
+            # the same way -- verify no longer has any code path that reads
+            # or validates it.
+            garbage_bank_stem = scratch / "mixed_garbage_sidecar"
+            copied_stem(mixed_stem, garbage_bank_stem)
+            Path(str(garbage_bank_stem) + ".skipped.json").write_text("not json at all [", encoding="utf-8")
+            garbage_verify = call([str(semb), "verify", str(garbage_bank_stem), "--corpus", str(mixed_corpus), *base])
+            garbage_verify_ok = garbage_verify.returncode == 0
+            report.add("PASS" if garbage_verify_ok else "FAIL",
+                       "TE-317 round 3 a bank with an unparseable sidecar verifies by the digests alone",
+                       "unparseable sidecar content is never read; verify accepts on the digest comparison" if garbage_verify_ok else
+                       f"RED: exit={garbage_verify.returncode}; {(garbage_verify.stdout + garbage_verify.stderr)[-300:]!r}")
+            # TE-317 round 3 (N-4): the skip-collision duplicate check must
+            # not preempt a defect the library would refuse for FIRST, in
+            # its own per-document order over the kept batch. A corpus with
+            # invalid UTF-8 text at an earlier index and a
+            # duplicate-with-empty-twin later must report the library's own
+            # refusal (SEMB_INVALID_UTF8), not the CLI's own
+            # SEMB_DOCUMENT_ID_DUPLICATE.
+            precedence_good = [json.loads(r) for r in mixed_rows[:3]]
+            precedence_corpus = scratch / "precedence_corpus.jsonl"
+            precedence_corpus.write_bytes(
+                json.dumps(precedence_good[0]).encode("utf-8") + b"\n" +
+                b'{"id": "bad", "text": "x\xffy"}\n' +
+                json.dumps(precedence_good[1]).encode("utf-8") + b"\n" +
+                json.dumps({"id": precedence_good[1]["id"], "text": ""}).encode("utf-8") + b"\n")
+            precedence_bake = call([str(semb), "bake", str(precedence_corpus), "--out", str(scratch / "precedence_bank"), *base])
+            precedence_ok = named_refusal(precedence_bake, "semb_bake_to_path", "SEMB_INVALID_UTF8")
+            report.add("PASS" if precedence_ok else "FAIL",
+                       "TE-317 round 3 N-4 a multi-defect corpus reports the library's own first refusal",
+                       "refused `semb_bake_to_path: SEMB_INVALID_UTF8 (9)`, the library's own precedence" if precedence_ok else
+                       f"RED: exit={precedence_bake.returncode}; stderr={precedence_bake.stderr[-300:]!r}; the "
+                       "CLI's own collision check must not preempt a defect the library would refuse for first")
         else:
             report.add("BLOCKED", "TE-317/S-3 verify skips identically, reports it, and the bank verifies OK",
                        "the mixed-corpus bake did not succeed")
-            report.add("BLOCKED", "TE-320 S-3 verify refuses when its skip set differs from the bank's sidecar",
+            report.add("BLOCKED", "TE-317 round 3 a corpus with extra empty documents re-bakes identically and verifies OK",
+                       "the mixed-corpus bake did not succeed")
+            report.add("BLOCKED", "TE-317 round 3 a copied bank (three files, no sidecar) verifies OK against its real corpus",
+                       "the mixed-corpus bake did not succeed")
+            report.add("BLOCKED", "TE-317 round 3 a bank with a stale sidecar verifies by the digests alone",
+                       "the mixed-corpus bake did not succeed")
+            report.add("BLOCKED", "TE-317 round 3 a bank with an unparseable sidecar verifies by the digests alone",
+                       "the mixed-corpus bake did not succeed")
+            report.add("BLOCKED", "TE-317 round 3 N-4 a multi-defect corpus reports the library's own first refusal",
                        "the mixed-corpus bake did not succeed")
         # F5 (Mendeleev te319): verify's own twin of the all-empty bake
         # cell -- a non-empty, all-empty corpus against an existing good
@@ -906,7 +990,11 @@ def main(argv: list[str]) -> int:
         report.add("BLOCKED", "TE-320 F4 a sidecar write failure refuses, with the bank triple already valid", "CLI baseline triple was not produced")
         report.add("BLOCKED", "TE-317 a corpus where every document is empty still refuses (SEMB_INPUT_EMPTY, no leftovers)", "CLI baseline triple was not produced")
         report.add("BLOCKED", "TE-317/S-3 verify skips identically, reports it, and the bank verifies OK", "CLI baseline triple was not produced")
-        report.add("BLOCKED", "TE-320 S-3 verify refuses when its skip set differs from the bank's sidecar", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-317 round 3 a corpus with extra empty documents re-bakes identically and verifies OK", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-317 round 3 a copied bank (three files, no sidecar) verifies OK against its real corpus", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-317 round 3 a bank with a stale sidecar verifies by the digests alone", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-317 round 3 a bank with an unparseable sidecar verifies by the digests alone", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-317 round 3 N-4 a multi-defect corpus reports the library's own first refusal", "CLI baseline triple was not produced")
         report.add("BLOCKED", "TE-320 F5 verify refuses SEMB_INPUT_EMPTY on an all-empty corpus", "CLI baseline triple was not produced")
         report.add("BLOCKED", "TE-317 the library itself still refuses the unfiltered batch (control)", "CLI baseline triple was not produced")
     return 1 if report.failed else 0

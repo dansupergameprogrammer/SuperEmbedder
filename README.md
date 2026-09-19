@@ -27,15 +27,19 @@ query is cut to the context after its instruction prefix is applied.
 library's own `SEMB_INPUT_EMPTY` refusal, unchanged for every other caller)
 is its sole defect; a document with an empty, NUL-containing, or invalid-UTF-8
 id is still refused by name, never silently skipped, whether or not its text
-is also empty. Both commands report each skipped id on stderr
-(`skipped <id>: SEMB_INPUT_EMPTY`), and `semb bake` writes a
+is also empty. A skip that would collide with another document's id (kept or
+also skipped) refuses `SEMB_DOCUMENT_ID_DUPLICATE`, unless some other
+document in the batch has its own defect the library would refuse for first,
+in which case that refusal is reported instead. Both commands report each
+skipped id on stderr, the id printed as an escaped JSON string
+(`skipped "<id>": SEMB_INPUT_EMPTY`), and `semb bake` writes a
 `<stem>.skipped.json` sidecar next to the bank on every successful bake (a
 JSON array of `{"id", "reason"}`, `[]` when nothing was skipped, so a clean
-re-bake never leaves a stale sidecar from an earlier one). `semb verify`
-compares its own skip set against the bank's sidecar (an absent sidecar
-names the empty set) and refuses `SEMB_CORPUS_DIGEST_MISMATCH` when they
-differ, so a corpus with different empty documents than the one baked is
-never silently accepted.
+re-bake never leaves a stale sidecar from an earlier one). The sidecar is
+informational only: `semb verify`'s corpus-identity verdict comes entirely
+from its existing row/corpus digest comparison, so a bank moved or copied as
+its three files (no sidecar), or one whose sidecar is stale, is verified
+correctly either way.
 
 The encoder fingerprint, returned by `semb_encode` and `semb_fingerprint_of`, is
 the SHA-256 over five length-prefixed components: the model artifact's bytes,
