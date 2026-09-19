@@ -35,7 +35,12 @@ skipped id on stderr, the id printed as an escaped JSON string
 (`skipped "<id>": SEMB_INPUT_EMPTY`), and `semb bake` writes a
 `<stem>.skipped.json` sidecar next to the bank on every successful bake (a
 JSON array of `{"id", "reason"}`, `[]` when nothing was skipped, so a clean
-re-bake never leaves a stale sidecar from an earlier one). The sidecar is
+re-bake never leaves a stale sidecar from an earlier one). If the sidecar
+write itself fails, `semb bake` exits 1 from `semb bake skipped-sidecar`
+even though the bank is valid and was written first; any sidecar left by a
+previous bake at that stem is also removed (best effort) rather than left
+to describe the wrong bake, unless the sidecar path is a directory, which
+is left untouched. The sidecar is
 informational only: `semb verify`'s corpus-identity verdict comes entirely
 from its existing row/corpus digest comparison, so a bank moved or copied as
 its three files (no sidecar), or one whose sidecar is stale, is verified

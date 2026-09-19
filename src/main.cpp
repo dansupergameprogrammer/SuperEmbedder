@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -425,16 +426,20 @@ bool SkippedIdCollides(const std::vector<semb_document>& kept,
   return false;
 }
 
-// TE-317 round 3 (N-4): SkippedIdCollides above is a CLI-only concept the
-// library cannot see -- the empty twin never reaches it, so the library's
-// own step-10 duplicate check never fires on this collision. Refusing
-// SEMB_DOCUMENT_ID_DUPLICATE from the collision alone, unconditionally,
-// preempts whatever the library would have refused FIRST, in its own
-// per-document index order over `kept`, if some other kept document also
-// has a defect (bad id, or invalid UTF-8 text) at an earlier position. A
-// collision is only safe to refuse preemptively when nothing else in kept
-// would fail the library's own checks; otherwise the real call must run
-// so the library reports its own first failure, in its own order.
+// TE-317 round 3 (N-4), corrected round 4 (TE-326 M-4): SkippedIdCollides
+// above is a CLI-only concept the library cannot see -- the empty twin
+// never reaches it, so the library's own step-10 duplicate check never
+// fires on this collision. Refusing SEMB_DOCUMENT_ID_DUPLICATE from the
+// collision alone, unconditionally, preempts whatever the library would
+// have refused FIRST, in its own per-document order over `kept`, if some
+// other kept document also has a defect (bad id, or invalid UTF-8 text) --
+// at ANY position, not only an earlier one: step 9 (encoder.cpp) validates
+// every document before step 10's uniqueness check ever runs, so a kept
+// defect positioned AFTER the colliding twin still outranks the duplicate.
+// A collision is only safe to refuse preemptively when nothing else in
+// kept would fail the library's own checks, checked over the whole of
+// kept; otherwise the real call must run so the library reports its own
+// first failure, in its own order.
 bool AnyKeptDocumentHasALibraryDefect(const std::vector<semb_document>& kept) {
   for (const semb_document& doc : kept) {
     if (!IdWouldPassStep9(doc)) return true;
@@ -477,6 +482,22 @@ std::string SkippedSidecarJson(const std::vector<std::string>& skipped_ids) {
 // renames. TE-320 S-1: called on EVERY successful bake, not only when
 // something was skipped, so a clean re-bake at a stem that previously had
 // skips overwrites the old sidecar with `[]` instead of leaving it stale.
+// TE-326 M-5: on either failure branch below, also remove any PRIOR
+// sidecar sitting at the final `path` (best effort, error ignored) --
+// UNLESS that path is a directory, which stays exactly as TE-320 F4 left
+// it (a caller-created obstruction, not a stale record). Before this, a
+// re-bake whose write failed left the PREVIOUS bake's sidecar in place
+// beside the NEW bank, silently naming the wrong bake's skips; a missing
+// record is honest, a stale one is not. `WriteSkippedSidecar` is only ever
+// called after a successful bake (`Bake`, below), so "the bank is already
+// valid" always holds when this runs.
+void RemoveStaleSidecarBestEffort(const std::string& path) {
+  std::error_code error;
+  if (!std::filesystem::is_directory(path, error)) {
+    std::filesystem::remove(path, error);
+  }
+}
+
 bool WriteSkippedSidecar(const std::string& stem, const std::vector<std::string>& skipped_ids) {
   const std::string path = stem + ".skipped.json";
   const std::string temp_path = path + ".tmp";
@@ -488,6 +509,7 @@ bool WriteSkippedSidecar(const std::string& stem, const std::vector<std::string>
     if (!sidecar) {
       std::error_code cleanup_error;
       std::filesystem::remove(temp_path, cleanup_error);
+      RemoveStaleSidecarBestEffort(path);
       return false;
     }
   }
@@ -496,21 +518,77 @@ bool WriteSkippedSidecar(const std::string& stem, const std::vector<std::string>
   if (error) {
     std::error_code cleanup_error;
     std::filesystem::remove(temp_path, cleanup_error);
+    RemoveStaleSidecarBestEffort(path);
     return false;
   }
   return true;
 }
 
-// TE-320 S-3/S-4, hardened round 3 (N-3): plan sec U2-8's own stderr shape,
-// one line per skipped id -- the id printed as a JSON string (the same
-// `semb::json::Write`/`WriteEscapedString` the sidecar uses), not raw. A
-// raw id may legally contain LF, CR or an ESC byte (valid UTF-8, no NUL,
-// accepted by the library), which would otherwise split one line into two
-// or inject a terminal control sequence; JSON-quoting escapes all of them.
+// TE-326 R-1: beyond JSON's own mandatory escapes, also escapes DEL
+// (U+007F), the C1 control range (U+0080-U+009F) and the Unicode line
+// separators U+2028/U+2029 as `\uXXXX` -- all legal in an id (valid UTF-8,
+// no NUL, so none of them are refused at bake time) and none of them are
+// characters JSON itself requires escaping, but each is a de facto line
+// boundary or terminal-control byte in at least one real consumer:
+// Python's `str.splitlines()` (this project's own test suite) breaks on
+// U+0085/U+2028/U+2029, and a C1 control (U+009B, the single-byte CSI, in
+// particular) or DEL can act on a terminal. This walk is local to the
+// stderr line ONLY -- the sidecar and every manifest keep exactly the
+// bytes `json_lite.cpp`'s own `WriteEscapedString` produces, which is why
+// this duplicates a codepoint walk here rather than widening that shared
+// writer.
+std::string EscapeIdForStderr(const std::string& id) {
+  std::string out = "\"";
+  size_t i = 0;
+  while (i < id.size()) {
+    const uint8_t lead = static_cast<uint8_t>(id[i]);
+    uint32_t codepoint = lead;
+    size_t length = 1;
+    if ((lead & 0xE0) == 0xC0) {
+      codepoint = lead & 0x1F;
+      length = 2;
+    } else if ((lead & 0xF0) == 0xE0) {
+      codepoint = lead & 0x0F;
+      length = 3;
+    } else if ((lead & 0xF8) == 0xF0) {
+      codepoint = lead & 0x07;
+      length = 4;
+    }
+    for (size_t j = 1; j < length && i + j < id.size(); ++j) {
+      codepoint = (codepoint << 6) | (static_cast<uint8_t>(id[i + j]) & 0x3F);
+    }
+    switch (codepoint) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\b': out += "\\b"; break;
+      case '\f': out += "\\f"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (codepoint < 0x20 || codepoint == 0x7F ||
+            (codepoint >= 0x80 && codepoint <= 0x9F) ||
+            codepoint == 0x2028 || codepoint == 0x2029) {
+          char buf[8];
+          std::snprintf(buf, sizeof(buf), "\\u%04x", codepoint);
+          out += buf;
+        } else {
+          out.append(id, i, length);
+        }
+    }
+    i += length;
+  }
+  out += "\"";
+  return out;
+}
+
+// TE-320 S-3/S-4, hardened round 3 (N-3), extended round 4 (TE-326 R-1):
+// plan sec U2-8's own stderr shape, one line per skipped id -- the id
+// printed via `EscapeIdForStderr` above, not raw and not the sidecar's own
+// (narrower) JSON escaping.
 void ReportSkipped(const std::vector<std::string>& skipped_ids) {
   for (const std::string& id : skipped_ids) {
-    std::cerr << "skipped " << semb::json::Write(semb::json::Value::MakeString(id))
-              << ": SEMB_INPUT_EMPTY\n";
+    std::cerr << "skipped " << EscapeIdForStderr(id) << ": SEMB_INPUT_EMPTY\n";
   }
 }
 

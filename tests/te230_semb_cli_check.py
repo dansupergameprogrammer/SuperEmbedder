@@ -48,30 +48,40 @@ CLI choices where the plan deliberately leaves syntax/output open:
     skipped id colliding with a kept or another skipped id refuses
     SEMB_DOCUMENT_ID_DUPLICATE, UNLESS some other kept document would
     itself fail the library's own per-document checks (a bad id or
-    invalid UTF-8 text), in which case the real call runs and the library
-    reports that document's own defect instead -- the CLI's own collision
-    check never preempts a refusal the library would give first (TE-320
-    M-2; corrected TE-317 round 3 N-4). Skips are reported one line per
-    id on stderr, the id printed as an escaped JSON string so a legal LF,
-    CR or ESC byte in an id cannot split or corrupt the line (`skipped
+    invalid UTF-8 text) AT ANY POSITION -- before or after the colliding
+    twin, since the library validates every document before it checks
+    uniqueness -- in which case the real call runs and the library
+    reports that document's own defect instead. This applies identically
+    at both `bake` and `verify`'s own call sites (TE-320 M-2; corrected
+    TE-317 round 3 N-4, corrected wording TE-326 M-4). Skips are reported
+    one line per id on stderr, the id escaped beyond JSON's own minimum
+    (also DEL, the C1 range U+0080-U+009F, and U+2028/U+2029, all as a
+    backslash-u escape) so no line-splitting consumer (including Python's own
+    `str.splitlines()`, which this very file uses) can split one skip
+    into two, and no raw control byte reaches the terminal (`skipped
     "<id>": SEMB_INPUT_EMPTY`, plan `te267-u2-release-plan.md` U2-8's own
-    shape; TE-320 S-4, corrected TE-317 round 3 N-3), and recorded in a
-    `<stem>.skipped.json` sidecar (a JSON array of `{"id", "reason"}`)
-    written atomically on EVERY successful bake (temp file, closed and
-    checked AFTER close -- not merely after the write -- then renamed
-    into place, so a flush failure at close cannot report success or
-    replace a good prior sidecar; TE-320 S-1, S-4, M-1, M-3, hardened
-    TE-317 round 3 N-2); a non-empty corpus left with nothing to bake
-    after skipping still refuses SEMB_INPUT_EMPTY. `semb verify` skips
-    identically on its re-encode and reports the same way, but its
-    corpus-identity verdict comes ONLY from the existing row/corpus
-    digest comparison -- it does not read the sidecar at all, which is
-    informational only (conductor direction D-SLM7433, TE-317 round 3,
-    revising TE-320's own S-3 remedy after TE-324 found it made verify's
-    verdict depend on a file outside the bank that nothing binds to it).
-    Every other per-document refusal (invalid UTF-8 text, empty/invalid
-    id, duplicate id among non-empty documents) and the library's own
-    all-or-nothing batch refusal are unchanged.
+    shape; TE-320 S-4, corrected TE-317 round 3 N-3, extended TE-326 R-1
+    -- this wider escaping is local to stderr; the sidecar and every
+    manifest keep exactly the bytes the shared JSON writer produces), and
+    recorded in a `<stem>.skipped.json` sidecar (a JSON array of `{"id",
+    "reason"}`) written atomically on EVERY successful bake (temp file,
+    closed and checked AFTER close -- not merely after the write -- then
+    renamed into place, so a flush failure at close cannot report success
+    or replace a good prior sidecar; and on either failure branch, any
+    PRIOR sidecar at the final path is also removed best-effort, unless
+    that path is a directory, which stays untouched -- TE-320 S-1, S-4,
+    M-1, M-3, hardened TE-317 round 3 N-2, extended TE-326 M-5); a
+    non-empty corpus left with nothing to bake after skipping still
+    refuses SEMB_INPUT_EMPTY. `semb verify` skips identically on its
+    re-encode and reports the same way, but its corpus-identity verdict
+    comes ONLY from the existing row/corpus digest comparison -- it does
+    not read the sidecar at all, which is informational only (conductor
+    direction D-SLM7433, TE-317 round 3, revising TE-320's own S-3 remedy
+    after TE-324 found it made verify's verdict depend on a file outside
+    the bank that nothing binds to it). Every other per-document refusal
+    (invalid UTF-8 text, empty/invalid id, duplicate id among non-empty
+    documents) and the library's own all-or-nothing batch refusal are
+    unchanged.
 These are the smallest machine-readable forms that let this test compare the
 CLI to the C ABI without parsing presentation text.  The planner owns their
 ratification; this file pins the test-author choice until then.
@@ -81,6 +91,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import queue
 import re
 import shutil
@@ -107,6 +118,11 @@ class Report:
     def __init__(self) -> None: self.failed = False
     def add(self, state: str, cell: str, detail: str) -> None:
         print(f"[{state}] {cell}: {detail}")
+        # SKIPPED (TE-326 T-4(c)) is distinct from BLOCKED: it names a cell
+        # this platform cannot produce the precondition for (no POSIX
+        # /dev/full on Windows), not a missing apparatus or a real defect --
+        # it does not fail the run. BLOCKED keeps its existing meaning
+        # (a real precondition failed) and keeps failing the run.
         self.failed |= state in {"FAIL", "RED-UNIMPLEMENTED", "BLOCKED"}
 
 
@@ -796,15 +812,97 @@ def main(argv: list[str]) -> int:
         # bank is already valid -- pre-create a directory at the sidecar's
         # own path so the write (temp file + rename, M-3) cannot land, and
         # confirm the bank triple still exists while bake itself refuses.
+        # Extended TE-326 M-5: a directory at the sidecar path is an
+        # obstruction the caller created, not a stale record, so
+        # RemoveStaleSidecarBestEffort must leave it exactly as a directory
+        # (never remove or replace it).
         f4_stem = scratch / "f4_sidecar_fail"
-        (Path(str(f4_stem) + ".skipped.json")).mkdir(parents=True)
+        f4_sidecar_path = Path(str(f4_stem) + ".skipped.json")
+        f4_sidecar_path.mkdir(parents=True)
         f4_bake = call([str(semb), "bake", str(mixed_corpus), "--out", str(f4_stem), *base])
         f4_triple_ok = all(Path(str(f4_stem) + s).is_file() for s in (".wvbank.json", ".wvbank.bin", ".semb.json"))
-        f4_ok = named_refusal(f4_bake, "semb bake skipped-sidecar", "SEMB_ARTIFACT_UNREADABLE") and f4_triple_ok
+        f4_dir_stayed = f4_sidecar_path.is_dir()
+        f4_ok = (named_refusal(f4_bake, "semb bake skipped-sidecar", "SEMB_ARTIFACT_UNREADABLE")
+                and f4_triple_ok and f4_dir_stayed)
         report.add("PASS" if f4_ok else "FAIL",
                    "TE-320 F4 a sidecar write failure refuses, with the bank triple already valid",
-                   "refused `semb bake skipped-sidecar: SEMB_ARTIFACT_UNREADABLE (11)`, bank triple present" if f4_ok else
-                   f"RED: exit={f4_bake.returncode}; stderr={f4_bake.stderr[-300:]!r}; triple_ok={f4_triple_ok}")
+                   "refused `semb bake skipped-sidecar: SEMB_ARTIFACT_UNREADABLE (11)`, bank triple present, "
+                   "directory obstruction left exactly as a directory (TE-326 M-5)" if f4_ok else
+                   f"RED: exit={f4_bake.returncode}; stderr={f4_bake.stderr[-300:]!r}; triple_ok={f4_triple_ok}; "
+                   f"sidecar_path_is_still_a_directory={f4_dir_stayed}")
+        # TE-326 T-4(a): the skip-collision duplicate check at the VERIFY
+        # call site specifically -- not only bake's. A corpus naming a kept
+        # bank id twice (once normally, once as an empty twin) must refuse
+        # SEMB_DOCUMENT_ID_DUPLICATE from `semb verify` too; the N-4
+        # precedence cell above only ever calls `bake`, so it cannot
+        # discriminate a mutant that deletes the check at the verify site
+        # alone (TE-326 Mutant A).
+        verify_dup_rows = [json.loads(r) for r in mixed_rows[:3]]
+        verify_dup_rows.append({"id": verify_dup_rows[0]["id"], "text": ""})
+        verify_dup_corpus = scratch / "verify_dup_id_corpus.jsonl"
+        verify_dup_corpus.write_text("\n".join(json.dumps(r) for r in verify_dup_rows) + "\n", encoding="utf-8")
+        verify_dup_check = call([str(semb), "verify", str(good), "--corpus", str(verify_dup_corpus), *base])
+        verify_dup_ok = named_refusal(verify_dup_check, "semb verify", "SEMB_DOCUMENT_ID_DUPLICATE")
+        report.add("PASS" if verify_dup_ok else "FAIL",
+                   "TE-326 T-4(a) verify refuses a skip-collision duplicate, at the verify call site itself",
+                   "refused `semb verify: SEMB_DOCUMENT_ID_DUPLICATE (20)`" if verify_dup_ok else
+                   f"RED: exit={verify_dup_check.returncode}; {(verify_dup_check.stdout + verify_dup_check.stderr)[-300:]!r}; "
+                   "a corpus naming one id twice (one kept, one empty twin) must be refused by verify too, not "
+                   "only by bake")
+        # TE-326 T-4(b): an id containing a line break stays on ONE stderr
+        # line. Every existing stderr assertion in this suite uses the id
+        # 447488 (no special characters), so a remedy that quotes the id
+        # without escaping it (TE-326 Mutant B) would still pass every
+        # other cell; this one specifically checks line count.
+        lf_id_rows = [json.loads(mixed_rows[0]), {"id": "a\nb", "text": ""}]
+        lf_id_corpus = scratch / "lf_id_corpus.jsonl"
+        lf_id_corpus.write_text("\n".join(json.dumps(r) for r in lf_id_rows) + "\n", encoding="utf-8")
+        lf_id_bake = call([str(semb), "bake", str(lf_id_corpus), "--out", str(scratch / "lf_id_bank"), *base])
+        lf_stderr_lines = [line for line in lf_id_bake.stderr.splitlines() if line.startswith("skipped ")]
+        lf_id_ok = (lf_id_bake.returncode == 0 and lf_stderr_lines == ['skipped "a\\nb": SEMB_INPUT_EMPTY'])
+        report.add("PASS" if lf_id_ok else "FAIL",
+                   "TE-326 T-4(b) an id containing a line break stays on exactly one stderr line",
+                   'exactly one line, skipped "a\\nb": SEMB_INPUT_EMPTY' if lf_id_ok else
+                   f"RED: exit={lf_id_bake.returncode}; skip-lines={lf_stderr_lines!r}; expected exactly one line "
+                   'reading skipped "a\\nb": SEMB_INPUT_EMPTY -- an unescaped LF in the id splits it into two')
+        # TE-326 T-4(c) / N-2: the close-time write-failure check
+        # (WriteSkippedSidecar's explicit close() + check before rename)
+        # has no pin anywhere in this suite; its only prior evidence was a
+        # harness outside the repository (WSL GCC in the round-3 build log,
+        # MSVC named-pipe in this review). The CLI's own ctest target runs
+        # on ubuntu-latest in CI, where `/dev/full` always fails a write at
+        # flush -- symlinking the sidecar's OWN temp path to it reproduces
+        # the exact failure class through the real CLI. Not reproducible on
+        # native Windows (no write-always-fails device exists), so this
+        # cell reports BLOCKED with a named reason there rather than
+        # silently passing or silently not existing.
+        if os.name == "posix" and Path("/dev/full").exists():
+            n2_stem = scratch / "n2_close_check"
+            n2_bake_1 = call([str(semb), "bake", str(mixed_corpus), "--out", str(n2_stem), *base])
+            n2_sidecar_path = Path(str(n2_stem) + ".skipped.json")
+            n2_prior_sidecar_existed = n2_bake_1.returncode == 0 and n2_sidecar_path.is_file()
+            n2_tmp_path = Path(str(n2_stem) + ".skipped.json.tmp")
+            if n2_tmp_path.exists():
+                n2_tmp_path.unlink()
+            n2_tmp_path.symlink_to("/dev/full")
+            n2_bake_2 = call([str(semb), "bake", str(mixed_corpus), "--out", str(n2_stem), *base])
+            n2_triple_ok = all(Path(str(n2_stem) + s).is_file() for s in (".wvbank.json", ".wvbank.bin", ".semb.json"))
+            # TE-326 M-5: the close-time failure removes the PRIOR sidecar
+            # (best effort) instead of leaving it stale beside the new bank.
+            n2_stale_removed = not n2_sidecar_path.exists()
+            n2_ok = (n2_prior_sidecar_existed
+                    and named_refusal(n2_bake_2, "semb bake skipped-sidecar", "SEMB_ARTIFACT_UNREADABLE")
+                    and n2_triple_ok and n2_stale_removed)
+            report.add("PASS" if n2_ok else "FAIL",
+                       "TE-326 T-4(c)/N-2 a close-time write failure (/dev/full) refuses and clears the stale sidecar",
+                       "refused `semb bake skipped-sidecar: SEMB_ARTIFACT_UNREADABLE (11)`, bank triple valid, "
+                       "prior sidecar removed (TE-326 M-5)" if n2_ok else
+                       f"RED: prior_sidecar_existed={n2_prior_sidecar_existed}; exit={n2_bake_2.returncode}; "
+                       f"stderr={n2_bake_2.stderr[-300:]!r}; triple_ok={n2_triple_ok}; stale_removed={n2_stale_removed}")
+        else:
+            report.add("SKIPPED", "TE-326 T-4(c)/N-2 a close-time write failure (/dev/full) refuses and clears the stale sidecar",
+                       f"POSIX /dev/full is unavailable on this platform (os.name={os.name!r}); this cell runs on "
+                       "Linux CI (ubuntu-latest), where the CLI's ctest target is exercised")
         # A non-empty corpus where every document is empty has nothing left
         # to bake: refused exactly as an all-empty batch, SEMB_INPUT_EMPTY,
         # never SEMB_CORPUS_EMPTY (that status is reserved for a corpus with
@@ -933,6 +1031,47 @@ def main(argv: list[str]) -> int:
                        "the mixed-corpus bake did not succeed")
             report.add("BLOCKED", "TE-317 round 3 N-4 a multi-defect corpus reports the library's own first refusal",
                        "the mixed-corpus bake did not succeed")
+        # TE-326 M-4: the defect-beats-duplicate rule applies to a kept
+        # defect at ANY position, not only one earlier than the colliding
+        # twin -- step 9 validates every document before step 10's
+        # uniqueness check ever runs (encoder.cpp), so a defect AFTER the
+        # twin still outranks the duplicate. The N-4 cell above puts the
+        # bad-UTF-8 document BEFORE the twin (index 1, twin at 2); this one
+        # puts the twin first (index 1) and the bad-UTF-8 document after it
+        # (index 2), so a scan that stopped at the twin (TE-326 Mutant C)
+        # would wrongly refuse SEMB_DOCUMENT_ID_DUPLICATE instead of
+        # reporting the library's own SEMB_INVALID_UTF8.
+        after_good = [json.loads(r) for r in mixed_rows[:3]]
+        after_corpus = scratch / "defect_after_twin_corpus.jsonl"
+        after_corpus.write_bytes(
+            json.dumps(after_good[0]).encode("utf-8") + b"\n" +
+            json.dumps(after_good[1]).encode("utf-8") + b"\n" +
+            json.dumps({"id": after_good[1]["id"], "text": ""}).encode("utf-8") + b"\n" +
+            b'{"id": "bad", "text": "x\xffy"}\n')
+        after_bake = call([str(semb), "bake", str(after_corpus), "--out", str(scratch / "defect_after_twin_bank"), *base])
+        after_ok = named_refusal(after_bake, "semb_bake_to_path", "SEMB_INVALID_UTF8")
+        report.add("PASS" if after_ok else "FAIL",
+                   "TE-326 M-4 a kept defect AFTER the colliding twin still outranks the duplicate refusal",
+                   "refused `semb_bake_to_path: SEMB_INVALID_UTF8 (9)`, the library's own precedence" if after_ok else
+                   f"RED: exit={after_bake.returncode}; stderr={after_bake.stderr[-300:]!r}; a defect anywhere in "
+                   "kept -- including after the colliding twin -- must outrank the CLI's own duplicate refusal")
+        # TE-326 R-1: beyond LF/CR/ESC (round 3's own N-3 fix), the stderr
+        # id also escapes U+2028 (LINE SEPARATOR) -- a de facto line
+        # boundary to Python's own str.splitlines(), which this very test
+        # file uses to find "skipped " lines. An id carrying U+2028 raw
+        # would split into two lines the same way an unescaped LF did.
+        ls_id_rows = [json.loads(mixed_rows[0]), {"id": "ls ps", "text": ""}]
+        ls_id_corpus = scratch / "ls_id_corpus.jsonl"
+        ls_id_corpus.write_text("\n".join(json.dumps(r) for r in ls_id_rows) + "\n", encoding="utf-8")
+        ls_id_bake = call([str(semb), "bake", str(ls_id_corpus), "--out", str(scratch / "ls_id_bank"), *base])
+        ls_stderr_lines = [line for line in ls_id_bake.stderr.splitlines() if line.startswith("skipped ")]
+        ls_id_ok = (ls_id_bake.returncode == 0 and ls_stderr_lines == ['skipped "ls\\u2028ps": SEMB_INPUT_EMPTY'])
+        report.add("PASS" if ls_id_ok else "FAIL",
+                   "TE-326 R-1 an id containing U+2028 (LINE SEPARATOR) stays on exactly one stderr line",
+                   'exactly one line, skipped "ls\\u2028ps": SEMB_INPUT_EMPTY' if ls_id_ok else
+                   f"RED: exit={ls_id_bake.returncode}; skip-lines={ls_stderr_lines!r}; expected exactly one line "
+                   'reading skipped "ls\\u2028ps": SEMB_INPUT_EMPTY -- a raw U+2028 is a line boundary to '
+                   "Python's str.splitlines(), among other consumers")
         # F5 (Mendeleev te319): verify's own twin of the all-empty bake
         # cell -- a non-empty, all-empty corpus against an existing good
         # bank refuses SEMB_INPUT_EMPTY, the same status bake uses for the
@@ -988,6 +1127,9 @@ def main(argv: list[str]) -> int:
         report.add("BLOCKED", "TE-320 T-1 an empty id with empty text is refused, not skipped", "CLI baseline triple was not produced")
         report.add("BLOCKED", "TE-320 M-2 a duplicate id where one twin is empty still refuses SEMB_DOCUMENT_ID_DUPLICATE", "CLI baseline triple was not produced")
         report.add("BLOCKED", "TE-320 F4 a sidecar write failure refuses, with the bank triple already valid", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-326 T-4(a) verify refuses a skip-collision duplicate, at the verify call site itself", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-326 T-4(b) an id containing a line break stays on exactly one stderr line", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-326 T-4(c)/N-2 a close-time write failure (/dev/full) refuses and clears the stale sidecar", "CLI baseline triple was not produced")
         report.add("BLOCKED", "TE-317 a corpus where every document is empty still refuses (SEMB_INPUT_EMPTY, no leftovers)", "CLI baseline triple was not produced")
         report.add("BLOCKED", "TE-317/S-3 verify skips identically, reports it, and the bank verifies OK", "CLI baseline triple was not produced")
         report.add("BLOCKED", "TE-317 round 3 a corpus with extra empty documents re-bakes identically and verifies OK", "CLI baseline triple was not produced")
@@ -995,6 +1137,8 @@ def main(argv: list[str]) -> int:
         report.add("BLOCKED", "TE-317 round 3 a bank with a stale sidecar verifies by the digests alone", "CLI baseline triple was not produced")
         report.add("BLOCKED", "TE-317 round 3 a bank with an unparseable sidecar verifies by the digests alone", "CLI baseline triple was not produced")
         report.add("BLOCKED", "TE-317 round 3 N-4 a multi-defect corpus reports the library's own first refusal", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-326 M-4 a kept defect AFTER the colliding twin still outranks the duplicate refusal", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-326 R-1 an id containing U+2028 (LINE SEPARATOR) stays on exactly one stderr line", "CLI baseline triple was not produced")
         report.add("BLOCKED", "TE-320 F5 verify refuses SEMB_INPUT_EMPTY on an all-empty corpus", "CLI baseline triple was not produced")
         report.add("BLOCKED", "TE-317 the library itself still refuses the unfiltered batch (control)", "CLI baseline triple was not produced")
     return 1 if report.failed else 0
