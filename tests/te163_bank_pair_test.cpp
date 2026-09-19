@@ -513,10 +513,21 @@ int main(int argc, char** argv) {
       // provenance.witness.cpu_tier carries the same convention) carry the
       // named not-computed label rather than a computed value -- a
       // guard-vitality claim about what must NOT be true in 1.0, violated
-      // by any one of the three carrying a computed or fabricated value.
-      // Computing them is 1.x scope. semb_source_sha is excluded: its own
-      // circularity is D-SLM6443 item 2's, and canonicalizing it is cut to
-      // 1.x (D-SLM7198).
+      // by any one of the four carrying a computed or fabricated value.
+      // Computing them is 1.x scope.
+      //
+      // TE-272 (D-SLM7257, sec 7): semb_source_sha joins the same check.
+      // It was excluded on D-SLM6443 item 2's reasoning -- that a
+      // mechanism for its own circularity was Slice 7's, where it would
+      // "become real for the public surface" -- but Slice 7's own F-4
+      // (D-SLM7257) did not make it real: it gave semb_source_sha the
+      // identical -NOT-COMPUTED-IN-1.0 label the other three already
+      // carried (encoder.cpp's own comment: "as is reporting semb_source_sha
+      // in the manifest (D-SLM7257)"), so D-SLM6443 item 2's reason no
+      // longer distinguishes it from the other three. Canonicalizing it
+      // (computing a real value) is cut to 1.x exactly like the others
+      // (D-SLM7198); nothing about its own provenance is checked here,
+      // never a fingerprint input.
       {
         auto is_uncomputed_label = [](const std::string& v) {
           static const std::string kSuffix = "-NOT-COMPUTED-IN-1.0";
@@ -527,6 +538,7 @@ int main(int argc, char** argv) {
         const std::string engine_object_code_sha = manifest["provenance"]["engine_object_code_sha"].s();
         const std::string machine_tier = manifest["machine_tier"].s();
         const std::string witness_cpu_tier = manifest["provenance"]["witness"]["cpu_tier"].s();
+        const std::string semb_source_sha = manifest["provenance"]["semb_source_sha"].s();
         Verdict(is_uncomputed_label(object_code_sha),
                 label + "/cell1 provenance.object_code_sha carries the not-computed-in-1.0 label "
                         "(D-SLM6409(c), D-SLM7212)", object_code_sha);
@@ -539,6 +551,9 @@ int main(int argc, char** argv) {
         Verdict(is_uncomputed_label(witness_cpu_tier),
                 label + "/cell1 provenance.witness.cpu_tier carries the not-computed-in-1.0 label "
                         "(D-SLM6409(c), D-SLM7212)", witness_cpu_tier);
+        Verdict(is_uncomputed_label(semb_source_sha),
+                label + "/cell1 provenance.semb_source_sha carries the not-computed-in-1.0 label "
+                        "(D-SLM6409(c), D-SLM7257)", semb_source_sha);
       }
     } else if (bake_cap_refused) {
       Missing(label + "/cell1 header/payload/manifest pins, payload identity, SuperFAISS must-accept",
