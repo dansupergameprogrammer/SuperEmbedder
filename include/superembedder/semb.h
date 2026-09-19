@@ -71,7 +71,10 @@ typedef struct semb_query_opaque* semb_query;
   /* fingerprint's own five-component recomputation) and              */ \
   /* SEMB_ARTIFACT_SHA_MISMATCH (provenance.artifact_sha).            */ \
   X(SEMB_BANK_DIGEST_MISMATCH,             33) \
-  X(SEMB_BANK_IN_USE,                      34)
+  X(SEMB_BANK_IN_USE,                      34) \
+  /* `semb verify`: the bank manifest's corpus_digest disagrees with  */ \
+  /* the digest of the corpus the verify re-encoded.                  */ \
+  X(SEMB_CORPUS_DIGEST_MISMATCH,           35)
 
 typedef enum semb_status {
 #define SEMB_STATUS_ENUM_VALUE_(name, value) name = value,

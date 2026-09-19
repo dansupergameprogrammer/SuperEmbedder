@@ -437,8 +437,7 @@ int Verify(const std::vector<std::string>& args) {
     return finish(Refuse("semb verify manifest", SEMB_ARTIFACT_UNREADABLE));
   }
   if (bank_corpus_digest != rebaked_corpus_digest) {
-    std::cerr << "semb verify: SEMB_CORPUS_DIGEST_MISMATCH\n";
-    return finish(1);
+    return finish(Refuse("semb verify", SEMB_CORPUS_DIGEST_MISMATCH));
   }
   if (bank_row_digest != rebaked_row_digest) return finish(Refuse("semb verify", SEMB_BANK_DIGEST_MISMATCH));
   return finish(0);
