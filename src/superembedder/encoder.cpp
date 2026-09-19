@@ -1,7 +1,8 @@
-// The frozen public raw-text encoder vertical slice. Tokenization is the only
-// operation added above the existing C12b-proven token-id path: the caller's
+// The frozen public raw-text encoder vertical slice. Every document-side entry
+// -- semb_encode (a batch of one), semb_encode_batch and W-B's open-time
+// derivation -- reaches the one batch composition, ComposeBatch: the caller's
 // span is validated, passed unchanged to SuperSLM's tokenizer, and the emitted
-// ids enter the same PS-N composition already exercised by the row instrument.
+// ids enter the PS-N composition already exercised by the row instrument.
 #include "superembedder/semb.h"
 
 #include "superembedder/encoder_interim_abi.h"
@@ -356,9 +357,9 @@ std::string ComposeDocumentInput(std::string_view text) {
 // caller's own buffers: per-document tokenization, the document frame
 // (empty under PS-N, D-SLM4726), the >= context_cap refusal, the
 // appended terminator, the single workspace acquisition, the
-// chunk-batched forward -- called by the public verb (below) and by
-// ComputeWbDigest alike, the latter with the seam tapped instead of the
-// row output. No tokenize-or-cut code exists on the W-B path outside this
+// chunk-batched forward -- called by the public batch verb, by the raw
+// entry semb_encode as a batch of one (D-SLM7197), and by ComputeWbDigest,
+// the latter with the seam tapped instead of the row output. No tokenize-or-cut code exists on the W-B path outside this
 // function: TE-159's own remedy (C-2, D-SLM6354) shared only the INTERIM
 // function (semb_interim_encode_batch_ps_n) and kept a second,
 // independent tokenize-and-cut inside ComputeWbDigest, which TE-161's
@@ -1006,25 +1007,24 @@ extern "C" semb_status semb_encode(semb_encoder enc, const char* utf8, size_t ut
     if (!utf8) return SEMB_NULL_ARGUMENT;
     if (!ValidUtf8(utf8, utf8_len)) return SEMB_INVALID_UTF8;
 
-    const std::vector<int32_t> ids =
-        lease.get()->tokenizer.Encode(std::string_view(utf8, utf8_len));
-    if (ids.empty()) return SEMB_INPUT_EMPTY;
-    if (ids.size() >= lease.get()->context_cap) return SEMB_CONTEXT_CAP_EXCEEDED;
-
-    // Keep caller bytes private until tokenization, forward, selection, and
-    // dequantization have all succeeded, including every allocation they make.
+    // The raw entry is the batch composition over one document (D-SLM7197,
+    // D-SLM7205): ComposeBatch tokenizes the document frame and the text,
+    // refuses an empty or >= context_cap id sequence, appends the terminator
+    // and forwards, exactly as semb_encode_batch does for each of its rows.
+    // W-B executes that same composition at open, so the witness covers this
+    // entry structurally. Only argument validation (above) and the output
+    // copy (below) are raw-specific. Caller bytes stay private until the
+    // composition has fully succeeded, including every allocation it makes.
+    const std::string_view text(utf8, utf8_len);
     std::vector<float> staged_vector(lease.get()->dims);
-    SembWaPoolStatus dequantize = kSembOk;
-    const char* engine_status = nullptr;
-    size_t interim_required = 0;
-    const SembInterimStatus status = semb_interim_encode_ps_n(
-        lease.get()->interim, ids.data(), ids.size(), lease.get()->chunk_budget,
-        staged_vector.data(), required, &interim_required, &dequantize, &engine_status);
-    (void)engine_status;
-    const semb_status mapped = MapInterimStatus(status, dequantize);
-    if (mapped != SEMB_OK) return mapped;
+    size_t composed_required = 0;
+    const semb_status composed =
+        ComposeBatch(lease.get(), &text, 1, staged_vector.data(), required, &composed_required,
+                     /*out_seam_stream=*/nullptr, /*out_seam_stream_capacity=*/0,
+                     /*out_seam_stream_len=*/nullptr);
+    if (composed != SEMB_OK) return composed;
     std::memcpy(out_vector, staged_vector.data(), required);
-    *out_required_bytes = interim_required;
+    *out_required_bytes = composed_required;
     std::memcpy(out_fingerprint->digest, lease.get()->fingerprint.data(),
                 lease.get()->fingerprint.size());
     return SEMB_OK;
