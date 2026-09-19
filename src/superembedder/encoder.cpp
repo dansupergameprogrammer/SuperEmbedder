@@ -122,12 +122,12 @@ constexpr char kCanonicalEndToken[] = "<|endoftext|>";
 // moment the closure is scanned -- a genuine circularity, not a gap left
 // idle. semb_source_sha therefore also carries a label here (see below).
 // Computing object_code_sha, engine_object_code_sha and the CPU tier is
-// 1.x scope (D-SLM7212).
+// 1.x scope (D-SLM7212), as is reporting semb_source_sha in the manifest
+// (D-SLM7257).
 constexpr char kObjectCodeShaUncomputedLabel[] = "SEMB-OBJECT-CODE-SHA-NOT-COMPUTED-IN-1.0";
 constexpr char kEngineObjectCodeShaUncomputedLabel[] =
     "SEMB-ENGINE-OBJECT-CODE-SHA-NOT-COMPUTED-IN-1.0";
-constexpr char kSourceShaPendingSentinel[] =
-    "SEMB-SOURCE-SHA-PENDING-SELF-REFERENTIAL-CLOSURE-AFTER-U1-RAW-ENCODER-SLICE";
+constexpr char kSourceShaUncomputedLabel[] = "SEMB-SOURCE-SHA-NOT-COMPUTED-IN-1.0";
 // No CPU-tier accessor is exposed by this library or by SuperSLM's public
 // surface (the engine's own CPUID+XGETBV dispatch, matmul.h/matmul.cpp,
 // is internal to SuperSLM and not reachable from here).
@@ -1460,7 +1460,7 @@ extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* 
     js::Value provenance = js::Value::MakeObject();
     provenance.Set("object_code_sha", js::Value::MakeString(kObjectCodeShaUncomputedLabel));
     provenance.Set("engine_object_code_sha", js::Value::MakeString(kEngineObjectCodeShaUncomputedLabel));
-    provenance.Set("semb_source_sha", js::Value::MakeString(kSourceShaPendingSentinel));
+    provenance.Set("semb_source_sha", js::Value::MakeString(kSourceShaUncomputedLabel));
     provenance.Set("engine_tree_sha", js::Value::MakeString(SEMB_ENGINE_PIN_TREE_SHA));
     provenance.Set("engine_path_sha", js::Value::MakeString(SEMB_ENGINE_PATH_SHA));
     provenance.Set("engine_chunk_budget", js::Value::MakeInt(static_cast<int64_t>(h->chunk_budget)));
