@@ -316,17 +316,6 @@ semb_status MapInterimStatus(SembInterimStatus status, SembWaPoolStatus dequanti
   return SEMB_ENGINE_REFUSED;
 }
 
-std::array<uint8_t, 32> ComputeTemplateDigest() {
-  superslm::Sha256 hash;
-  UpdateU64(&hash, 0);  // PS-N has no document frame.
-  const size_t query_prefix_bytes = std::strlen(semb::kQueryPrefix);
-  UpdateU64(&hash, query_prefix_bytes);
-  hash.Update(reinterpret_cast<const uint8_t*>(semb::kQueryPrefix), query_prefix_bytes);
-  std::array<uint8_t, 32> out{};
-  hash.Final(out.data());
-  return out;
-}
-
 // TE-184 (N-8, D-SLM6406): the document frame -- the empty byte string
 // under PS-N (D-SLM4726), the concatenation point a future PS-1 frame
 // lands at without changing ComposeBatch's own shape (its comment, below)
@@ -335,6 +324,28 @@ std::array<uint8_t, 32> ComputeTemplateDigest() {
 // document (ComposeBatch itself, and CutWbDocumentText's own budget below)
 // reads the SAME frame rather than a second, independently-stated one.
 constexpr std::string_view kDocumentFrame = "";
+
+void UpdateLengthPrefixed(superslm::Sha256* hash, std::string_view bytes) {
+  UpdateU64(hash, bytes.size());
+  hash->Update(reinterpret_cast<const uint8_t*>(bytes.data()), bytes.size());
+}
+
+// template_sha256 (plan sec 3.3, D-8): SHA-256 over the three template
+// literals the composition applies, each as LE64(length) || bytes, in this
+// order -- the document frame (empty under PS-N), the query instruction
+// prefix, and the appended end-token literal. Each is read from its one
+// definition (kDocumentFrame, semb::kQueryPrefix, kCanonicalEndToken), so a
+// change to any literal the product composes with moves this digest, and no
+// length is stated a second time here.
+std::array<uint8_t, 32> ComputeTemplateDigest() {
+  superslm::Sha256 hash;
+  UpdateLengthPrefixed(&hash, kDocumentFrame);
+  UpdateLengthPrefixed(&hash, std::string_view(semb::kQueryPrefix));
+  UpdateLengthPrefixed(&hash, std::string_view(kCanonicalEndToken));
+  std::array<uint8_t, 32> out{};
+  hash.Final(out.data());
+  return out;
+}
 
 // The exact byte sequence ComposeBatch tokenizes for one document: the
 // document frame, then the document's own text -- no second concatenation
@@ -359,7 +370,8 @@ std::string ComposeDocumentInput(std::string_view text) {
 // appended terminator, the single workspace acquisition, the
 // chunk-batched forward -- called by the public batch verb, by the raw
 // entry semb_encode as a batch of one (D-SLM7197), and by ComputeWbDigest,
-// the latter with the seam tapped instead of the row output. No tokenize-or-cut code exists on the W-B path outside this
+// the latter with the seam tapped instead of the row output. No
+// tokenize-or-cut code exists on the W-B path outside this
 // function: TE-159's own remedy (C-2, D-SLM6354) shared only the INTERIM
 // function (semb_interim_encode_batch_ps_n) and kept a second,
 // independent tokenize-and-cut inside ComputeWbDigest, which TE-161's
