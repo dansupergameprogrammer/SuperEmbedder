@@ -8,8 +8,10 @@ export of the product tree and against its own engine prefix from its own
 bank is queried from the other with the real artifact.  Legs:
 
   (i)    B identical to A (same revision, same compiler, own engine prefix):
-         the bank opens (VECTOR_EMITTED for every document) and the five
-         fingerprint components are equal.
+         the bank opens (VECTOR_EMITTED for every document), the five
+         fingerprint components are equal, B's own baked rows over the
+         corpus are byte-identical to A's, and B's query vectors for the
+         corpus texts are byte-identical to A's (D-SLM7217 (1)).
   (vi)   B built by clang-cl, A by MSVC: as (i).
   (x)    B's PS-N epilogue arithmetic edited (src/superembedder/ps_n_pool.cpp),
          superslm.lib standing: SEMB_FINGERPRINT_MISMATCH at query open.
@@ -30,16 +32,20 @@ read from the two installations' own manifests.  A construction that leaves
 its component equal is INEVALUABLE and is replaced, never passed (plan sec 4.7
 step 6: "an edit that leaves it equal is replaced, never passed").
 
-PLAN GAP, recorded for the planner (TE-264 record, gap G-1): the plan reads
-(i) and (vi) as "every vector byte-identical to A's row", with B querying
-every document.  `semb query` composes the query-prefix literal into every
-query (src/superembedder/query.cpp ComposeQuery; `--raw` is an output mode of
+PLAN GAP G-1 (TE-264), RULED (D-SLM7217 (1)): the plan read (i) and (vi) as
+"every vector byte-identical to A's row", with B querying every document.
+`semb query` composes the query-prefix literal into every query
+(src/superembedder/query.cpp ComposeQuery; `--raw` is an output mode of
 `semb_query_encode`), while a bank row is the unprefixed document, so a
-query vector is never a document row.  Two readings survive -- B's baked rows
-equal A's rows, or B's query vectors equal A's query vectors for the same
-text -- and this harness picks neither: (i) and (vi) report acceptance and
-component equality, and report the byte-identity half INEVALUABLE (exit 2)
-until the planner states which comparison is meant.
+query vector is never a document row and the plan's own sentence was
+unsatisfiable as written. The ruling keeps both readings rather than
+picking one: (i) and (vi) additionally bake the corpus on B and compare its
+baked rows to A's byte for byte, and additionally query the corpus texts on
+A (as already done on B) and compare the two query-vector streams byte for
+byte. Both checks cost minutes (TE-272; a full corpus bake plus a full
+239-query run on each side), so a short-phase validation of this code path
+uses a reduced document count; the recorded reading at the plan's own
+document count is the conductor's, at step 10.
 
 PHASES (each one command, none long-running, run inside a Visual Studio
 developer shell so `cl`, `ninja` and `cmake` are on PATH):
@@ -56,7 +62,10 @@ developer shell so `cl`, `ninja` and `cmake` are on PATH):
       bakes a two-document bank with N's `semb bake` to read N's five
       fingerprint components from its manifest.
   leg      --leg i|vi|x|ix|xiii|p --bank-from A --query-on B --model M --tokenizer T
-      runs one leg; exit 0 PASS, 1 FAIL, 2 INEVALUABLE.
+      runs one leg; exit 0 PASS, 1 FAIL, 2 INEVALUABLE. For (i) and (vi) this
+      phase also bakes the corpus on B (if not already baked) and queries it
+      on A, so a fresh "leg i"/"leg vi" invocation after B's "identity" phase
+      takes the full bake-plus-query time of both installations, not just B's.
 
 Order for one full reading: install A (msvc, none), install P (--rev <the
 provisional revision>), install B_i, B_vi, B_x, B_ix, B_xiii; bake A and P;
@@ -278,6 +287,17 @@ def manifest(inst: Path, stem_name: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def read_wvbank(stem: Path) -> tuple[dict, bytes]:
+    """The `.wvbank.json` header and the raw `.wvbank.bin` payload for a bake
+    stem (src/superembedder/bank.cpp: a bank is the `.wvbank.json`/
+    `.wvbank.bin`/`.semb.json` triple; this reads the first two, byte for
+    byte, the same pair Claude/Brunel/te265-interim-evidence.py reads to
+    compute its own per-row digest)."""
+    header = json.loads(Path(str(stem) + ".wvbank.json").read_text(encoding="utf-8"))
+    payload = Path(str(stem) + ".wvbank.bin").read_bytes()
+    return header, payload
+
+
 def cmd_leg(args) -> int:
     spec = LEGS[args.leg]
     a_inst, b_inst = args.work / args.bank_from, args.work / args.query_on
@@ -345,16 +365,44 @@ def cmd_leg(args) -> int:
     unequal = [c for c in COMPONENTS + ("encoder_fingerprint",) if a_bank[c] != b_id[c]]
     say("PASS" if not unequal else "FAIL", f"{cell} fingerprint equal across the two installations",
         "all five components and encoder_fingerprint equal" if not unequal else f"unequal: {unequal}")
-    proc = run([semb, "query", "--stdin", stem, "--hex", *base], stdin="".join(r["text"] + "\n" for r in rows),
-               timeout=3600)
+
+    # D-SLM7217 (1): both readings plan gap G-1 (TE-264) left open, since a
+    # query vector (carries the query-prefix literal) and a bank row (does
+    # not) are never the same bytes even on an identical pair.
+    # bake() reads its install directory off args.name (the "bake"/"identity"
+    # phases' own argument); the "leg" phase carries bank_from/query_on
+    # instead, so B's own name is passed through a namespace bake() can read.
+    b_stem = bake(argparse.Namespace(work=args.work, name=args.query_on, model=args.model, tokenizer=args.tokenizer),
+                  "corpus", corpus_jsonl(args.work))
+    a_header, a_payload = read_wvbank(stem)
+    b_header, b_payload = read_wvbank(b_stem)
+    rows_equal = (a_header.get("ids") == b_header.get("ids") and a_header.get("dims") == b_header.get("dims")
+                  and a_header.get("dtype") == b_header.get("dtype") and a_payload == b_payload)
+    say("PASS" if rows_equal else "FAIL", f"{cell} B's baked rows over the corpus are byte-identical to A's",
+        f"ids equal={a_header.get('ids') == b_header.get('ids')}; dims {a_header.get('dims')} vs "
+        f"{b_header.get('dims')}; dtype {a_header.get('dtype')} vs {b_header.get('dtype')}; "
+        f"payload bytes {len(a_payload)} vs {len(b_payload)}, equal={a_payload == b_payload}")
+
+    a_semb = find_semb(a_inst)
+    query_stdin = "".join(r["text"] + "\n" for r in rows)
+    proc_a = run([a_semb, "query", "--stdin", stem, "--hex", *base], stdin=query_stdin, timeout=3600)
+    emitted_a = re.findall(r"^VECTOR_HEX=[0-9a-f]+$", proc_a.stdout, re.M)
+    accepted_a = proc_a.returncode == 0 and len(emitted_a) == len(rows)
+
+    proc = run([semb, "query", "--stdin", stem, "--hex", *base], stdin=query_stdin, timeout=3600)
     emitted = re.findall(r"^VECTOR_HEX=[0-9a-f]+$", proc.stdout, re.M)
     accepted = proc.returncode == 0 and len(emitted) == len(rows)
     say("PASS" if accepted else "FAIL", f"{cell} VECTOR_EMITTED for every one of the {len(rows)} documents on "
         f"{b_rec['name']}", f"exit={proc.returncode}; vectors={len(emitted)}; stderr tail={proc.stderr[-300:]!r}")
-    say("INEVALUABLE", f"{cell} every vector byte-identical to A's row",
-        "plan gap G-1 (TE-264): a query vector carries the query prefix and a bank row does not; the planner states "
-        "whether B's baked rows or B's query vectors against A's are compared")
-    return 1 if (unequal or not accepted) else 2
+
+    query_vectors_equal = accepted and accepted_a and emitted_a == emitted
+    say("PASS" if query_vectors_equal else "FAIL", f"{cell} B's query vectors for the corpus texts are "
+        f"byte-identical to A's",
+        f"A: accepted={accepted_a}, vectors={len(emitted_a)}; B: accepted={accepted}, vectors={len(emitted)}; "
+        f"equal={(emitted_a == emitted) if (accepted_a and accepted) else 'not compared -- one side did not emit '
+        'a vector for every document'}")
+
+    return 1 if (unequal or not accepted or not rows_equal or not query_vectors_equal) else 0
 
 
 def main(argv: list[str]) -> int:
