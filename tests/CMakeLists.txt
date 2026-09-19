@@ -985,23 +985,28 @@ endif()
 # driver reports RED-UNIMPLEMENTED by name rather than failing to configure.
 set(SEMB_TEST_ENGINE_PREFIX_TE163 "${SEMB_ENGINE_PREFIX}" CACHE PATH
 	"C34 (e)/(h) scratch-build mutation proof: the engine install prefix its scratch reconfigure links against")
-add_test(
-	NAME te163_c34_manifest_honesty_check
-	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te163_c34_manifest_honesty_check.py"
-		--repo-root "${CMAKE_SOURCE_DIR}"
-		--engine-prefix "${SEMB_TEST_ENGINE_PREFIX_TE163}"
-		--cmake-executable "${CMAKE_COMMAND}"
-		--cxx-compiler "${CMAKE_CXX_COMPILER}"
-		--python-executable "${Python3_EXECUTABLE}"
-		--model "${SEMB_C12B_MODEL}"
-		--tokenizer "${SEMB_U1_TOKENIZER}"
-	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
-)
-# Both legs bake with the real pair; with either path empty the driver
-# reports MISSING PREREQUISITE (non-failing). Labelled real_artifact only
-# when the pair is configured: the conditional form c12b_row_digest_check's
-# comment sets out, used by every real-artifact cell in this file.
+# Both legs bake with the real pair and the cell has no mechanism leg, so it
+# is registered only when the pair is configured -- the form this file uses
+# for purely real cells (c2_lineage_equality_test_real_artifact,
+# te264_raw_equals_batch_real_artifact). An unconfigured tree does not
+# register it at all, so ctest cannot report it Passed having run nothing.
+# (The conditional-label form c12b_row_digest_check's comment sets out is for
+# mixed cells, whose mechanism legs must keep running in every tree.) The
+# driver's own MISSING PREREQUISITE return stays as the guard for direct
+# invocation.
 if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+	add_test(
+		NAME te163_c34_manifest_honesty_check
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te163_c34_manifest_honesty_check.py"
+			--repo-root "${CMAKE_SOURCE_DIR}"
+			--engine-prefix "${SEMB_TEST_ENGINE_PREFIX_TE163}"
+			--cmake-executable "${CMAKE_COMMAND}"
+			--cxx-compiler "${CMAKE_CXX_COMPILER}"
+			--python-executable "${Python3_EXECUTABLE}"
+			--model "${SEMB_C12B_MODEL}"
+			--tokenizer "${SEMB_U1_TOKENIZER}"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
 	set_tests_properties(te163_c34_manifest_honesty_check PROPERTIES LABELS "real_artifact")
 endif()
 
@@ -1150,21 +1155,24 @@ add_test(
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 add_test(
-	NAME te230_c5_real_workload
-	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te230_c5_real_workload.py"
-		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
-		--model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
-	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
-)
-add_test(
 	NAME te230_c4_zero_gain_check
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te230_c4_zero_gain_check.py"
 		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
-# C5 needs the real pair; with either path empty the driver reports MISSING
-# PREREQUISITE (non-failing) and builds nothing.
+# C5 is purely real (no mechanism leg), so it is registered only when the
+# pair is configured, the same form as te163_c34_manifest_honesty_check: an
+# unconfigured tree does not register it, so ctest cannot report it Passed
+# having run nothing. The driver's MISSING PREREQUISITE return stays as the
+# guard for direct invocation.
 if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+	add_test(
+		NAME te230_c5_real_workload
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te230_c5_real_workload.py"
+			--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+			--model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
 	set_tests_properties(te230_c5_real_workload PROPERTIES LABELS "real_artifact" TIMEOUT 1800)
 endif()
 

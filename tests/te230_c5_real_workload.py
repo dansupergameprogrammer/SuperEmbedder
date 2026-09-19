@@ -4,9 +4,10 @@ This intentionally measures rather than gates the class-match floor: a
 non-regression result needs a calibrated product population, while a bad
 score remains a conductor-owned quarantine observation.
 
-The workload needs the real pair. When --model or --tokenizer is empty (a
-tree configured without SEMB_C12B_MODEL and SEMB_U1_TOKENIZER), it reports
-MISSING PREREQUISITE and exits 0 without building or baking anything.
+The workload needs the real pair, and ctest registers this cell only when
+SEMB_C12B_MODEL and SEMB_U1_TOKENIZER are both configured. Invoked directly
+with --model or --tokenizer empty, it reports MISSING PREREQUISITE and exits
+0 without building or baking anything.
 
 Exit codes: 0 QUARANTINED (the apparatus ran end to end) or MISSING
 PREREQUISITE; 1 BLOCKED.

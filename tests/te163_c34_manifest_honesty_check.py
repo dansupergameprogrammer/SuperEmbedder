@@ -46,7 +46,8 @@ constant, rebuilds, and asserts the SAME bake now succeeds and writes.
 
 THE PAIR IT BAKES WITH is the real candidate artifact and its converter-
 emitted tokenizer (--model, --tokenizer; SEMB_C12B_MODEL and
-SEMB_U1_TOKENIZER at configure). When either is empty, both legs report
+SEMB_U1_TOKENIZER at configure). ctest registers this cell only when both
+are configured. Invoked directly with either empty, both legs report
 MISSING PREREQUISITE and nothing is cloned or built.
 
 Exit codes: 0 every evaluated leg PASS, MISSING PREREQUISITE, or
