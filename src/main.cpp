@@ -303,6 +303,78 @@ std::string TopHitsJson(semb_bank bank, const std::vector<float>& query, size_t 
   return semb::json::Write(output);
 }
 
+// TE-317 (D-SLM7405): the library's batch validation (encoder.cpp step 9,
+// ComposeBatch) refuses a bake all-or-nothing at the FIRST document that
+// fails ANY per-document check, in index order -- an empty document
+// (utf8_len == 0) is exactly one such check and the one SEMB_INPUT_EMPTY
+// names. A tool user commonly did not author the corpus (K1-Run-2 died on
+// BEIR fiqa document 447488, `{"id": "447488", "text": ""}`, after a
+// 3-hour bake), so the CLI -- never the library -- skips exactly that one
+// failure and bakes the rest, reporting what it skipped so the record
+// survives the terminal.
+//
+// The skip test is `utf8_len == 0` alone, deliberately not "does this
+// tokenize to zero content tokens": ComposeBatch's own comment
+// (encoder.cpp, content_ids[i].empty() check) states that a zero-content-id
+// sequence is unreachable for byte-level BPE over a non-empty span, so
+// tokenizing first to ask the broader question would pay for a tokenize
+// pass to answer a question the tokenizer can never answer differently.
+// `utf8_len == 0` is not an approximation of the library's empty-input
+// rule -- for this tokenizer, it IS the rule.
+//
+// A document is skipped only when empty text is its ONLY defect. Step 9's
+// own order checks the id (non-null-consistency, id_len > 0, no NUL byte,
+// valid UTF-8) BEFORE the utf8_len == 0 test; a document with an empty or
+// otherwise invalid id must still reach the library and be refused by name
+// for THAT defect, not silently disappear as "empty". This function
+// replicates only the cheap, always-available half of that ordering
+// (id_len > 0) rather than the full id UTF-8/NUL validation encoder.cpp
+// performs internally: an embedded NUL or invalid UTF-8 landing in an `id`
+// field is an exotic malformation for a real corpus and orthogonal to the
+// empty-text defect this ticket targets -- left for the library's own id
+// checks to catch on any document that still reaches it (which every
+// non-empty document, and every empty document with a valid id, still
+// does). Every other per-document refusal (invalid UTF-8 text, empty id,
+// duplicate id) is left to the library, unfiltered.
+void FilterEmptyDocuments(const std::vector<std::string>& ids,
+                          const std::vector<semb_document>& docs,
+                          std::vector<semb_document>* kept,
+                          std::vector<std::string>* skipped_ids) {
+  kept->clear();
+  skipped_ids->clear();
+  kept->reserve(docs.size());
+  for (size_t i = 0; i < docs.size(); ++i) {
+    if (docs[i].id_len > 0 && docs[i].utf8_len == 0) {
+      skipped_ids->push_back(ids[i]);
+      continue;
+    }
+    kept->push_back(docs[i]);
+  }
+}
+
+// The sidecar so the skip record survives the terminal: `<stem>.skipped.tsv`
+// beside the bank, one header row plus one row per skipped document (its id
+// and the reason it was skipped). Never a bank-manifest or payload byte --
+// those stay exactly what the library wrote.
+bool WriteSkippedSidecar(const std::string& stem, const std::vector<std::string>& skipped_ids) {
+  std::ofstream sidecar(stem + ".skipped.tsv", std::ios::binary | std::ios::trunc);
+  if (!sidecar) return false;
+  sidecar << "id\treason\n";
+  for (const std::string& id : skipped_ids) {
+    sidecar << id << "\tempty_text\n";
+  }
+  return static_cast<bool>(sidecar);
+}
+
+void ReportSkipped(const char* where, const std::vector<std::string>& skipped_ids) {
+  std::cerr << where << ": skipped " << skipped_ids.size() << " empty document(s), ids=[";
+  for (size_t i = 0; i < skipped_ids.size(); ++i) {
+    if (i) std::cerr << ", ";
+    std::cerr << skipped_ids[i];
+  }
+  std::cerr << "]\n";
+}
+
 int Bake(const std::vector<std::string>& args) {
   if (args.empty()) return Refuse("semb bake", SEMB_NULL_ARGUMENT);
   const char* out = Option(args, "--out");
@@ -313,11 +385,29 @@ int Bake(const std::vector<std::string>& args) {
   std::vector<std::string> ids, texts;
   std::vector<semb_document> docs;
   if (!LoadCorpus(corpus, &ids, &texts, &docs)) return Refuse("semb bake corpus", SEMB_ARTIFACT_UNREADABLE);
+  std::vector<semb_document> kept;
+  std::vector<std::string> skipped_ids;
+  FilterEmptyDocuments(ids, docs, &kept, &skipped_ids);
+  // A non-empty corpus every one of whose documents was skipped has nothing
+  // left to bake: refuse exactly as the library would refuse the same
+  // all-empty batch (SEMB_INPUT_EMPTY), without paying for the call. An
+  // originally-empty corpus (docs.empty()) is unrelated to this rule and
+  // falls through to the library unchanged, which refuses it SEMB_CORPUS_EMPTY.
+  if (!docs.empty() && kept.empty()) return Refuse("semb bake", SEMB_INPUT_EMPTY);
   Handles handles;
   semb_status status = OpenEncoder(model, tokenizer, &handles);
   if (status != SEMB_OK) return Refuse("semb_encoder_open", status);
-  status = semb_bake_to_path(handles.encoder, docs.data(), docs.size(), out, std::strlen(out));
+  status = semb_bake_to_path(handles.encoder, kept.data(), kept.size(), out, std::strlen(out));
   if (status != SEMB_OK) return Refuse("semb_bake_to_path", status);
+  // Reported and sidecar-recorded only once the bank triple itself exists,
+  // so a later failure (encoder open, the bake call) never leaves an orphan
+  // sidecar beside a bank that was never written.
+  if (!skipped_ids.empty()) {
+    ReportSkipped("semb bake", skipped_ids);
+    if (!WriteSkippedSidecar(out, skipped_ids)) {
+      return Refuse("semb bake skipped-sidecar", SEMB_ARTIFACT_UNREADABLE);
+    }
+  }
   return 0;
 }
 
@@ -414,6 +504,13 @@ int Verify(const std::vector<std::string>& args) {
   std::vector<std::string> ids, texts;
   std::vector<semb_document> docs;
   if (!LoadCorpus(corpus, &ids, &texts, &docs)) return Refuse("semb verify corpus", SEMB_ARTIFACT_UNREADABLE);
+  // TE-317: re-encode over exactly the documents `semb bake` kept, so a bank
+  // baked with a skipped empty document re-encodes to the identical row set
+  // instead of the library refusing this re-encode with SEMB_INPUT_EMPTY.
+  std::vector<semb_document> kept;
+  std::vector<std::string> skipped_ids;
+  FilterEmptyDocuments(ids, docs, &kept, &skipped_ids);
+  if (!docs.empty() && kept.empty()) return Refuse("semb verify", SEMB_INPUT_EMPTY);
   TemporaryBakeDirectory scratch;
   if (!scratch.Create()) return Refuse("semb verify scratch", SEMB_ARTIFACT_UNREADABLE);
   auto finish = [&](int result) {
@@ -421,7 +518,7 @@ int Verify(const std::vector<std::string>& args) {
     return result;
   };
   const std::string rebaked_stem = (scratch.path() / "rebaked").string();
-  status = semb_bake_to_path(handles.encoder, docs.data(), docs.size(), rebaked_stem.data(), rebaked_stem.size());
+  status = semb_bake_to_path(handles.encoder, kept.data(), kept.size(), rebaked_stem.data(), rebaked_stem.size());
   if (status != SEMB_OK) return finish(Refuse("semb verify re-encode", status));
 
   std::string bank_manifest, rebaked_manifest;

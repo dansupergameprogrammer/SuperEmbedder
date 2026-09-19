@@ -39,7 +39,16 @@ CLI choices where the plan deliberately leaves syntax/output open:
     nonzero exit;
   * the corpus format rule selects JSONL for a `.jsonl` extension without
     regard to case (D-SLM6638, TE-235): a corpus named `.JSONL` bakes with
-    the ids its rows carry, never as plain text with line-number ids.
+    the ids its rows carry, never as plain text with line-number ids;
+  * `semb bake` skips exactly the documents the library refuses as
+    SEMB_INPUT_EMPTY (an empty-text document, utf8_len == 0), bakes the
+    rest, reports the count and ids on stderr, and writes a
+    `<stem>.skipped.tsv` sidecar next to the bank (D-SLM7405, TE-317); a
+    non-empty corpus left with nothing to bake after skipping still
+    refuses SEMB_INPUT_EMPTY; `semb verify` skips identically on its
+    re-encode; every other per-document refusal (invalid UTF-8, empty id,
+    duplicate id) and the library's own all-or-nothing batch refusal are
+    unchanged.
 These are the smallest machine-readable forms that let this test compare the
 CLI to the C ABI without parsing presentation text.  The planner owns their
 ratification; this file pins the test-author choice until then.
@@ -650,6 +659,91 @@ def main(argv: list[str]) -> int:
                    "the identical corpus named .jsonl and .JSONL produces identical vector bytes" if upper_vectors_ok else
                    "RED: the .JSONL bake's vector bytes differ from the .jsonl bake's -- each JSON line was "
                    "taken as whole-line document text")
+        # TE-317 (D-SLM7405): `semb bake` skips exactly the documents the
+        # library refuses as SEMB_INPUT_EMPTY (utf8_len == 0) and reports
+        # what it skipped; the library's own all-or-nothing batch refusal
+        # is untouched. The inserted id (447488) is K1-Run-2's own BEIR
+        # fiqa document -- the empty-text row that killed a 3-hour bake
+        # (D-SLM7404) and the reason this ticket exists.
+        mixed_rows = corpus.read_text(encoding="utf-8").splitlines()
+        mixed_rows.insert(9, json.dumps({"id": "447488", "text": ""}))
+        mixed_corpus = scratch / "mixed_empty_corpus.jsonl"
+        mixed_corpus.write_text("\n".join(mixed_rows) + "\n", encoding="utf-8")
+        mixed_stem = scratch / "mixed_bank"
+        mixed_bake = call([str(semb), "bake", str(mixed_corpus), "--out", str(mixed_stem), *base])
+        skip_line_ok = (mixed_bake.returncode == 0 and re.search(r"skipped 1\b", mixed_bake.stderr) is not None
+                        and "447488" in mixed_bake.stderr)
+        report.add("PASS" if skip_line_ok else "FAIL",
+                   "TE-317 bake skips one empty document among good ones and reports it",
+                   f"exit 0, stderr names the count and the id: {mixed_bake.stderr.strip()!r}" if skip_line_ok else
+                   f"RED: exit={mixed_bake.returncode}; stderr={mixed_bake.stderr[-300:]!r}; expected exit 0 with "
+                   "a stderr line naming 1 skipped document and id 447488")
+        sidecar = Path(str(mixed_stem) + ".skipped.tsv")
+        sidecar_ok = sidecar.is_file() and "447488" in sidecar.read_text(encoding="utf-8")
+        report.add("PASS" if sidecar_ok else "FAIL",
+                   "TE-317 bake writes the skipped-document sidecar",
+                   f"{sidecar.name} names the skipped id, next to the bank" if sidecar_ok else
+                   f"RED: {sidecar} is missing or does not name the skipped id 447488 -- the skip record must "
+                   "survive the terminal")
+        mixed_header_ok = mixed_rows_ok = False
+        if mixed_bake.returncode == 0 and files_ok:
+            good_header = json.loads(Path(str(good) + ".wvbank.json").read_text(encoding="utf-8"))
+            mixed_header = json.loads(Path(str(mixed_stem) + ".wvbank.json").read_text(encoding="utf-8"))
+            mixed_header_ok = mixed_header.get("ids") == good_header.get("ids")
+            mixed_rows_ok = (Path(str(mixed_stem) + ".wvbank.bin").read_bytes()
+                            == Path(str(good) + ".wvbank.bin").read_bytes())
+        report.add("PASS" if mixed_header_ok else "FAIL",
+                   "TE-317 bank rows equal the good documents alone (ids)",
+                   "the skipped document's id is absent; every good id survives, in order" if mixed_header_ok else
+                   "RED: the mixed bake's ids do not equal baking the good documents alone")
+        report.add("PASS" if mixed_rows_ok else "FAIL",
+                   "TE-317 bank rows equal the good documents alone (bytes)",
+                   "row bytes are identical to baking the good documents alone" if mixed_rows_ok else
+                   "RED: the mixed bake's row bytes differ from baking the same good documents alone")
+        # A non-empty corpus where every document is empty has nothing left
+        # to bake: refused exactly as an all-empty batch, SEMB_INPUT_EMPTY,
+        # never SEMB_CORPUS_EMPTY (that status is reserved for a corpus with
+        # zero documents, C24 above) -- and no leftover file, matching C24's
+        # own hygiene.
+        all_empty_rows = [json.dumps({"id": f"empty-{i}", "text": ""}) for i in range(3)]
+        all_empty_corpus = scratch / "all_empty_corpus.jsonl"
+        all_empty_corpus.write_text("\n".join(all_empty_rows) + "\n", encoding="utf-8")
+        all_empty_stem = scratch / "all_empty" / "out"; all_empty_stem.parent.mkdir()
+        all_empty_bake = call([str(semb), "bake", str(all_empty_corpus), "--out", str(all_empty_stem), *base])
+        all_empty_leftovers = list(all_empty_stem.parent.iterdir())
+        all_empty_ok = (named_refusal(all_empty_bake, "semb bake", "SEMB_INPUT_EMPTY")
+                        and not all_empty_leftovers)
+        report.add("PASS" if all_empty_ok else "FAIL",
+                   "TE-317 a corpus where every document is empty still refuses (SEMB_INPUT_EMPTY, no leftovers)",
+                   "refused as `semb bake: SEMB_INPUT_EMPTY (8)`, no leftover files" if all_empty_ok else
+                   f"RED: exit={all_empty_bake.returncode}; stderr={all_empty_bake.stderr[-300:]!r}; "
+                   f"leftovers={[p.name for p in all_empty_leftovers]}")
+        if mixed_bake.returncode == 0:
+            mixed_verify = call([str(semb), "verify", str(mixed_stem), "--corpus", str(mixed_corpus), *base])
+            report.add("PASS" if mixed_verify.returncode == 0 else "FAIL",
+                       "TE-317 verify skips identically, so a bank with a skipped document verifies OK",
+                       "a bank baked from a corpus with a skipped empty document verifies OK" if mixed_verify.returncode == 0 else
+                       f"RED: exit={mixed_verify.returncode}; {(mixed_verify.stdout + mixed_verify.stderr)[-300:]!r}; "
+                       "verify must skip the same document bake did, or its re-encode is refused "
+                       "SEMB_INPUT_EMPTY instead of comparing digests")
+        else:
+            report.add("BLOCKED", "TE-317 verify skips identically, so a bank with a skipped document verifies OK",
+                       "the mixed-corpus bake did not succeed")
+        # Control: the library's own all-or-nothing batch refusal is
+        # untouched. The CLI probe's --bake-corpus mode calls
+        # semb_bake_to_path directly with NO filtering (tests/te230_semb_cli_probe.cpp),
+        # so feeding it the same mixed corpus proves the library still
+        # refuses the whole batch on the one empty document.
+        library_mixed_stem = scratch / "library_mixed_bank"
+        library_mixed = call([str(probe), "--model", model, "--tokenizer", tokenizer,
+                              "--stem", str(library_mixed_stem), "--bake-corpus", str(mixed_corpus)])
+        library_mixed_ok = (library_mixed.returncode == 1
+                            and "semb_bake_to_path: SEMB_INPUT_EMPTY (8)" in library_mixed.stderr)
+        report.add("PASS" if library_mixed_ok else "FAIL",
+                   "TE-317 the library itself still refuses the unfiltered batch (control)",
+                   "semb_bake_to_path: SEMB_INPUT_EMPTY (8), unchanged" if library_mixed_ok else
+                   f"RED: exit={library_mixed.returncode}; stderr={library_mixed.stderr[-300:]!r}; the library's "
+                   "own all-or-nothing batch refusal must be untouched by the CLI's skip behaviour")
     else:
         report.add("BLOCKED", "verify untouched bank accepts", "CLI baseline triple was not produced")
         report.add("BLOCKED", "verify without --corpus is refused by name", "CLI baseline triple was not produced")
@@ -667,6 +761,13 @@ def main(argv: list[str]) -> int:
         report.add("BLOCKED", "S-2b a --stdin --top session ranks the validated bank after its files are replaced", "CLI baseline triple was not produced")
         report.add("BLOCKED", "an upper-case .JSONL corpus bakes with the ids its rows carry", "CLI baseline triple was not produced")
         report.add("BLOCKED", "an upper-case .JSONL corpus bakes vectors byte-equal the .jsonl bake", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-317 bake skips one empty document among good ones and reports it", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-317 bake writes the skipped-document sidecar", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-317 bank rows equal the good documents alone (ids)", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-317 bank rows equal the good documents alone (bytes)", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-317 a corpus where every document is empty still refuses (SEMB_INPUT_EMPTY, no leftovers)", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-317 verify skips identically, so a bank with a skipped document verifies OK", "CLI baseline triple was not produced")
+        report.add("BLOCKED", "TE-317 the library itself still refuses the unfiltered batch (control)", "CLI baseline triple was not produced")
     return 1 if report.failed else 0
 
 

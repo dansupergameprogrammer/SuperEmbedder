@@ -23,6 +23,10 @@ re-encodes a bank's corpus and compares it with the bank (`semb verify`), and
 prints a bank's manifest (`semb inspect`). A document longer than the model's
 context is refused by name (`SEMB_CONTEXT_CAP_EXCEEDED`), never truncated; a
 query is cut to the context after its instruction prefix is applied.
+`semb bake` and `semb verify` skip a document with empty text (the library's
+own `SEMB_INPUT_EMPTY` refusal, unchanged for every other caller) instead of
+refusing the whole corpus, reporting the skipped ids on stderr and in a
+`<stem>.skipped.tsv` sidecar next to the bank.
 
 The encoder fingerprint, returned by `semb_encode` and `semb_fingerprint_of`, is
 the SHA-256 over five length-prefixed components: the model artifact's bytes,
