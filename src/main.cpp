@@ -11,6 +11,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 #if defined(_WIN32)
@@ -303,15 +304,15 @@ std::string TopHitsJson(semb_bank bank, const std::vector<float>& query, size_t 
   return semb::json::Write(output);
 }
 
-// TE-317 (D-SLM7405): the library's batch validation (encoder.cpp step 9,
-// ComposeBatch) refuses a bake all-or-nothing at the FIRST document that
-// fails ANY per-document check, in index order -- an empty document
-// (utf8_len == 0) is exactly one such check and the one SEMB_INPUT_EMPTY
-// names. A tool user commonly did not author the corpus (K1-Run-2 died on
-// BEIR fiqa document 447488, `{"id": "447488", "text": ""}`, after a
-// 3-hour bake), so the CLI -- never the library -- skips exactly that one
-// failure and bakes the rest, reporting what it skipped so the record
-// survives the terminal.
+// TE-317 (D-SLM7405), fix round TE-320: the library's batch validation
+// (encoder.cpp step 9, ComposeBatch) refuses a bake all-or-nothing at the
+// FIRST document that fails ANY per-document check, in index order -- an
+// empty document (utf8_len == 0) is exactly one such check and the one
+// SEMB_INPUT_EMPTY names. A tool user commonly did not author the corpus
+// (K1-Run-2 died on BEIR fiqa document 447488, `{"id": "447488", "text":
+// ""}`, after a 3-hour bake), so the CLI -- never the library -- skips
+// exactly that one failure and bakes the rest, reporting what it skipped
+// so the record survives the terminal.
 //
 // The skip test is `utf8_len == 0` alone, deliberately not "does this
 // tokenize to zero content tokens": ComposeBatch's own comment
@@ -323,19 +324,67 @@ std::string TopHitsJson(semb_bank bank, const std::vector<float>& query, size_t 
 // rule -- for this tokenizer, it IS the rule.
 //
 // A document is skipped only when empty text is its ONLY defect. Step 9's
-// own order checks the id (non-null-consistency, id_len > 0, no NUL byte,
-// valid UTF-8) BEFORE the utf8_len == 0 test; a document with an empty or
-// otherwise invalid id must still reach the library and be refused by name
-// for THAT defect, not silently disappear as "empty". This function
-// replicates only the cheap, always-available half of that ordering
-// (id_len > 0) rather than the full id UTF-8/NUL validation encoder.cpp
-// performs internally: an embedded NUL or invalid UTF-8 landing in an `id`
-// field is an exotic malformation for a real corpus and orthogonal to the
-// empty-text defect this ticket targets -- left for the library's own id
-// checks to catch on any document that still reaches it (which every
-// non-empty document, and every empty document with a valid id, still
-// does). Every other per-document refusal (invalid UTF-8 text, empty id,
-// duplicate id) is left to the library, unfiltered.
+// own order checks the id (id_len > 0, no NUL byte, valid UTF-8) BEFORE the
+// utf8_len == 0 test, so IdWouldPassStep9 mirrors exactly that ordering: a
+// document with an empty, NUL-containing, or invalid-UTF-8 id still reaches
+// the library and is refused by name for that defect (SEMB_DOCUMENT_ID_INVALID),
+// never silently skipped as "empty". `ValidUtf8` below is a local, byte-for-byte
+// mirror of `encoder.cpp`'s own `ValidUtf8`: the library does not export that
+// check to any header main.cpp includes, so this is "a faithful local check"
+// rather than a reused one (TE-320 S-2).
+bool ValidUtf8(const char* data, size_t size) {
+  size_t i = 0;
+  while (i < size) {
+    const uint8_t lead = static_cast<uint8_t>(data[i]);
+    if (lead <= 0x7F) {
+      ++i;
+      continue;
+    }
+    size_t count = 0;
+    uint32_t codepoint = 0;
+    uint32_t minimum = 0;
+    if (lead >= 0xC2 && lead <= 0xDF) {
+      count = 2;
+      codepoint = lead & 0x1F;
+      minimum = 0x80;
+    } else if (lead >= 0xE0 && lead <= 0xEF) {
+      count = 3;
+      codepoint = lead & 0x0F;
+      minimum = 0x800;
+    } else if (lead >= 0xF0 && lead <= 0xF4) {
+      count = 4;
+      codepoint = lead & 0x07;
+      minimum = 0x10000;
+    } else {
+      return false;
+    }
+    if (count > size - i) return false;
+    for (size_t j = 1; j < count; ++j) {
+      const uint8_t continuation = static_cast<uint8_t>(data[i + j]);
+      if ((continuation & 0xC0) != 0x80) return false;
+      codepoint = (codepoint << 6) | (continuation & 0x3F);
+    }
+    if (codepoint < minimum || codepoint > 0x10FFFF ||
+        (codepoint >= 0xD800 && codepoint <= 0xDFFF)) {
+      return false;
+    }
+    i += count;
+  }
+  return true;
+}
+
+// Step 9's id-only checks, in step 9's own order (encoder.cpp: id_len > 0,
+// no NUL byte via memchr, valid UTF-8) -- everything step 9 checks about an
+// id EXCEPT the utf8_len == 0 test that follows it. A document for which
+// this returns true has no id defect at all, so skipping it for empty text
+// is skipping exactly the one thing wrong with it.
+bool IdWouldPassStep9(const semb_document& doc) {
+  if (doc.id_len == 0) return false;
+  if (std::memchr(doc.id, '\0', doc.id_len) != nullptr) return false;
+  if (!ValidUtf8(doc.id, doc.id_len)) return false;
+  return true;
+}
+
 void FilterEmptyDocuments(const std::vector<std::string>& ids,
                           const std::vector<semb_document>& docs,
                           std::vector<semb_document>* kept,
@@ -344,7 +393,7 @@ void FilterEmptyDocuments(const std::vector<std::string>& ids,
   skipped_ids->clear();
   kept->reserve(docs.size());
   for (size_t i = 0; i < docs.size(); ++i) {
-    if (docs[i].id_len > 0 && docs[i].utf8_len == 0) {
+    if (docs[i].utf8_len == 0 && IdWouldPassStep9(docs[i])) {
       skipped_ids->push_back(ids[i]);
       continue;
     }
@@ -352,27 +401,107 @@ void FilterEmptyDocuments(const std::vector<std::string>& ids,
   }
 }
 
-// The sidecar so the skip record survives the terminal: `<stem>.skipped.tsv`
-// beside the bank, one header row plus one row per skipped document (its id
-// and the reason it was skipped). Never a bank-manifest or payload byte --
-// those stay exactly what the library wrote.
-bool WriteSkippedSidecar(const std::string& stem, const std::vector<std::string>& skipped_ids) {
-  std::ofstream sidecar(stem + ".skipped.tsv", std::ios::binary | std::ios::trunc);
-  if (!sidecar) return false;
-  sidecar << "id\treason\n";
-  for (const std::string& id : skipped_ids) {
-    sidecar << id << "\tempty_text\n";
+// TE-320 M-2: filtering can put one id in both the kept batch and the
+// skipped list (a duplicate where one twin is empty), or two skipped ids
+// can collide with each other -- neither collision ever reaches the
+// library's own step-10 duplicate check, because step 9 will have already
+// refused the batch (SEMB_INPUT_EMPTY, on the empty twin) before step 10
+// runs. Left unchecked, the sidecar would claim an id both shipped and
+// skipped, which defeats the reconciliation the sidecar exists for. Scoped
+// to collisions a skipped id takes part in; two kept ids colliding with
+// each other (no skip involved) is unchanged and still caught by the
+// library's own batch call.
+bool SkippedIdCollides(const std::vector<semb_document>& kept,
+                       const std::vector<std::string>& skipped_ids) {
+  if (skipped_ids.empty()) return false;
+  std::unordered_set<std::string_view> seen;
+  seen.reserve(kept.size() + skipped_ids.size());
+  for (const semb_document& doc : kept) {
+    seen.emplace(doc.id, doc.id_len);
   }
-  return static_cast<bool>(sidecar);
+  for (const std::string& id : skipped_ids) {
+    if (!seen.emplace(id).second) return true;
+  }
+  return false;
 }
 
-void ReportSkipped(const char* where, const std::vector<std::string>& skipped_ids) {
-  std::cerr << where << ": skipped " << skipped_ids.size() << " empty document(s), ids=[";
-  for (size_t i = 0; i < skipped_ids.size(); ++i) {
-    if (i) std::cerr << ", ";
-    std::cerr << skipped_ids[i];
+// TE-320 S-4/M-1: the sidecar, `<stem>.skipped.json`, matches the plan's own
+// format (`Claude/Plans/te267-u2-release-plan.md` U2-8) -- a JSON array,
+// one object per skipped id, `{"id": ..., "reason": "empty_text"}`. JSON's
+// own string escaping (json_lite.cpp WriteEscapedString) closes M-1 by
+// construction: a tab or newline in an id round-trips through \t/\n rather
+// than corrupting a delimited row. Every id that reaches this array has
+// already passed IdWouldPassStep9, so none of them can carry a NUL byte or
+// invalid UTF-8 in the first place.
+std::string SkippedSidecarJson(const std::vector<std::string>& skipped_ids) {
+  semb::json::Value array = semb::json::Value::MakeArray();
+  for (const std::string& id : skipped_ids) {
+    semb::json::Value entry = semb::json::Value::MakeObject();
+    entry.Set("id", semb::json::Value::MakeString(id));
+    entry.Set("reason", semb::json::Value::MakeString("empty_text"));
+    array.as_array.push_back(std::move(entry));
   }
-  std::cerr << "]\n";
+  return semb::json::Write(array);
+}
+
+// TE-320 M-3: written to a temp file beside the sidecar's own final path,
+// then renamed into place -- the pattern the library's own bank-triple
+// writer uses (AtomicTripleWriter::Commit, encoder.cpp) -- so a write
+// failure partway through never leaves a truncated `.skipped.json` in
+// place of a prior one. TE-320 S-1: called on EVERY successful bake, not
+// only when something was skipped, so a clean re-bake at a stem that
+// previously had skips overwrites the old sidecar with `[]` instead of
+// leaving it stale.
+bool WriteSkippedSidecar(const std::string& stem, const std::vector<std::string>& skipped_ids) {
+  const std::string path = stem + ".skipped.json";
+  const std::string temp_path = path + ".tmp";
+  {
+    std::ofstream sidecar(temp_path, std::ios::binary | std::ios::trunc);
+    if (!sidecar) return false;
+    sidecar << SkippedSidecarJson(skipped_ids);
+    if (!sidecar) return false;
+  }
+  std::error_code error;
+  std::filesystem::rename(temp_path, path, error);
+  if (error) {
+    std::error_code cleanup_error;
+    std::filesystem::remove(temp_path, cleanup_error);
+    return false;
+  }
+  return true;
+}
+
+// TE-320 S-3/S-4: plan sec U2-8's own stderr shape, one line per skipped id.
+void ReportSkipped(const std::vector<std::string>& skipped_ids) {
+  for (const std::string& id : skipped_ids) {
+    std::cerr << "skipped " << id << ": SEMB_INPUT_EMPTY\n";
+  }
+}
+
+enum class SidecarReadResult { kAbsent, kOk, kMalformed };
+
+// TE-320 S-3: reads a bank's own `<stem>.skipped.json` for `semb verify`'s
+// comparison. Absent is a distinct, valid outcome -- a bank baked before
+// this sidecar existed, or (post S-1) one baked with nothing to skip --
+// and per the ruling an absent sidecar names the empty set, not an error.
+// Present-but-unparseable is a genuine integrity problem and is refused by
+// name rather than silently treated as empty.
+SidecarReadResult ReadSkippedSidecarIds(const std::string& stem, std::vector<std::string>* out_ids) {
+  std::string content;
+  if (!ReadFile(stem + ".skipped.json", &content)) return SidecarReadResult::kAbsent;
+  try {
+    const semb::json::Value parsed = semb::json::Parse(content);
+    if (!parsed.IsArray()) return SidecarReadResult::kMalformed;
+    for (const semb::json::Value& entry : parsed.as_array) {
+      if (!entry.IsObject()) return SidecarReadResult::kMalformed;
+      const semb::json::Value* id = entry.Find("id");
+      if (!id || !id->IsString()) return SidecarReadResult::kMalformed;
+      out_ids->push_back(id->as_string);
+    }
+    return SidecarReadResult::kOk;
+  } catch (...) {
+    return SidecarReadResult::kMalformed;
+  }
 }
 
 int Bake(const std::vector<std::string>& args) {
@@ -394,19 +523,21 @@ int Bake(const std::vector<std::string>& args) {
   // originally-empty corpus (docs.empty()) is unrelated to this rule and
   // falls through to the library unchanged, which refuses it SEMB_CORPUS_EMPTY.
   if (!docs.empty() && kept.empty()) return Refuse("semb bake", SEMB_INPUT_EMPTY);
+  if (SkippedIdCollides(kept, skipped_ids)) return Refuse("semb bake", SEMB_DOCUMENT_ID_DUPLICATE);
   Handles handles;
   semb_status status = OpenEncoder(model, tokenizer, &handles);
   if (status != SEMB_OK) return Refuse("semb_encoder_open", status);
   status = semb_bake_to_path(handles.encoder, kept.data(), kept.size(), out, std::strlen(out));
   if (status != SEMB_OK) return Refuse("semb_bake_to_path", status);
-  // Reported and sidecar-recorded only once the bank triple itself exists,
-  // so a later failure (encoder open, the bake call) never leaves an orphan
-  // sidecar beside a bank that was never written.
-  if (!skipped_ids.empty()) {
-    ReportSkipped("semb bake", skipped_ids);
-    if (!WriteSkippedSidecar(out, skipped_ids)) {
-      return Refuse("semb bake skipped-sidecar", SEMB_ARTIFACT_UNREADABLE);
-    }
+  // TE-320 S-1: the sidecar is written on every successful bake, not only
+  // when something was skipped, so it can never go stale from a prior bake
+  // at the same stem. The stderr report stays conditional -- nothing to say
+  // when nothing was skipped. Both happen only once the bank triple itself
+  // exists, so a later failure never leaves an orphan sidecar beside a bank
+  // that was never written.
+  if (!skipped_ids.empty()) ReportSkipped(skipped_ids);
+  if (!WriteSkippedSidecar(out, skipped_ids)) {
+    return Refuse("semb bake skipped-sidecar", SEMB_ARTIFACT_UNREADABLE);
   }
   return 0;
 }
@@ -511,6 +642,25 @@ int Verify(const std::vector<std::string>& args) {
   std::vector<std::string> skipped_ids;
   FilterEmptyDocuments(ids, docs, &kept, &skipped_ids);
   if (!docs.empty() && kept.empty()) return Refuse("semb verify", SEMB_INPUT_EMPTY);
+  if (SkippedIdCollides(kept, skipped_ids)) return Refuse("semb verify", SEMB_DOCUMENT_ID_DUPLICATE);
+  // TE-320 S-3: report exactly as bake does, so the README's "both commands
+  // report on stderr" claim is true, and check the corpus's own skip set
+  // against the bank's `<stem>.skipped.json` (an absent sidecar names the
+  // empty set). Bake and verify can each independently pass this filter
+  // while disagreeing about WHICH documents were empty -- e.g. the corpus
+  // gained extra empty documents after the bake -- and without this check
+  // that disagreement re-encodes to a byte-identical bank and verify says
+  // nothing. SEMB_CORPUS_DIGEST_MISMATCH is the existing status for "this
+  // corpus is not the bank's corpus", which is exactly this case.
+  if (!skipped_ids.empty()) ReportSkipped(skipped_ids);
+  std::vector<std::string> bank_skipped_ids;
+  if (ReadSkippedSidecarIds(positional[0], &bank_skipped_ids) == SidecarReadResult::kMalformed) {
+    return Refuse("semb verify sidecar", SEMB_ARTIFACT_UNREADABLE);
+  }
+  if (std::unordered_set<std::string>(bank_skipped_ids.begin(), bank_skipped_ids.end()) !=
+      std::unordered_set<std::string>(skipped_ids.begin(), skipped_ids.end())) {
+    return Refuse("semb verify", SEMB_CORPUS_DIGEST_MISMATCH);
+  }
   TemporaryBakeDirectory scratch;
   if (!scratch.Create()) return Refuse("semb verify scratch", SEMB_ARTIFACT_UNREADABLE);
   auto finish = [&](int result) {

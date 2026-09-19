@@ -23,10 +23,19 @@ re-encodes a bank's corpus and compares it with the bank (`semb verify`), and
 prints a bank's manifest (`semb inspect`). A document longer than the model's
 context is refused by name (`SEMB_CONTEXT_CAP_EXCEEDED`), never truncated; a
 query is cut to the context after its instruction prefix is applied.
-`semb bake` and `semb verify` skip a document with empty text (the library's
-own `SEMB_INPUT_EMPTY` refusal, unchanged for every other caller) instead of
-refusing the whole corpus, reporting the skipped ids on stderr and in a
-`<stem>.skipped.tsv` sidecar next to the bank.
+`semb bake` and `semb verify` skip a document only when empty text (the
+library's own `SEMB_INPUT_EMPTY` refusal, unchanged for every other caller)
+is its sole defect; a document with an empty, NUL-containing, or invalid-UTF-8
+id is still refused by name, never silently skipped, whether or not its text
+is also empty. Both commands report each skipped id on stderr
+(`skipped <id>: SEMB_INPUT_EMPTY`), and `semb bake` writes a
+`<stem>.skipped.json` sidecar next to the bank on every successful bake (a
+JSON array of `{"id", "reason"}`, `[]` when nothing was skipped, so a clean
+re-bake never leaves a stale sidecar from an earlier one). `semb verify`
+compares its own skip set against the bank's sidecar (an absent sidecar
+names the empty set) and refuses `SEMB_CORPUS_DIGEST_MISMATCH` when they
+differ, so a corpus with different empty documents than the one baked is
+never silently accepted.
 
 The encoder fingerprint, returned by `semb_encode` and `semb_fingerprint_of`, is
 the SHA-256 over five length-prefixed components: the model artifact's bytes,
