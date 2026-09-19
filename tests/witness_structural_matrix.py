@@ -275,10 +275,17 @@ def copy_repo(dest: Path) -> Path:
     """Mirrors tools/ci/run_configure_matrix.py's own copy_repo(): a
     minimal copy sufficient to configure and build `semb_witness` --
     never the tracked source itself, so every patch below lands on a
-    throwaway copy."""
+    throwaway copy.
+
+    TE-272: "docs" added to the copy list. Configure now reads
+    docs/certified-builds.json and refuses by name when it is missing
+    (cmake/CertifiedBuilds.cmake, SEMB_CERTIFIED_BUILDS_MISSING), so a copy
+    that omits it fails every leg that reconfigures at that check instead of
+    at the leg's own construction (D-SLM7217 (3); mirrors
+    tools/ci/run_configure_matrix.py's own TE-265 fix to the same list)."""
     rmtree(dest)
     dest.mkdir(parents=True)
-    for item in ("CMakeLists.txt", "cmake", "include", "src", "tools", "tests", "superslm.lock",
+    for item in ("CMakeLists.txt", "cmake", "docs", "include", "src", "tools", "tests", "superslm.lock",
                  ".gitattributes"):
         src = REPO_ROOT / item
         if not src.exists():

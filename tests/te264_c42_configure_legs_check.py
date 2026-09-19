@@ -17,8 +17,8 @@ tools/ci/run_configure_matrix.py's own helpers (`copy_repo`,
                             -> configure succeeds
 
 The must-accept is what stops a configure that refuses everything from
-passing the two refusals.  `copy_repo` copies no `docs/` directory, so this
-driver copies the committed `docs/` tree into each copy itself.
+passing the two refusals.  `copy_repo` copies the committed `docs/` tree
+itself (D-SLM7217 (3)), so each leg copies straight from it.
 
 Placement: the plan appends these legs to tools/ci/run_configure_matrix.py
 under C42-derive's name.  That file is outside the test author's writable
@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -44,23 +43,15 @@ import run_configure_matrix as matrix  # noqa: E402
 DOC_RELATIVE = Path("docs") / "certified-builds.json"
 
 
-def copy_with_docs(dest: Path) -> Path:
-    src = matrix.copy_repo(dest)
-    docs = matrix.REPO_ROOT / "docs"
-    if docs.is_dir():
-        shutil.copytree(docs, src / "docs")
-    return src
-
-
 def leg_missing() -> None:
-    src = copy_with_docs(matrix.SCRATCH / "c42d_missing_src")
+    src = matrix.copy_repo(matrix.SCRATCH / "c42d_missing_src")
     (src / DOC_RELATIVE).unlink(missing_ok=True)
     rc, out = matrix.run_cmake_configure(src, matrix.SCRATCH / "c42d_missing_build", matrix.ENGINE_PREFIX)
     matrix.record("C42-derive (missing): no docs/certified-builds.json", "SEMB_CERTIFIED_BUILDS_MISSING", rc, out)
 
 
 def leg_unparseable() -> None:
-    src = copy_with_docs(matrix.SCRATCH / "c42d_unparseable_src")
+    src = matrix.copy_repo(matrix.SCRATCH / "c42d_unparseable_src")
     (src / DOC_RELATIVE).parent.mkdir(parents=True, exist_ok=True)
     (src / DOC_RELATIVE).write_bytes(b'{ "schemaVersion": 1, "release": ')
     rc, out = matrix.run_cmake_configure(src, matrix.SCRATCH / "c42d_unparseable_build", matrix.ENGINE_PREFIX)
@@ -69,7 +60,7 @@ def leg_unparseable() -> None:
 
 
 def leg_must_accept() -> None:
-    src = copy_with_docs(matrix.SCRATCH / "c42d_accept_src")
+    src = matrix.copy_repo(matrix.SCRATCH / "c42d_accept_src")
     rc, out = matrix.run_cmake_configure(src, matrix.SCRATCH / "c42d_accept_build", matrix.ENGINE_PREFIX)
     matrix.record("C42-derive (must-accept): the committed document, unchanged", "Configuring done", rc, out,
                   want_fail=False, extra={"document_present": (src / DOC_RELATIVE).is_file()})
