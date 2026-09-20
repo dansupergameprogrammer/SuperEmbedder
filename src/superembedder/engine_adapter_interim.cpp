@@ -1034,6 +1034,16 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
     }
   };
 
+  // EXPERIMENTAL, TEMPORARY (TE-357 vitality check only -- reverted before
+  // commit, never shipped from this seat): the FIRST caught bad_alloc from
+  // any worker's own per-document call, rethrown on the calling thread only
+  // after every thread has been joined. Caught PER DOCUMENT, inside the
+  // loop -- not around the whole Worker body -- so a failing document does
+  // not stop that worker from continuing to drain next_doc, matching every
+  // other RecordFailure path's own "every document assigned to every
+  // worker still runs to completion" contract.
+  std::exception_ptr te357_first_exception;
+  std::mutex te357_exception_mutex;
   auto Worker = [&](size_t worker_workspace_index) {
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
     // Fired on THIS worker's own thread, as the first thing it does after
@@ -1052,7 +1062,12 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
     for (;;) {
       const size_t doc = next_doc.fetch_add(1, std::memory_order_relaxed);
       if (doc >= doc_count) break;
-      ProcessOneDocument(doc, workspace_bytes);
+      try {
+        ProcessOneDocument(doc, workspace_bytes);
+      } catch (const std::bad_alloc&) {
+        std::lock_guard<std::mutex> lock(te357_exception_mutex);
+        if (!te357_first_exception) te357_first_exception = std::current_exception();
+      }
     }
   };
 
@@ -1073,6 +1088,7 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
   }
   Worker(pool.index(0));
   for (std::thread& t : threads) t.join();
+  if (te357_first_exception) std::rethrow_exception(te357_first_exception);
 
   if (have_failure) {
     if (out_failed_index) *out_failed_index = best_failure.doc_index;
