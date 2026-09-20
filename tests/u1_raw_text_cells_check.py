@@ -211,6 +211,39 @@ def run_cells(exe: Path, args: List[str], leg: str, table: Table, diag: bool = F
         table.add(leg, "PASS" if ok else "FAIL", summary)
 
 
+# TE-357 C-1: the three isolated T>1 open-path legs (K-17e/f/g). Each runs the
+# contract binary AGAIN, once per leg, in its OWN subprocess -- the two
+# must-reject legs (worker/caller) reproduce an allocation failure inside
+# semb_encoder_open's own ComputeWbDigest batch at the shipped
+# max_concurrency = 8, and PRE-TE-356 that failure reaches std::terminate: no
+# PASS/FAIL line, a fail-fast exit code, and (per the standing rule) every
+# cell after it in a shared process would be silently lost. Isolating each
+# leg to its own process means a crash costs exactly that leg's own row, not
+# the whole suite's report. A crash is therefore read as FAIL here, not as an
+# infrastructure fault -- it is this round's own currently-true finding, and
+# it is EXPECTED to flip to PASS once TE-356's fix lands (the accept leg
+# cannot crash by construction; it is run the same way only so the three
+# legs share one flag and one driver shape).
+def run_t2_open_legs(exe: Path, common_args: List[str], label_prefix: str, table: Table) -> None:
+    for leg, cell in (("accept", "K-17e"), ("worker", "K-17f"), ("caller", "K-17g")):
+        t0 = time.perf_counter()
+        proc = subprocess.run([str(exe), *common_args, "--k17-t2-open-leg", leg], cwd=REPO_ROOT,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        elapsed = time.perf_counter() - t0
+        print(proc.stdout)
+        if proc.stderr.strip():
+            print(proc.stderr)
+        n_pass = len(re.findall(r"^\[PASS\]", proc.stdout, re.M))
+        n_fail = len(re.findall(r"^\[FAIL\]", proc.stdout, re.M))
+        crashed = proc.returncode not in (0, 1)  # 0 = all PASS, 1 = a named [FAIL] Verdict ran and printed
+        ok = proc.returncode == 0 and n_fail == 0 and n_pass > 0
+        if crashed:
+            summary = (f"exit {proc.returncode} (fail-fast crash, no PASS/FAIL line reached) in "
+                       f"{elapsed:.1f}s -- expected pre-TE-356, must flip to PASS once TE-356 lands")
+        else:
+            summary = f"exit {proc.returncode}; {n_pass} PASS, {n_fail} FAIL in {elapsed:.1f}s"
+        table.add(f"{label_prefix} {cell}", "PASS" if ok else "FAIL", summary)
+
 
 SEAM_SYMBOLS = ["semb_test_seam_" + name for name in
                 ("arm_park", "parked", "wait_parked", "release", "acquisitions", "reset")]
@@ -450,6 +483,7 @@ def main(argv: List[str]) -> int:
     if real_tokenizer:
         mech_args += ["--other-tokenizer", real_tokenizer]
     run_cells(contract, mech_args, "M1 contract cells K-01..K-17 plus K-06i on the synthetic pair", table)
+    run_t2_open_legs(contract, ["--model", pair_model, "--tokenizer", pair_tok, "--dims", "32"], "M1", table)
     parity_mech_args = ["--model", pair_model, "--tokenizer", pair_tok, "--append-id", str(pair["appended_token_id"]),
                         "--wrong-append-id", "263", "--expected-ids", str(pair_dir / "u1_mechanism_expected_ids.tsv"),
                         "--mutant-rows", "64"]

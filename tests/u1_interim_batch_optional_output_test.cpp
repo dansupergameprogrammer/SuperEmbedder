@@ -48,6 +48,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -160,6 +161,94 @@ int main() {
             "status=" + std::to_string(static_cast<int>(s)) + " required_bytes=" + std::to_string(required_bytes) +
                 " seam_len=" + std::to_string(seam_len) + " (0xBAD5EED sentinel = " +
                 std::to_string(static_cast<size_t>(0xBAD5EED)) + ")");
+  }
+
+  // ---- TE-357 S-2: RecordFailure's lowest-index-wins rule and the cross-
+  // thread engine-status std::string copy, at T > 1
+  // (engine_adapter_interim.cpp:906-939, header contract encoder_interim_abi.h:188-196).
+  // Poirot's casebook (`Claude/Poirot/te355-te350-code-review-2026-09-20.md`
+  // S-2): "the most intricate new code in the diff... with no cell behind
+  // it." Driven directly against semb_interim_encode_batch_ps_n, this
+  // file's own established convention, at a pool of 4 workers over 8
+  // documents where TWO -- indices 2 and 5 -- deterministically fail via
+  // EmbedEntry's own token_id-out-of-range refusal
+  // (superslm/forward_sites.cpp: "validate token_id against [0, vocab_size)
+  // BEFORE any row of embed_weights is read"). This is a STATUS-based
+  // failure through RecordFailure's normal return path, never an
+  // exception -- it exercises the lowest-index rule and the status-string
+  // copy WITHOUT touching C-1's exception-unwind defect, so it is
+  // reachable and assertable today, independent of TE-356's own fix.
+  {
+    std::ifstream model_file(kPairModelPath, std::ios::binary);
+    const std::vector<uint8_t> model_bytes((std::istreambuf_iterator<char>(model_file)),
+                                            std::istreambuf_iterator<char>());
+    if (model_bytes.empty()) {
+      Verdict(false, "(setup) S-2 read model bytes for semb_interim_encoder_open_from_memory",
+              "empty read of " + std::string(kPairModelPath));
+    } else {
+      SembInterimEncoder* penc = nullptr;
+      const char* popen_status = nullptr;
+      constexpr uint32_t kPoolSize = 4;
+      const SembInterimStatus popen = semb_interim_encoder_open_from_memory(
+          model_bytes.data(), model_bytes.size(), kPairAppendedTokenId, kPoolSize, &penc, &popen_status);
+      if (popen != kSembInterimOk || !penc) {
+        Verdict(false, "(setup) S-2 semb_interim_encoder_open_from_memory at pool size 4",
+                "status=" + std::to_string(static_cast<int>(popen)) +
+                    " engine=" + (popen_status ? popen_status : "?"));
+      } else {
+        SembInterimGeometry pgeom{};
+        pgeom.struct_size = sizeof(pgeom);
+        semb_interim_encoder_geometry(penc, &pgeom);
+        const int32_t vocab = static_cast<int32_t>(pgeom.vocab_size);
+        constexpr size_t kDocCount = 8;
+        constexpr size_t kFailLow = 2, kFailHigh = 5;  // engineered failures; kFailLow < kFailHigh
+        std::vector<std::vector<int32_t>> docs(kDocCount, std::vector<int32_t>{1, 2, 3});
+        docs[kFailLow][0] = vocab;   // out of [0, vocab) by construction -- EmbedEntry refuses
+        docs[kFailHigh][0] = vocab;  // same, at a HIGHER document index
+        std::vector<const int32_t*> doc_ptrs(kDocCount);
+        std::vector<size_t> doc_lens(kDocCount);
+        for (size_t i = 0; i < kDocCount; ++i) {
+          doc_ptrs[i] = docs[i].data();
+          doc_lens[i] = docs[i].size();
+        }
+        std::vector<float> out_vectors(kDocCount * pgeom.hidden_size);
+
+        bool always_min_index = true;
+        bool always_named_correctly = true;
+        std::string last_status_seen;
+        constexpr int kReps = 20;
+        for (int rep = 0; rep < kReps; ++rep) {
+          size_t required = 0, failed_index = 0xBAD5EED;
+          SembWaPoolStatus dq = static_cast<SembWaPoolStatus>(0xBAD5EED);
+          const char* engine_name = nullptr;
+          const SembInterimStatus s = semb_interim_encode_batch_ps_n(
+              penc, doc_ptrs.data(), doc_lens.data(), kDocCount, /*chunk_budget=*/0, out_vectors.data(),
+              out_vectors.size() * sizeof(float), &required, &failed_index, &dq, &engine_name,
+              /*out_seam_stream=*/nullptr, /*out_seam_stream_capacity=*/0, /*out_seam_stream_len=*/nullptr);
+          if (s != kSembInterimEngineRefused || failed_index != kFailLow) always_min_index = false;
+          const bool named_ok = engine_name && std::string(engine_name).find("TokenIdOutOfRange") != std::string::npos;
+          if (!named_ok) always_named_correctly = false;
+          if (engine_name) last_status_seen = engine_name;
+        }
+        Verdict(always_min_index,
+                "S-2 lowest-index-wins: documents " + std::to_string(kFailLow) + " and " +
+                    std::to_string(kFailHigh) + " both fail (pool size " + std::to_string(kPoolSize) +
+                    " over " + std::to_string(kDocCount) +
+                    " documents, T > 1); out_failed_index names the LOWER index on every one of " +
+                    std::to_string(kReps) +
+                    " repeats, regardless of which worker thread reaches which document first",
+                always_min_index ? "held on every repeat" : "violated on at least one repeat");
+        Verdict(always_named_correctly,
+                "S-2 the cross-thread engine-status std::string copy names the lower-indexed "
+                "document's own failure reason (TokenIdOutOfRange) on every one of " +
+                    std::to_string(kReps) +
+                    " repeats -- the string is copied on the producing thread before that thread's "
+                    "own thread-local storage could be reused, per encoder_adapter_interim.cpp's own "
+                    "comment on t_last_engine_status",
+                "last observed: " + last_status_seen);
+        semb_interim_encoder_close(penc);
+      }
+    }
   }
 
   semb_interim_encoder_close(enc);

@@ -125,6 +125,89 @@ void Release() {
   g_park_cv.notify_all();
 }
 
+// Policy 3 (TE-357, C-1): fails the FIRST allocation seen from each of up to
+// `max_fires` DISTINCT threads other than `g_other_except`, one shot per
+// distinct thread -- never the same thread twice, and never the excepted
+// one. This is size- and geometry-INDEPENDENT: it does not guess which byte
+// count a spawned worker's first allocation will request (that varies with
+// model dims, tokenizer output, and machine), it targets the THREAD, the
+// one thing WorkspacePool's own contract (engine_adapter_interim.cpp) makes
+// structurally distinct between worker 0 (the calling thread, inline) and
+// every other worker (a spawned std::thread) -- reproducing C-1's Leg 2
+// ("a std::bad_alloc on a SPAWNED worker escapes that thread's initial
+// function") on demand, on the real data path, on any pair and any machine.
+// Matches the same "first allocation inside the function under test" shape
+// K-17a/b/d already use on the main thread. 0 max_fires = disarmed.
+//
+// FIXED-CAPACITY BY CONSTRUCTION, NEVER std::vector: this bookkeeping runs
+// inside the global operator new override itself, under a plain (non-
+// recursive) mutex. A growable container here is a REENTRANCY hazard, not
+// merely a style choice -- std::vector::emplace_back growing its backing
+// store calls operator new, which is THIS SAME overridden function, which
+// would try to re-lock g_other_mutex from the thread that already holds it.
+// Recursively acquiring a non-recursive mutex (MSVC's std::mutex is backed
+// by SRWLOCK, whose own docs state recursive acquisition is unsupported and
+// may corrupt the lock) is undefined behavior -- EXECUTED here as a
+// deterministic crash that reproduced even with the injected throw itself
+// made unreachable (`skip_per_thread` armed past any allocation the run
+// could ever make), which is what pinned the cause to the container's own
+// growth rather than to anything in the code under test (this round's own
+// record has the isolating run). A fixed array sized well past any
+// realistic worker count removes the hazard by construction rather than by
+// care.
+constexpr size_t kOtherMaxThreads = 64;
+std::mutex g_other_mutex;
+std::thread::id g_other_seen_id[kOtherMaxThreads];  // threads that have already fired (one-shot each)
+size_t g_other_seen_used = 0;
+std::thread::id g_other_except;
+std::atomic<uint32_t> g_other_max_fires{0};
+std::atomic<uint32_t> g_other_fired_count{0};
+std::atomic<size_t> g_other_last_fired_size{0};
+
+void ArmFailOtherThread(std::thread::id except, uint32_t max_fires) {
+  std::lock_guard<std::mutex> lock(g_other_mutex);
+  g_other_seen_used = 0;
+  g_other_except = except;
+  g_other_fired_count.store(0, std::memory_order_release);
+  g_other_max_fires.store(max_fires, std::memory_order_release);
+}
+void DisarmFailOtherThread() { g_other_max_fires.store(0, std::memory_order_release); }
+
+// Policy 4 (TE-357, C-1): fails the FIRST allocation specifically on
+// `g_on_target` (the CALLING thread, by construction below), one-shot.
+// Reproduces C-1's Leg 3 ("a std::bad_alloc on the CALLING thread
+// propagates out ... while `threads` still holds joinable threads"): the
+// spawned workers are constructed into that vector BEFORE the calling
+// thread ever runs its own share of the work (engine_adapter_interim.cpp's
+// own comment: "Threads 1..worker_count-1 are spawned FIRST"), so by the
+// time this policy's target (the calling thread) makes its own first
+// allocation AFTER a spawned worker has made ITS own first allocation, the
+// joinable threads it will unwind past already exist.
+//
+// `wait_for_foreign`, when set, defers matching until `g_on_foreign_seen`
+// goes true -- set the instant ANY non-target thread allocates. This is
+// NOT a blocking wait (no allocation ever spins): every calling-thread
+// allocation made before the first foreign one is simply let through
+// unmatched, which is exactly correct, because those earlier calls are
+// model/tokenizer load, running single-threaded before any worker exists
+// -- the T=1 shape every other K-17 cell already covers. Only once a
+// worker has genuinely started (proof the digest's own T>1 region has been
+// entered) does the calling thread's NEXT allocation become the match.
+std::atomic<bool> g_on_armed{false};
+std::atomic<bool> g_on_wait_for_foreign{false};
+std::atomic<bool> g_on_foreign_seen{false};
+std::thread::id g_on_target;
+std::atomic<uint64_t> g_on_fired{0};
+std::atomic<size_t> g_on_last_fired_size{0};
+
+void ArmFailOnThread(std::thread::id target, bool wait_for_foreign = false) {
+  g_on_target = target;
+  g_on_foreign_seen.store(false, std::memory_order_release);
+  g_on_wait_for_foreign.store(wait_for_foreign, std::memory_order_release);
+  g_on_armed.store(true, std::memory_order_release);
+}
+void DisarmFailOnThread() { g_on_armed.store(false, std::memory_order_release); }
+
 void* Allocate(std::size_t n) {
   std::size_t min = g_fail_min_bytes.load(std::memory_order_acquire);
   if (min != 0 && n >= min &&
@@ -150,6 +233,42 @@ void* Allocate(std::size_t n) {
         throw std::bad_alloc();
       }
       if (g_safety_remaining.compare_exchange_weak(remaining, remaining - n)) break;
+    }
+  }
+  if (g_other_max_fires.load(std::memory_order_acquire) > 0) {
+    const std::thread::id tid = std::this_thread::get_id();
+    if (tid != g_other_except) {
+      std::lock_guard<std::mutex> lock(g_other_mutex);
+      const uint32_t max_fires = g_other_max_fires.load(std::memory_order_acquire);
+      if (max_fires > 0 && g_other_fired_count.load(std::memory_order_acquire) < max_fires) {
+        bool already_fired = false;
+        for (size_t i = 0; i < g_other_seen_used; ++i) {
+          if (g_other_seen_id[i] == tid) { already_fired = true; break; }
+        }
+        if (!already_fired && g_other_seen_used < kOtherMaxThreads) {
+          g_other_seen_id[g_other_seen_used] = tid;
+          ++g_other_seen_used;
+          g_other_fired_count.fetch_add(1, std::memory_order_acq_rel);
+          g_other_last_fired_size.store(n, std::memory_order_release);
+          throw std::bad_alloc();
+        }
+      }
+    }
+  }
+  {
+    const std::thread::id tid = std::this_thread::get_id();
+    if (g_on_wait_for_foreign.load(std::memory_order_acquire) && tid != g_on_target) {
+      g_on_foreign_seen.store(true, std::memory_order_release);
+    }
+    if (g_on_armed.load(std::memory_order_acquire) && tid == g_on_target &&
+        (!g_on_wait_for_foreign.load(std::memory_order_acquire) ||
+         g_on_foreign_seen.load(std::memory_order_acquire))) {
+      bool expected = true;
+      if (g_on_armed.compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {
+        g_on_fired.fetch_add(1, std::memory_order_acq_rel);
+        g_on_last_fired_size.store(n, std::memory_order_release);
+        throw std::bad_alloc();
+      }
     }
   }
   void* p = std::malloc(n == 0 ? 1 : n);
@@ -324,6 +443,11 @@ struct Args {
   bool workspace_precedence = false;
   bool print_vector = false;
   std::string print_text;
+  // TE-357 (C-1): "worker" or "caller", selects one isolated T>1 leg of the
+  // open-path cross-thread allocation-failure probe (K-17f/g) and runs
+  // ONLY that leg -- see main()'s own comment at the branch for why this
+  // is a separate process rather than a cell inline in the main sweep.
+  std::string k17_t2_open_leg;
 };
 
 Args ParseArgs(int argc, char** argv) {
@@ -346,6 +470,7 @@ Args ParseArgs(int argc, char** argv) {
     else if (k == "--legacy-append-id") { next(&v); g_legacy_append_id = std::atoi(v.c_str()); }
     else if (k == "--dims") { next(&v); a.dims = static_cast<uint32_t>(std::atoi(v.c_str())); }
     else if (k == "--context-cap") { next(&v); a.context_cap = static_cast<size_t>(std::atoll(v.c_str())); }
+    else if (k == "--k17-t2-open-leg") next(&a.k17_t2_open_leg);
     else { std::fprintf(stderr, "unknown argument %s\n", k.c_str()); std::exit(2); }
   }
   if (a.model.empty() || a.tokenizer.empty() || a.dims == 0) {
@@ -430,6 +555,112 @@ int main(int argc, char** argv) {
     }
     std::printf("VECTOR_HEX %s\n", Hex(reinterpret_cast<const uint8_t*>(output.Data()), need).c_str());
     return 0;
+  }
+
+  // TE-357 (C-1, casebook route "inside semb_encoder_open via
+  // ComputeWbDigest's internal batch call"): ONE isolated leg of the T>1
+  // open-path allocation-failure probe, run to completion and exited
+  // instead of falling through to the rest of this file's own sweep.
+  //
+  // WHY A SEPARATE PROCESS RATHER THAN A CELL IN THE SWEEP BELOW, for the
+  // two must-reject legs (worker/caller): every other K-17 cell survives
+  // its own injected failure by construction -- std::bad_alloc unwinds one
+  // call stack on one thread and the process lives to run the next cell.
+  // C-1's whole defect is that THIS failure does not unwind: pre-fix, it
+  // reaches std::terminate (Poirot's own casebook demonstration,
+  // `Claude/Poirot/te355-te350-code-review-2026-09-20.md` sec 4.1) and the
+  // process dies with no PASS/FAIL line and no chance to report on
+  // anything that would have run after it. A cell that can take the whole
+  // binary down with it cannot sit inline in a suite whose other 300+
+  // cells still need to report -- so it is its own invocation, and the
+  // DRIVER (tests/u1_raw_text_cells_check.py) is the one that reads this
+  // process's exit code: a crash is the correct, expected, CURRENT (pre-
+  // TE-356) reading, and the driver names it that way rather than treating
+  // a fail-fast exit as infrastructure failure. The must-accept leg
+  // ("accept") cannot crash by construction (no fault is ever armed) and
+  // is isolated here only so all three T>1 open legs share one flag and
+  // one driver invocation shape.
+  if (!a.k17_t2_open_leg.empty()) {
+    if (a.k17_t2_open_leg != "worker" && a.k17_t2_open_leg != "caller" && a.k17_t2_open_leg != "accept") {
+      std::fprintf(stderr, "--k17-t2-open-leg wants 'worker', 'caller' or 'accept', got '%s'\n",
+                   a.k17_t2_open_leg.c_str());
+      return 2;
+    }
+    if (a.k17_t2_open_leg == "accept") {
+      // K-17e must-accept: the shipped configuration (max_concurrency = 8,
+      // reaching T = 8 through ComputeWbDigest's internal 16-document batch
+      // on any machine with >= 8 logical processors) opens and closes
+      // cleanly with no allocation-failure policy armed at all -- the
+      // widened pool is not itself the defect, and this is the baseline
+      // K-17f/g's own red readings are read against.
+      const semb_config cfg = MakeConfig(a.model, a.tokenizer, /*max_concurrency=*/8);
+      semb_encoder enc = OutSentinel();
+      const semb_status s = semb_encoder_open(&cfg, &enc);
+      Verdict(s == st.ok && enc != nullptr,
+              "K-17e (T>1, must-accept, C-1) plain open at the shipped max_concurrency = 8, no fault "
+              "armed -> SEMB_OK",
+              Name(s));
+      if (enc) (void)semb_encoder_close(enc);
+      std::printf("\nu1_raw_text_contract_test (isolated T>1 open leg 'accept'): %d cell(s), %d failure(s)\n",
+                  g_cells, g_failures);
+      return g_failures ? 1 : 0;
+    }
+    // main.cpp's kBakeMaxConcurrency -- the exact pool size semb bake/verify
+    // open at (C-1's "every semb bake, every semb verify ... is in that
+    // regime"). ComputeWbDigest's own internal batch is a fixed 16
+    // documents (encoder.cpp:871), so T = min(16, 8, hardware_concurrency())
+    // -- 8 on any machine with >= 8 logical processors, which is what makes
+    // this cross-thread construction reach a SPAWNED worker rather than
+    // merely the calling thread's own inline share.
+    constexpr uint32_t kShipConcurrency = 8;
+    const semb_config cfg = MakeConfig(a.model, a.tokenizer, kShipConcurrency);
+    const std::thread::id caller = std::this_thread::get_id();
+    const bool worker_leg = a.k17_t2_open_leg == "worker";
+    if (worker_leg) {
+      alloc_hook::ArmFailOtherThread(caller, /*max_fires=*/1);
+    } else {
+      alloc_hook::ArmFailOnThread(caller, /*wait_for_foreign=*/true);
+    }
+    semb_encoder enc = OutSentinel();
+    const semb_status s = semb_encoder_open(&cfg, &enc);
+    alloc_hook::DisarmFailOtherThread();
+    alloc_hook::DisarmFailOnThread();
+    const uint64_t other_fired = alloc_hook::g_other_fired_count.load();
+    const uint64_t on_fired = alloc_hook::g_on_fired.load();
+    const bool fired_ok = worker_leg ? (other_fired == 1) : (on_fired == 1);
+    const std::string cell =
+        worker_leg
+            ? "K-17f (T>1, Leg 2, C-1) an allocation failure inside semb_encoder_open's own "
+              "ComputeWbDigest batch, on a SPAWNED worker thread, at the shipped max_concurrency = 8 "
+              "-> SEMB_ALLOCATION_FAILED, *out = NULL, process survives (never std::terminate)"
+            : "K-17g (T>1, Leg 3, C-1) an allocation failure inside semb_encoder_open's own "
+              "ComputeWbDigest batch, on the CALLING thread while spawned workers are still joinable, "
+              "at the shipped max_concurrency = 8 -> SEMB_ALLOCATION_FAILED, *out = NULL, process "
+              "survives (never std::terminate)";
+    const size_t fired_size = worker_leg ? alloc_hook::g_other_last_fired_size.load()
+                                          : alloc_hook::g_on_last_fired_size.load();
+    const bool ok = fired_ok && s == st.allocation_failed && enc == nullptr;
+    Verdict(ok, cell,
+            std::string(Name(s)) + OutState(enc) + "; other_fired=" + std::to_string(other_fired) +
+                " on_fired=" + std::to_string(on_fired) + "; failing request was " +
+                std::to_string(fired_size) + " bytes (a live-run observation, never a size this "
+                "construction chose -- the thread-identity trigger fires the FIRST allocation seen "
+                "from its target thread once armed, whatever ProcessOneDocument happens to be "
+                "allocating at that point)");
+    if (ok) {
+      semb_encoder after = OpenPair(a, st, "K-17 T>1 open leg (a normal open afterwards)");
+      if (after) {
+        const EncodeResult r = EncodeDoc(after, kDoc, sizeof(kDoc) - 1, a.dims);
+        Verdict(r.status == st.ok,
+                "K-17 T>1 open leg: after the refused open, a normal open and encode succeed "
+                "(no registry or pool state leaked)",
+                Name(r.status));
+        (void)semb_encoder_close(after);
+      }
+    }
+    std::printf("\nu1_raw_text_contract_test (isolated T>1 open leg '%s'): %d cell(s), %d failure(s)\n",
+                a.k17_t2_open_leg.c_str(), g_cells, g_failures);
+    return g_failures ? 1 : 0;
   }
 
   // ---- K-07 status names: names, ordinals, static storage, the retired name (P-4, P-5) ----
