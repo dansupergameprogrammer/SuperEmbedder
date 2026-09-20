@@ -171,8 +171,14 @@ SembInterimStatus semb_interim_encode_ps_n(SembInterimEncoder* encoder, const in
 // cross-document parallelism): the SAME seam -> select -> dequantize
 // composition as semb_interim_encode_ps_n, run for `doc_count` independent
 // documents against AT MOST T workspaces acquired ONCE EACH for the WHOLE
-// call, T = min(doc_count, the pool's own size, hardware concurrency).
-// Every document's arithmetic is independent of every other document's
+// call, T <= min(doc_count, the pool's own size, hardware concurrency) --
+// an UPPER BOUND, not an equality: WorkspacePool's own constructor acquires
+// whatever is free in one non-blocking pass and stops there (TE-356), so a
+// concurrent call already holding some of the pool's slots can leave the
+// REALISED T strictly lower than that bound, and this call proceeds with
+// fewer workers rather than refusing (SEMB_CONCURRENCY_EXCEEDED is returned
+// only when T would be zero). Every document's arithmetic is independent
+// of every other document's
 // (TE-350's own premise), so this call's output -- every row, the seam
 // stream, and every manifest digest derived from either -- is byte-
 // identical regardless of T: T changes only how the doc_count documents are

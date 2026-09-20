@@ -48,13 +48,38 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
+#include <exception>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
+
+// TE-356 (C-2): platform memory query for FinishEncoderOpen's adaptive
+// workspace cap, below. Each branch reads THIS machine's own free memory at
+// open time; none of them is a promise (StandardsDocument.md 5.4's
+// resolution-floor rule -- a reading converts "definitely will not fit" into
+// a refusal reliably, never "reads as fitting" into a guarantee against a
+// concurrent allocator elsewhere in the process).
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#include <mach/mach_host.h>
+#else
+#include <unistd.h>
+#endif
 
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
 #include "support/semb_workspace_seam.h"
@@ -86,11 +111,16 @@ static void OnAcquired() {
 // SECOND, independent park point at per-DOCUMENT granularity, distinct
 // from OnAcquired's once-per-ACQUISITION park above. The batch verb
 // (semb_interim_encode_batch_ps_n, below) acquires at most T workspace
-// slots for the whole call (TE-350: T = min(doc_count, pool size, hardware
-// concurrency), one worker thread per acquired slot) and each worker holds
+// slots for the whole call (TE-350: T <= min(doc_count, pool size, hardware
+// concurrency) -- an upper bound, not an equality; contention with another
+// in-flight call can leave fewer free (TE-356) -- one worker thread per
+// acquired slot) and each worker holds
 // its own slot across every document that worker processes; OnAcquired
-// fires once per slot acquired, at that acquisition, so no existing
-// construction can observe a slot BETWEEN two documents processed by the
+// fires once per slot, at that WORKER's entry (TE-356: every slot is
+// actually acquired earlier, on the calling thread, inside WorkspacePool's
+// own constructor, before any worker exists -- OnAcquired's firing point is
+// a worker starting to use an already-acquired slot, not the acquisition
+// itself), so no existing construction can observe a slot BETWEEN two documents processed by the
 // SAME worker on that slot -- only between two separate acquisitions
 // (which, at T == 1, is exactly "between two separate calls", the original
 // TE-184 property, unchanged). This hook, called once per document inside
@@ -262,6 +292,82 @@ struct EncoderModel {
   int32_t appended_token_id = -1;
 };
 
+// TE-356 (C-2): a best-effort reading of physical memory actually free on
+// THIS machine, right now -- never a figure carried over from any other
+// box (main.cpp's retired kBakeMaxConcurrency comment named this project's
+// own development box explicitly; that is the defect this closes). Returns
+// false when no reading could be taken, which FinishEncoderOpen (below)
+// treats as "unknown" rather than "unlimited" -- this term of the policy
+// simply does not apply on that platform, named explicitly in the build
+// record per StandardsDocument.md sec 5.4.
+#if defined(_WIN32)
+bool TryQueryAvailableMemoryBytes(size_t* out_bytes) {
+  MEMORYSTATUSEX status;
+  status.dwLength = sizeof(status);
+  if (!GlobalMemoryStatusEx(&status)) return false;
+  *out_bytes = static_cast<size_t>(status.ullAvailPhys);
+  return true;
+}
+#elif defined(__APPLE__)
+bool TryQueryAvailableMemoryBytes(size_t* out_bytes) {
+  const mach_port_t host = mach_host_self();
+  vm_size_t page_size = 0;
+  if (host_page_size(host, &page_size) != KERN_SUCCESS) return false;
+  vm_statistics64_data_t vm_stat{};
+  mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+  if (host_statistics64(host, HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&vm_stat), &count) !=
+      KERN_SUCCESS) {
+    return false;
+  }
+  // free + inactive + speculative: pages the kernel will hand out without
+  // first paging anything to disk -- the same "available, not merely
+  // unallocated" reading /proc/meminfo's MemAvailable targets on Linux
+  // (below). wired and active pages are excluded because they are in use.
+  const uint64_t free_pages = static_cast<uint64_t>(vm_stat.free_count) +
+                              static_cast<uint64_t>(vm_stat.inactive_count) +
+                              static_cast<uint64_t>(vm_stat.speculative_count);
+  *out_bytes = static_cast<size_t>(free_pages) * static_cast<size_t>(page_size);
+  return true;
+}
+#else
+bool TryQueryAvailableMemoryBytes(size_t* out_bytes) {
+  // Linux: /proc/meminfo's own MemAvailable estimate (present since kernel
+  // 3.14) accounts for reclaimable cache the way a raw free-page count does
+  // not, so it is read first; sysconf is the fallback for a kernel or a
+  // non-Linux POSIX system without that file.
+  std::ifstream meminfo("/proc/meminfo");
+  if (meminfo) {
+    std::string line;
+    const std::string_view key = "MemAvailable:";
+    while (std::getline(meminfo, line)) {
+      if (line.compare(0, key.size(), key) != 0) continue;
+      const char* digits = line.c_str() + key.size();
+      char* end = nullptr;
+      const unsigned long long kib = std::strtoull(digits, &end, 10);
+      if (end == digits) break;
+      *out_bytes = static_cast<size_t>(kib) * size_t{1024};
+      return true;
+    }
+  }
+#if defined(_SC_AVPHYS_PAGES) && defined(_SC_PAGESIZE)
+  const long pages = sysconf(_SC_AVPHYS_PAGES);
+  const long page_size = sysconf(_SC_PAGESIZE);
+  if (pages > 0 && page_size > 0) {
+    *out_bytes = static_cast<size_t>(pages) * static_cast<size_t>(page_size);
+    return true;
+  }
+#endif
+  return false;
+}
+#endif
+
+// TE-356 (C-2): a policy choice, not a derived or measured figure --
+// headroom left unrequested at open so the workspace pool alone never
+// claims every free byte a memory reading reports, leaving room for the
+// OS and whatever else shares the box. Named explicitly as reasoned, not
+// measured, per StandardsDocument.md sec 5.4.
+constexpr size_t kOpenMemoryReserveBytes = size_t{1} << 30;  // 1 GiB
+
 // Finishes an open after the artifact's exactly-once read has transferred its
 // backing into `m`. The model view borrows from that backing for its lifetime.
 EncoderModel* FinishEncoderOpen(std::unique_ptr<EncoderModel> m, uint32_t max_concurrency,
@@ -341,7 +447,46 @@ EncoderModel* FinishEncoderOpen(std::unique_ptr<EncoderModel> m, uint32_t max_co
     }
     workspace_bytes *= factor;
   }
-  m->workspaces.resize(max_concurrency);
+
+  // TE-356 (C-2): `max_concurrency` is the caller's request -- already
+  // capped by document count and by hardware concurrency where the caller
+  // knows both (main.cpp's Bake()/Verify() compute
+  // min(requested, doc_count, hardware_concurrency) before this call; a raw
+  // library caller that wants every requested slot regardless of thread
+  // count, e.g. one slot per independent concurrent caller rather than one
+  // per worker inside a single batch call, is unaffected -- hardware
+  // concurrency is deliberately NOT re-applied here, only by the one
+  // caller that means it as a WORKER-COUNT bound). What every caller gets,
+  // uniformly, is the one term no caller can compute for itself: this open
+  // never allocates more slots than a reading of memory actually free on
+  // this machine, right now, can afford, at kOpenMemoryReserveBytes of
+  // headroom -- replacing the retired kBakeMaxConcurrency=8 comment's own
+  // one-development-box figure with a number sized from the box that is
+  // actually opening the handle. Where the reading is unavailable on this
+  // toolchain (returns false), this term does not apply -- named
+  // explicitly here and in the build record, per StandardsDocument.md sec
+  // 5.4, as what this policy does NOT cover on that platform; the caller's
+  // own document-count and hardware-concurrency terms still do.
+  size_t effective_concurrency = static_cast<size_t>(max_concurrency);
+  size_t available_bytes = 0;
+  if (TryQueryAvailableMemoryBytes(&available_bytes)) {
+    const size_t reserve = std::min(available_bytes, kOpenMemoryReserveBytes);
+    const size_t budget = available_bytes - reserve;
+    const size_t affordable = (workspace_bytes == 0) ? effective_concurrency : budget / workspace_bytes;
+    effective_concurrency = std::min(effective_concurrency, affordable);
+  }
+  if (effective_concurrency == 0) {
+    // Genuinely cannot afford even one workspace slot on this machine.
+    // Refuse the same way an allocation failure inside open already does
+    // (K-17a's own contract) rather than attempt the allocation and let
+    // overcommit -- or a crash -- decide silently. This throw is caught by
+    // semb_encoder_open's own catch(std::bad_alloc), which is the ONLY
+    // status this path needs; `m` (owned by value in this frame) unwinds
+    // cleanly, freeing the artifact bytes and every layer already
+    // marshaled above.
+    throw std::bad_alloc();
+  }
+  m->workspaces.resize(effective_concurrency);
   for (auto& slot : m->workspaces) slot.bytes.assign(workspace_bytes, 0);
   return m.release();
 }
@@ -823,7 +968,7 @@ extern "C" SembInterimStatus semb_interim_encode_ps_n(
 
 // TE-147 (U1 slice 2 build), re-stated TE-350 for cross-document
 // parallelism: the batch composed path, AT MOST T workspace acquisitions
-// for the whole call (T = min(doc_count, pool size, hardware concurrency),
+// for the whole call (T <= min(doc_count, pool size, hardware concurrency),
 // see encoder_interim_abi.h's own doc comment for the full contract). Every
 // document's own per-document seam+select+dequantize steps are unchanged
 // (select and dequantize touch no workspace, so they are called exactly as
@@ -925,6 +1070,16 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
   std::mutex failure_mutex;
   bool have_failure = false;
   FailureRecord best_failure{};
+  // TE-356 (C-1): an exception from ANY worker (spawned or the calling
+  // thread's own inline worker 0) is captured here rather than left to
+  // propagate out of that worker's own frame -- an uncaught exception
+  // escaping a std::thread's initial function is std::terminate by the
+  // standard, and ProcessOneDocument performs five heap allocations per
+  // document with no boundary of its own. Guarded by the same mutex
+  // RecordFailure already uses; the first exception any worker sees wins
+  // (later ones are dropped -- one execution is all the caller ever gets
+  // back, and every worker that saw one is a machine already in trouble).
+  std::exception_ptr captured_exception;
   auto RecordFailure = [&](size_t doc, SembInterimStatus status, bool has_status,
                            const std::string& status_str, SembWaPoolStatus dq) {
     std::lock_guard<std::mutex> lock(failure_mutex);
@@ -999,6 +1154,22 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
         RecordFailure(doc, kSembInterimBufferTooSmall, /*has_status=*/false, std::string(), kSembOk);
         return;
       }
+      if (doc_len != slice) {
+        // TE-356 (M-3): doc_len is the serializer's OWN report of what it
+        // wrote; this precomputed slice width is the only tie between that
+        // write and every OTHER document's own start offset in
+        // seam_offsets (above). This function's own `16 + n * (hidden +
+        // 16)` and seam_serialize.cpp's identical restatement agree today
+        // (verified by reading both, not assumed) -- this refuses rather
+        // than silently accepting a write shorter or longer than the slice
+        // the offset table promised, which a future drift between the two
+        // formulas would otherwise leave uninitialised bytes inside a
+        // stream whose reported length is the PRECOMPUTED one, not the
+        // one actually written.
+        RecordFailure(doc, kSembInterimEngineRefused, /*has_status=*/true, "SeamLengthMismatch",
+                      kSembOk);
+        return;
+      }
     }
 
     // PS-N's position rule: the LAST position. Neither select nor
@@ -1049,10 +1220,26 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
     semb::test_seam::OnAcquired();
 #endif
     std::vector<uint8_t>& workspace_bytes = m->workspaces[worker_workspace_index].bytes;
-    for (;;) {
-      const size_t doc = next_doc.fetch_add(1, std::memory_order_relaxed);
-      if (doc >= doc_count) break;
-      ProcessOneDocument(doc, workspace_bytes);
+    // TE-356 (C-1): this try/catch is what makes Worker's own frame return
+    // normally on every path -- including a std::bad_alloc from any of
+    // ProcessOneDocument's five per-document allocations -- so a spawned
+    // thread's initial function never exits via an uncaught exception, and
+    // the calling thread's own inline call (worker 0, below) never leaves
+    // this function with `threads` still holding joinable threads either.
+    // The exception is captured, not acted on here; a worker that caught
+    // one stops claiming further documents (continuing to allocate on a
+    // thread that just failed to allocate is not a recovery), but every
+    // OTHER worker still runs every document assigned to it, exactly as
+    // RecordFailure's own lowest-index contract already assumes.
+    try {
+      for (;;) {
+        const size_t doc = next_doc.fetch_add(1, std::memory_order_relaxed);
+        if (doc >= doc_count) break;
+        ProcessOneDocument(doc, workspace_bytes);
+      }
+    } catch (...) {
+      std::lock_guard<std::mutex> lock(failure_mutex);
+      if (!captured_exception) captured_exception = std::current_exception();
     }
   };
 
@@ -1066,13 +1253,45 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
   // is the identical call stack it always was. Every spawned thread is
   // joined before this function inspects any failure state or touches any
   // output length.
+  //
+  // TE-356 (C-1): `joiner`'s destructor joins every thread `threads` holds
+  // on EVERY exit from this point on, including std::thread's own
+  // constructor throwing std::system_error partway through the spawn loop
+  // below (a documented resource-exhaustion path) -- declared after
+  // `threads` so it is destroyed FIRST during unwind (reverse declaration
+  // order), before `threads` itself destroys its now-non-joinable
+  // std::thread objects. Worker's own try/catch above means neither the
+  // spawned threads' entry function nor the inline call below can throw at
+  // all in the ordinary (allocation-failure) case; this guard exists for
+  // the thread-construction failure Worker's own catch cannot reach,
+  // because it fires before that thread's entry function ever runs.
   std::vector<std::thread> threads;
+  struct ThreadJoiner {
+    std::vector<std::thread>& threads;
+    ~ThreadJoiner() {
+      for (std::thread& t : threads) {
+        if (t.joinable()) t.join();
+      }
+    }
+  } joiner{threads};
   threads.reserve(worker_count - 1);
   for (size_t w = 1; w < worker_count; ++w) {
     threads.emplace_back(Worker, pool.index(w));
   }
   Worker(pool.index(0));
-  for (std::thread& t : threads) t.join();
+  for (std::thread& t : threads) {
+    if (t.joinable()) t.join();
+  }
+
+  if (captured_exception) {
+    // TE-356 (C-1): rethrown only after every spawned thread has been
+    // joined above -- std::rethrow_exception restores the ORIGINAL
+    // exception object (a std::bad_alloc stays a std::bad_alloc), so the
+    // existing catch(std::bad_alloc) at semb_encode_batch and
+    // semb_bake_to_path still produces SEMB_ALLOCATION_FAILED exactly as
+    // it always has; no new status was added for this.
+    std::rethrow_exception(captured_exception);
+  }
 
   if (have_failure) {
     if (out_failed_index) *out_failed_index = best_failure.doc_index;

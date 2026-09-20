@@ -85,7 +85,17 @@ typedef enum semb_status {
 
 // Paths are sized byte spans and need not be NUL-terminated. Open derives
 // the appended end token from the tokenizer artifact's <|endoftext|> id. A zero
-// concurrency value selects the default of one workspace.
+// concurrency value selects the default of one workspace. `max_concurrency`
+// is a REQUEST, not a guarantee: open (TE-356) never allocates more
+// workspace slots than a reading of memory actually free at open can
+// afford, so the pool opened may hold fewer slots than requested, and open
+// refuses outright only when even one slot cannot be afforded. (`semb`'s
+// own `bake`/`verify` CLI additionally caps its own request by this
+// process's hardware concurrency and by the corpus's own document count
+// before it ever reaches open -- a caller of this ABI directly chooses its
+// own policy for that half.) A single batch call can also acquire every
+// free slot in the pool for its own duration (TE-350) -- the pool is
+// shared, greedy, and per-handle, not one reserved slot per caller.
 typedef struct semb_config semb_config;
 struct semb_config {
   uint32_t struct_size;

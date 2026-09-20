@@ -12,6 +12,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -48,6 +49,28 @@ const char* Option(const std::vector<std::string>& args, const char* name) {
 
 bool HasOption(const std::vector<std::string>& args, const char* name) {
   return std::find(args.begin(), args.end(), name) != args.end();
+}
+
+// TE-356 (C-2): `--max-concurrency` for `semb bake` / `semb verify`, parsed
+// like `semb query`'s own `--top` (std::from_chars, the whole option value
+// consumed, zero refused). Absent, `default_value` (kBakeMaxConcurrency)
+// applies. This is the CALLER's own ceiling; the encoder still never opens
+// more slots than the machine's hardware concurrency and available memory
+// can afford (engine_adapter_interim.cpp's FinishEncoderOpen), and the
+// caller below additionally caps it to the corpus's own document count
+// before this value ever reaches open.
+bool ParseMaxConcurrencyOption(const std::vector<std::string>& args, uint32_t default_value,
+                               uint32_t* out_value) {
+  const char* raw = Option(args, "--max-concurrency");
+  if (!raw) {
+    *out_value = default_value;
+    return true;
+  }
+  uint32_t parsed_value = 0;
+  const auto parsed = std::from_chars(raw, raw + std::strlen(raw), parsed_value);
+  if (parsed.ec != std::errc{} || *parsed.ptr != '\0' || parsed_value == 0) return false;
+  *out_value = parsed_value;
+  return true;
 }
 
 struct QueryArguments {
@@ -238,22 +261,47 @@ struct Handles {
 // machine rather than to 1 -- `semb_interim_encode_batch_ps_n`'s own T =
 // min(documents, pool size, hardware concurrency) means a pool of 1 is what
 // pinned every bake to a single worker thread regardless of how many logical
-// CPUs the box has (the defect this round closes). Sized by a real
-// measurement, not by construction (StandardsDocument.md sec 5.4): on the
-// real Qwen3-Embedding-0.6B artifact (num_layers=28, context_cap=32768,
-// num_kv_heads=8, head_dim=128), one workspace slot is 1,879,048,192 bytes
-// (~1.75 GiB) -- fixed by context_cap, the model's own worst-case sequence
-// length, independent of how long any real document actually is. This
-// project's own development box has 32 logical CPUs and ~64 GiB of RAM,
-// shared with other work; a pool of 16 or 32 would commit ~28-57 GiB to
-// workspace alone, which is not sane to request on a machine other seats
-// are using concurrently. A pool of 8 commits ~14 GiB (about 22% of that
-// box's RAM), leaving headroom for the model weights, the OS, and whatever
-// else is running, while every BEIR-scale corpus this tool bakes (hundreds
-// of documents) has doc_count far above 8, so this cap -- not doc_count --
-// is what bounds the real speedup. Query's own workload is always exactly
-// one text, so a pool above 1 buys it nothing; it keeps requesting 1.
+// CPUs the box has.
+//
+// TE-356 (C-2): `kBakeMaxConcurrency` was a fixed 8, sized from ONE
+// development box's own 32 logical CPUs and ~64 GiB of RAM and compiled
+// into every user's copy of a published 1.0 CLI -- on the real
+// Qwen3-Embedding-0.6B artifact (num_layers=28, context_cap=32768,
+// num_kv_heads=8, head_dim=128) one workspace slot is 1,879,048,192 bytes
+// (~1.75 GiB, fixed by context_cap alone, independent of corpus or document
+// length), so a pool of 8 committed ~14 GiB at open UNCONDITIONALLY, even
+// for a one-document bake on a machine with 4 GiB free. It is now a
+// CEILING, not a request: OpenBakeConcurrency (below) sizes the actual
+// request from min(this ceiling, the corpus's own document count, this
+// process's own hardware concurrency), and FinishEncoderOpen
+// (engine_adapter_interim.cpp) additionally never allocates more slots than
+// a reading of memory actually free on THIS machine, at open, can afford --
+// refusing outright, rather than silently opening at a smaller number, when
+// even one slot cannot be afforded. `--max-concurrency` (ParseMaxConcurrencyOption,
+// above) lets a caller lower or raise the ceiling itself; it composes with,
+// and never bypasses, either adaptive term.
 constexpr uint32_t kBakeMaxConcurrency = 8;
+
+// TE-356 (C-2): the document-count and hardware-concurrency halves of the
+// adaptive policy above -- the two terms the CLI itself can compute without
+// opening a model (the memory-derived term needs the model's own workspace
+// geometry, known only once the artifact is read, so it lives inside
+// FinishEncoderOpen instead, uniformly for every caller including one that
+// bypasses this CLI entirely). `doc_count` is the caller's OWN count of
+// what it is actually about to bake/re-encode (post-empty-document-filter),
+// never the raw corpus size. Hardware concurrency is applied HERE, not
+// inside the shared library open path, because it means a specific thing
+// for bake/verify -- one worker thread per slot, inside ONE batch call --
+// that does not hold for every caller of `semb_encoder_open` (a caller
+// wanting one slot per independent CONCURRENT caller, never more than one
+// worker per call, has no reason to have its own request second-guessed by
+// this machine's own core count).
+uint32_t OpenBakeConcurrency(uint32_t requested_ceiling, size_t doc_count) {
+  const unsigned hc = std::thread::hardware_concurrency();
+  const size_t hw_cap = hc == 0 ? size_t{1} : static_cast<size_t>(hc);
+  const size_t doc_cap = std::max<size_t>(doc_count, size_t{1});
+  return static_cast<uint32_t>(std::min<size_t>({static_cast<size_t>(requested_ceiling), doc_cap, hw_cap}));
+}
 
 semb_status OpenEncoder(const char* model, const char* tokenizer, Handles* handles,
                         uint32_t max_concurrency) {
@@ -621,6 +669,10 @@ int Bake(const std::vector<std::string>& args) {
   const char* model = Option(args, "--model");
   const char* tokenizer = Option(args, "--tokenizer");
   if (!out || !model || !tokenizer) return Refuse("semb bake", SEMB_NULL_ARGUMENT);
+  uint32_t requested_concurrency = 0;
+  if (!ParseMaxConcurrencyOption(args, kBakeMaxConcurrency, &requested_concurrency)) {
+    return Refuse("semb bake --max-concurrency", SEMB_NULL_ARGUMENT);
+  }
   const std::string corpus = args.front();
   std::vector<std::string> ids, texts;
   std::vector<semb_document> docs;
@@ -637,8 +689,18 @@ int Bake(const std::vector<std::string>& args) {
   if (SkippedIdCollides(kept, skipped_ids) && !AnyKeptDocumentHasALibraryDefect(kept)) {
     return Refuse("semb bake", SEMB_DOCUMENT_ID_DUPLICATE);
   }
+  // TE-356 (C-2): never request more workspace slots than there are
+  // documents to bake, or than this process's own hardware concurrency --
+  // a one-document corpus opens at 1, not kBakeMaxConcurrency's own 8,
+  // closing the small-corpus half of the defect at zero cost (the
+  // machine-affording half is FinishEncoderOpen's own job, applied
+  // uniformly to every caller including this one). `kept` can be empty
+  // only when the corpus itself was empty (docs.empty()), the case already
+  // excluded from the SEMB_INPUT_EMPTY refusal above; OpenBakeConcurrency's
+  // own floor of 1 keeps that case opening exactly as it always has.
+  const uint32_t open_concurrency = OpenBakeConcurrency(requested_concurrency, kept.size());
   Handles handles;
-  semb_status status = OpenEncoder(model, tokenizer, &handles, kBakeMaxConcurrency);
+  semb_status status = OpenEncoder(model, tokenizer, &handles, open_concurrency);
   if (status != SEMB_OK) return Refuse("semb_encoder_open", status);
   status = semb_bake_to_path(handles.encoder, kept.data(), kept.size(), out, std::strlen(out));
   if (status != SEMB_OK) return Refuse("semb_bake_to_path", status);
@@ -737,20 +799,26 @@ int Verify(const std::vector<std::string>& args) {
   const char* corpus = Option(args, "--corpus");
   std::vector<std::string> positional;
   for (size_t i = 0; i < args.size(); ++i) {
-    if ((args[i] == "--model" || args[i] == "--tokenizer" || args[i] == "--corpus") && i + 1 < args.size()) {
+    if ((args[i] == "--model" || args[i] == "--tokenizer" || args[i] == "--corpus" ||
+        args[i] == "--max-concurrency") &&
+        i + 1 < args.size()) {
       ++i;
       continue;
     }
     positional.push_back(args[i]);
   }
   if (!model || !tokenizer || !corpus || positional.size() != 1) return Refuse("semb verify", SEMB_NULL_ARGUMENT);
-  Handles handles;
-  // TE-350: verify re-encodes the whole corpus (semb_bake_to_path below) to
-  // compare digests, which is the bake path in every way that matters here
-  // -- it gets the same machine-sized pool as `semb bake` itself.
-  semb_status status = OpenCheckedQuery(positional[0], model, tokenizer, &handles, kBakeMaxConcurrency);
-  if (status != SEMB_OK) return Refuse("semb verify", status);
+  uint32_t requested_concurrency = 0;
+  if (!ParseMaxConcurrencyOption(args, kBakeMaxConcurrency, &requested_concurrency)) {
+    return Refuse("semb verify --max-concurrency", SEMB_NULL_ARGUMENT);
+  }
 
+  // TE-356 (C-2): the corpus is loaded and filtered BEFORE the encoder
+  // opens (reordered from the prior "open, then load" sequence) so the
+  // real document count is known in time to cap the workspace request --
+  // the same shape Bake() already uses, and the reason verify's own
+  // digest re-encode is safe to open at fewer than kBakeMaxConcurrency
+  // slots on a small corpus rather than paying for 8 unconditionally.
   std::vector<std::string> ids, texts;
   std::vector<semb_document> docs;
   if (!LoadCorpus(corpus, &ids, &texts, &docs)) return Refuse("semb verify corpus", SEMB_ARTIFACT_UNREADABLE);
@@ -764,6 +832,14 @@ int Verify(const std::vector<std::string>& args) {
   if (SkippedIdCollides(kept, skipped_ids) && !AnyKeptDocumentHasALibraryDefect(kept)) {
     return Refuse("semb verify", SEMB_DOCUMENT_ID_DUPLICATE);
   }
+  const uint32_t open_concurrency = OpenBakeConcurrency(requested_concurrency, kept.size());
+  Handles handles;
+  // TE-350: verify re-encodes the whole corpus (semb_bake_to_path below) to
+  // compare digests, which is the bake path in every way that matters here
+  // -- it gets the same machine-sized, document-count-capped pool `semb
+  // bake` itself now opens with (TE-356).
+  semb_status status = OpenCheckedQuery(positional[0], model, tokenizer, &handles, open_concurrency);
+  if (status != SEMB_OK) return Refuse("semb verify", status);
   // TE-317 round 3 (conductor direction, D-SLM7433, revising TE-320's own
   // S-3 remedy): verify's contract is "re-baking this corpus under the same
   // skip rule reproduces this bank", which the row/corpus digest comparison
