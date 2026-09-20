@@ -46,11 +46,14 @@
 #include "superembedder/seam_abi.h"  // semb_seam_serialize_document (TE-159 C-2's seam tap)
 #include "encoder_open_internal.h"
 
+#include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
@@ -81,20 +84,26 @@ static void OnAcquired() {
 
 // TE-184 (D-SLM6434 item 2, TE-161 N-5, TE-149 sec 7 bare cell 2): a
 // SECOND, independent park point at per-DOCUMENT granularity, distinct
-// from OnAcquired's once-per-CALL park above. The batch verb
-// (semb_interim_encode_batch_ps_n, below) acquires one workspace slot
-// once for the whole call and holds it across every row; OnAcquired fires
-// exactly once, at that acquisition, so no existing construction can
-// observe the slot BETWEEN two rows of the SAME call -- only between two
-// separate calls. This hook, called once per document inside that
-// function's own per-row loop, lets a test park the calling thread
-// mid-call, still holding that one slot, so a contender's own attempt to
-// acquire a DIFFERENT slot at that finer granularity is observable: a
-// defect that released and reacquired mid-row would be invisible to
-// OnAcquired's own once-per-call crossing alone. Shares state_mutex/
-// state_changed with OnAcquired above (one lock protects both counters);
-// its own budget/counter/generation are independent so arming one hook
-// never arms the other.
+// from OnAcquired's once-per-ACQUISITION park above. The batch verb
+// (semb_interim_encode_batch_ps_n, below) acquires at most T workspace
+// slots for the whole call (TE-350: T = min(doc_count, pool size, hardware
+// concurrency), one worker thread per acquired slot) and each worker holds
+// its own slot across every document that worker processes; OnAcquired
+// fires once per slot acquired, at that acquisition, so no existing
+// construction can observe a slot BETWEEN two documents processed by the
+// SAME worker on that slot -- only between two separate acquisitions
+// (which, at T == 1, is exactly "between two separate calls", the original
+// TE-184 property, unchanged). This hook, called once per document inside
+// a worker's own per-document loop -- possibly by more than one worker
+// thread concurrently when T > 1 -- lets a test park a calling thread
+// mid-call, still holding that thread's own slot, so a contender's own
+// attempt to acquire a DIFFERENT slot at that finer granularity is
+// observable: a defect that released and reacquired mid-row would be
+// invisible to OnAcquired's own once-per-acquisition crossing alone.
+// Shares state_mutex/state_changed with OnAcquired above (one lock
+// protects both counters, safe under concurrent callers); its own
+// budget/counter/generation are independent so arming one hook never arms
+// the other.
 static uint32_t row_park_budget = 0;
 static uint32_t row_parked = 0;
 static uint64_t row_release_generation = 0;
@@ -470,6 +479,53 @@ struct WorkspaceLease {
   ~WorkspaceLease() { ReleaseWorkspace(model, index); }
 };
 
+// TE-350: acquires at most `want` workspace slots up front (fewer if the
+// pool has less than `want` free at the moment of the call -- contention
+// with another in-flight call on the same handle is not an error, it is
+// simply fewer workers for THIS call), and releases every slot it holds
+// on destruction, on every path including an exception unwind. Never
+// copied or moved, so there is exactly one owner of each acquired index
+// for the pool's whole lifetime -- the property that makes "every
+// workspace acquired is released before return" checkable by inspection
+// rather than by trusting a per-thread cleanup lambda to run on every
+// path.
+class WorkspacePool {
+ public:
+  WorkspacePool(EncoderModel* model, size_t want) : model_(model) {
+    indices_.reserve(want);
+    for (size_t i = 0; i < want; ++i) {
+      size_t idx = 0;
+      if (!TryAcquireWorkspace(model_, &idx)) break;
+      indices_.push_back(idx);
+    }
+  }
+  WorkspacePool(const WorkspacePool&) = delete;
+  WorkspacePool& operator=(const WorkspacePool&) = delete;
+  ~WorkspacePool() {
+    for (size_t index : indices_) ReleaseWorkspace(model_, index);
+  }
+  size_t count() const { return indices_.size(); }
+  size_t index(size_t worker) const { return indices_[worker]; }
+
+ private:
+  EncoderModel* model_;
+  std::vector<size_t> indices_;
+};
+
+// TE-350: T = min(documents, workspaces in the pool, hardware concurrency).
+// Bounding by hardware concurrency avoids oversubscribing the machine when
+// the pool is sized larger than the box's own thread count; bounding by the
+// pool size is the workspace contract itself; bounding by document count
+// means a small batch never spins up idle workers with nothing to do.
+// std::thread::hardware_concurrency() is permitted to return 0 when it
+// cannot determine an answer, in which case this falls back to 1 rather
+// than propagating a 0 that would make every batch call refuse for want of
+// a worker.
+size_t HardwareConcurrencyOrOne() {
+  const unsigned hc = std::thread::hardware_concurrency();
+  return hc == 0 ? size_t{1} : static_cast<size_t>(hc);
+}
+
 }  // namespace
 }  // namespace semb
 
@@ -765,15 +821,21 @@ extern "C" SembInterimStatus semb_interim_encode_ps_n(
   return kSembInterimOk;
 }
 
-// TE-147 (U1 slice 2 build): the batch composed path, ONE workspace
-// acquisition for the whole call. See encoder_interim_abi.h's own doc
-// comment for the contract; this is `semb_interim_encode_ps_n`'s per-call
-// acquire/release replaced by a single acquire/release spanning every
-// document, with the per-document seam+select+dequantize steps unchanged
+// TE-147 (U1 slice 2 build), re-stated TE-350 for cross-document
+// parallelism: the batch composed path, AT MOST T workspace acquisitions
+// for the whole call (T = min(doc_count, pool size, hardware concurrency),
+// see encoder_interim_abi.h's own doc comment for the full contract). Every
+// document's own per-document seam+select+dequantize steps are unchanged
 // (select and dequantize touch no workspace, so they are called exactly as
 // the singleton path calls them; only the seam step -- semb::Encode -- is
-// inlined here against the ALREADY-HELD workspace rather than going through
-// semb_interim_encode_seam's own internal acquire).
+// inlined here against a worker's OWN already-held workspace rather than
+// going through semb_interim_encode_seam's own internal acquire). Threading
+// is scheduling only: each document's arithmetic depends on nothing but
+// that document's own tokens and the model's read-only weights, so which
+// worker computes it and when never changes what it computes -- output
+// offsets (row stride, seam-stream offset) are sizes known before any
+// forward runs, precomputed once, never accumulated as a running total
+// inside the per-document work.
 extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
     SembInterimEncoder* encoder, const int32_t* const* docs_content_ids,
     const size_t* docs_n_content, size_t doc_count, size_t chunk_budget, float* out_vectors,
@@ -813,43 +875,83 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
   // before-work, the same discipline semb_encode_batch's own steps 1-11
   // apply before its first forward). Each document's serialised record is
   // exactly semb_seam_serialize_document's own VERBATIM layout: u64(n) ||
-  // u64(hidden) || n * (codes[hidden] || u64(m) || u64(e)).
+  // u64(hidden) || n * (codes[hidden] || u64(m) || u64(e)) -- a fixed
+  // function of that document's own token count alone, so every document's
+  // start offset is knowable from docs_n_content up front (TE-350: this is
+  // what makes per-document seam writes safe to run out of order, on
+  // disjoint threads, without any running accumulator).
   size_t seam_required = 0;
+  std::vector<size_t> seam_offsets;  // seam_offsets[doc]..seam_offsets[doc+1] is doc's own slice
   if (out_seam_stream) {
+    seam_offsets.resize(doc_count + 1);
     for (size_t doc = 0; doc < doc_count; ++doc) {
+      seam_offsets[doc] = seam_required;
       const size_t n = docs_n_content[doc] + 1;
       seam_required += 16 + n * (hidden + 16);
     }
+    seam_offsets[doc_count] = seam_required;
     if (out_seam_stream_len) *out_seam_stream_len = seam_required;
     if (out_seam_stream_capacity < seam_required) return kSembInterimBufferTooSmall;
   }
 
-  size_t workspace_index = 0;
-  if (!semb::TryAcquireWorkspace(m, &workspace_index)) {
+  // T = min(documents, workspaces in the pool, hardware concurrency). See
+  // WorkspacePool's and HardwareConcurrencyOrOne's own comments above.
+  const size_t t_target =
+      std::min({doc_count, m->workspaces.size(), semb::HardwareConcurrencyOrOne()});
+  semb::WorkspacePool pool(m, t_target);
+  const size_t worker_count = pool.count();
+  if (worker_count == 0) {
     return kSembInterimConcurrencyExceeded;
   }
-  semb::WorkspaceLease lease{m, workspace_index};
-#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
-  // Exactly ONE acquisition for the whole call, recorded before any
-  // document's own forward begins (TE-96 sec 4.2 step 12; C26b's own
-  // per-call parking point, tests/u1_batch_workspace_test.cpp). This now
-  // also covers W-B's own open-time tap (TE-159 C-2): a single acquisition
-  // for the sixteen committed documents, matching the batch verb's own
-  // one-workspace-per-call contract rather than the sixteen separate
-  // acquisitions the pre-C-2 ComputeWbDigest made through
-  // semb_interim_encode_seam's own per-call acquire.
-  semb::test_seam::OnAcquired();
-#endif
+  // TE-350's deterministic-failure state: every worker records its own
+  // failure, if any, into this ONE mutex-guarded slot, keeping only the
+  // LOWEST document index seen so far. Workers never stop early on a
+  // failure elsewhere -- every document assigned to every worker still
+  // runs to completion -- so by the time every worker has joined, this
+  // slot holds the true minimum over every document that failed, regardless
+  // of which worker reached which document first or how the workers
+  // finished relative to each other. The engine-status message is captured
+  // as a copy at the point of failure, on the thread that produced it,
+  // because `t_last_engine_status` (SetEngineStatus, above) is thread-local
+  // -- a raw pointer into it would dangle or point at the wrong message the
+  // instant control returns to the calling thread.
+  struct FailureRecord {
+    size_t doc_index = 0;
+    SembInterimStatus interim_status = kSembInterimOk;
+    bool has_engine_status = false;
+    std::string engine_status;
+    SembWaPoolStatus dequant_status = kSembOk;
+  };
+  std::mutex failure_mutex;
+  bool have_failure = false;
+  FailureRecord best_failure{};
+  auto RecordFailure = [&](size_t doc, SembInterimStatus status, bool has_status,
+                           const std::string& status_str, SembWaPoolStatus dq) {
+    std::lock_guard<std::mutex> lock(failure_mutex);
+    if (!have_failure || doc < best_failure.doc_index) {
+      have_failure = true;
+      best_failure.doc_index = doc;
+      best_failure.interim_status = status;
+      best_failure.has_engine_status = has_status;
+      best_failure.engine_status = status_str;
+      best_failure.dequant_status = dq;
+    }
+  };
 
-  size_t seam_offset = 0;
-  for (size_t doc = 0; doc < doc_count; ++doc) {
+  // One document at a time is claimed from this shared counter -- dynamic
+  // scheduling rather than a static split -- so workers balance the load
+  // evenly even though document encode cost varies with document length;
+  // every claim is a distinct fetch_add result, so every document is
+  // claimed by exactly one worker, exactly once.
+  std::atomic<size_t> next_doc{0};
+
+  auto ProcessOneDocument = [&](size_t doc, std::vector<uint8_t>& workspace_bytes) {
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
     // TE-184 (D-SLM6434 item 2): the per-document park point, fired once
-    // per document while the ONE workspace slot acquired above is still
-    // held -- distinct from OnAcquired's once-per-call park at the
-    // acquisition itself. A no-op (one counter increment) when unarmed, so
-    // the product's own output is unchanged whether this hook exists or
-    // not; see this round's build record for the digest proof.
+    // per document while that document's OWN worker workspace slot is
+    // held. Possibly called concurrently by more than one worker thread
+    // when worker_count > 1; state_mutex (shared with OnAcquired) makes
+    // that safe. A no-op (one counter increment) when unarmed.
     semb::test_seam::OnRowAcquired();
 #endif
     const size_t n_content = docs_n_content[doc];
@@ -862,15 +964,13 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
 
     std::vector<int8_t> codes(n * hidden);
     std::vector<superslm::CarriedScale> scales(n);
-    const superslm::SslmForwardStatus st = semb::Encode(
-        m, m->workspaces[workspace_index].bytes, tokens.data(), n, chunk_budget,
-        kSembForwardLegChunkBatched, codes.data(), scales.data());
+    const superslm::SslmForwardStatus st =
+        semb::Encode(m, workspace_bytes, tokens.data(), n, chunk_budget,
+                    kSembForwardLegChunkBatched, codes.data(), scales.data());
     if (st != superslm::SslmForwardStatus::Ok) {
-      if (out_engine_status_name) {
-        *out_engine_status_name = semb::SetEngineStatus(superslm::SslmForwardStatusName(st));
-      }
-      if (out_failed_index) *out_failed_index = doc;
-      return kSembInterimEngineRefused;
+      RecordFailure(doc, kSembInterimEngineRefused, /*has_status=*/true,
+                    superslm::SslmForwardStatusName(st), kSembOk);
+      return;
     }
 
     std::vector<int64_t> ms(n), es(n);
@@ -881,20 +981,24 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
 
     // The seam tap (TE-159, C-2): this document's FULL per-position seam --
     // every position, pre-final-norm, exactly what select below reads ONE
-    // position out of -- serialised and appended in call order. Uses the
-    // capacity this function already validated above, so a length mismatch
-    // here would be this function's own arithmetic being wrong, not a
-    // caller-supplied-buffer problem; still checked, never assumed.
+    // position out of -- serialised into this document's own precomputed
+    // slice [seam_offsets[doc], seam_offsets[doc + 1]). Passing the exact
+    // slice width, not "capacity to the buffer's end", means a defect that
+    // ever wrote more than the documented formula would refuse here rather
+    // than silently overwrite a neighbouring document's own region on
+    // another thread -- stricter than, and (per this format's own VERBATIM
+    // contract above) always equal in practice to, the single-threaded
+    // predecessor's "remaining capacity to the end of the buffer" bound.
     if (out_seam_stream) {
+      const size_t offset = seam_offsets[doc];
+      const size_t slice = seam_offsets[doc + 1] - offset;
       size_t doc_len = 0;
       const SembSerializeStatus sst = semb_seam_serialize_document(
-          codes.data(), ms.data(), es.data(), n, hidden, out_seam_stream + seam_offset,
-          out_seam_stream_capacity - seam_offset, &doc_len);
+          codes.data(), ms.data(), es.data(), n, hidden, out_seam_stream + offset, slice, &doc_len);
       if (sst != kSembSerializeOk) {
-        if (out_failed_index) *out_failed_index = doc;
-        return kSembInterimBufferTooSmall;
+        RecordFailure(doc, kSembInterimBufferTooSmall, /*has_status=*/false, std::string(), kSembOk);
+        return;
       }
-      seam_offset += doc_len;
     }
 
     // PS-N's position rule: the LAST position. Neither select nor
@@ -905,28 +1009,80 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
     // and skipping means a dequantize corner (kSembPooledSubnormal /
     // kSembPooledOverflow) on a committed W-B document can never turn into
     // a spurious semb_encoder_open refusal that has nothing to do with the
-    // digest actually derived.
+    // digest actually derived. `out_vectors + doc * hidden` is this
+    // document's own fixed-stride row -- disjoint from every other
+    // document's row regardless of processing order.
     if (out_vectors) {
       std::vector<int8_t> sel(hidden);
       int64_t sel_m = 0, sel_e = 0;
+      const char* local_status = nullptr;
       const SembInterimStatus sel_st =
           semb_interim_ps_n_select(encoder, codes.data(), ms.data(), es.data(), n, n - 1, sel.data(),
-                                    &sel_m, &sel_e, out_engine_status_name);
+                                    &sel_m, &sel_e, &local_status);
       if (sel_st != kSembInterimOk) {
-        if (out_failed_index) *out_failed_index = doc;
-        return sel_st;
+        RecordFailure(doc, sel_st, /*has_status=*/local_status != nullptr,
+                      local_status ? local_status : "", kSembOk);
+        return;
       }
 
       const SembWaPoolStatus dq =
           semb_ps_n_dequantize(sel.data(), sel_m, sel_e, hidden, out_vectors + doc * hidden);
-      if (out_dequantize_status) *out_dequantize_status = dq;
       if (dq != kSembOk) {
-        if (out_failed_index) *out_failed_index = doc;
-        return kSembInterimDequantizeRefused;
+        RecordFailure(doc, kSembInterimDequantizeRefused, /*has_status=*/false, std::string(), dq);
+        return;
       }
     }
+  };
+
+  auto Worker = [&](size_t worker_workspace_index) {
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+    // Fired on THIS worker's own thread, as the first thing it does after
+    // being handed its slot -- not in a loop on the calling thread before
+    // any worker starts. OnAcquired can itself BLOCK (park) the calling
+    // thread; calling it worker_count times in a pre-spawn loop on one
+    // thread would serialize what must be simultaneous parks across
+    // worker_count independent threads, defeating the exact observation
+    // (tests/u1_batch_workspace_test.cpp's C52) this hook exists to make.
+    // At worker_count == 1 this is the ONE call the original single-
+    // workspace path always made, on the same calling thread it always
+    // ran on (Worker 0 below runs inline, no std::thread spawned).
+    semb::test_seam::OnAcquired();
+#endif
+    std::vector<uint8_t>& workspace_bytes = m->workspaces[worker_workspace_index].bytes;
+    for (;;) {
+      const size_t doc = next_doc.fetch_add(1, std::memory_order_relaxed);
+      if (doc >= doc_count) break;
+      ProcessOneDocument(doc, workspace_bytes);
+    }
+  };
+
+  // Threads 1..worker_count-1 are spawned FIRST, so every worker (including
+  // worker 0 below) reaches its own OnAcquired call at roughly the same
+  // time when the test seam arms a park -- required for C52's "kPoolSize
+  // simultaneous parks" observation to be reachable at all. Worker 0 runs
+  // on the calling thread itself -- no std::thread is ever created when
+  // worker_count == 1, so the single-workspace call this function has
+  // always supported is not merely a special case of the parallel path, it
+  // is the identical call stack it always was. Every spawned thread is
+  // joined before this function inspects any failure state or touches any
+  // output length.
+  std::vector<std::thread> threads;
+  threads.reserve(worker_count - 1);
+  for (size_t w = 1; w < worker_count; ++w) {
+    threads.emplace_back(Worker, pool.index(w));
   }
-  if (out_seam_stream && out_seam_stream_len) *out_seam_stream_len = seam_offset;
+  Worker(pool.index(0));
+  for (std::thread& t : threads) t.join();
+
+  if (have_failure) {
+    if (out_failed_index) *out_failed_index = best_failure.doc_index;
+    if (best_failure.has_engine_status && out_engine_status_name) {
+      *out_engine_status_name = semb::SetEngineStatus(best_failure.engine_status);
+    }
+    if (out_dequantize_status) *out_dequantize_status = best_failure.dequant_status;
+    return best_failure.interim_status;
+  }
+  if (out_seam_stream && out_seam_stream_len) *out_seam_stream_len = seam_required;
   return kSembInterimOk;
 }
 
