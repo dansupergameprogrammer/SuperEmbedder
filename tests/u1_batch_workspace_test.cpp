@@ -1223,6 +1223,128 @@ int main(int argc, char** argv) {
             "guard's own correctness does not depend on artifact size -- mechanism leg only");
   }
 
+  // =========================================================================
+  // C52 (TE-350): the RE-STATED workspace contract for T > 1. Every cell
+  // above this one opens its handle with a pool of size 1 (Open(a) defaults
+  // to 1; every explicit Open(a, n>1) in this file only ever issues
+  // SINGLE-document batch calls through it, via Crossing's own per-occupant
+  // BatchCall), so T = min(doc_count, pool, hardware concurrency) has been
+  // forced to 1 in every earlier cell -- none of them can tell a genuinely
+  // parallel acquisition from the original single-workspace path. This cell
+  // opens a pool of kPoolSize > 1 and issues a batch call over MORE
+  // documents than the pool, so T == kPoolSize (assuming this host's own
+  // hardware concurrency is at least kPoolSize, true of any machine this
+  // suite runs on today) and proves, at the seam's own per-acquisition
+  // granularity (OnAcquired fires once per slot acquired, TE-350's own
+  // restatement above):
+  //
+  //   1. the call genuinely acquires MORE than one workspace (kPoolSize of
+  //      them, parked simultaneously -- not kPoolSize sequential
+  //      acquisitions disguised as one observation);
+  //   2. every row it produces is byte-identical to a serial (pool-of-1)
+  //      reference, for every document, not only the first or the last;
+  //   3. every one of the kPoolSize workspaces acquired is released before
+  //      the call returns -- proven by a SECOND full-size call, through the
+  //      SAME handle, reaching kPoolSize simultaneous parks again. A leaked
+  //      lease from the first call caps the second call's own parked count
+  //      strictly below kPoolSize, which `semb_test_seam_wait_parked` below
+  //      reports as a timeout (a named FAIL, not a silent pass at a lower
+  //      number, since the Verdict compares the exact reading to kPoolSize).
+  // =========================================================================
+  {
+    constexpr unsigned kPoolSize = 4;
+    constexpr unsigned kDocCount = 9;  // > kPoolSize, so every worker's own queue holds > 1 document
+    std::vector<std::pair<std::string, std::string>> docs_named;
+    for (unsigned i = 0; i < kDocCount; ++i) {
+      docs_named.emplace_back("c52-" + std::to_string(i),
+                              "TE-350 parallel workspace document number " + std::to_string(i));
+    }
+
+    // The serial reference: one document at a time, through a pool-of-1
+    // handle -- the ORIGINAL, unchanged single-workspace path.
+    std::vector<std::vector<uint8_t>> reference;
+    {
+      semb_encoder serial = Open(a, 1);
+      if (serial) {
+        for (auto& [id, text] : docs_named) {
+          semb_status s = -1000;
+          reference.push_back(BakeOne(serial, id, text, dims, &s));
+          Verdict(Is(s, "SEMB_OK"), "C52 (setup) serial reference row for " + id, Name(s));
+        }
+        semb_encoder_close(serial);
+      }
+    }
+
+    semb_encoder enc = Open(a, kPoolSize);
+    if (enc && reference.size() == kDocCount) {
+      ResetSeam(deadline30());
+
+      std::vector<semb_document> docs;
+      for (auto& [id, text] : docs_named) docs.push_back(MakeDoc(id, text));
+      std::vector<uint8_t> buf((docs.size() * required1) + 64, 0xA5);
+      auto p = reinterpret_cast<uintptr_t>(buf.data());
+      float* aligned = reinterpret_cast<float*>((p + 15) & ~uintptr_t(15));
+
+      auto RunFullPoolBatch = [&](const char* label) -> bool {
+        Verdict(semb_test_seam_arm_park(kPoolSize) == 1,
+                std::string(label) + " (setup) arm " + std::to_string(kPoolSize) + " park(s)", "");
+        size_t req = 0xBAD5EED;
+        semb_status batch_status = -1000;
+        auto job = std::async(std::launch::async, [&] {
+          batch_status = semb_encode_batch(enc, docs.data(), docs.size(), aligned, buf.size() - 16, &req);
+        });
+        const bool all_parked =
+            semb_test_seam_wait_parked(kPoolSize, 10000) == 1 && semb_test_seam_parked() == kPoolSize;
+        Verdict(all_parked,
+                std::string(label) + " all " + std::to_string(kPoolSize) +
+                    " workspace(s) acquired and parked SIMULTANEOUSLY (T > 1 genuinely reached, not "
+                    "kPoolSize sequential single-workspace acquisitions)",
+                "parked=" + std::to_string(semb_test_seam_parked()));
+        if (all_parked) {
+          const uint64_t acquisitions = semb_test_seam_acquisitions();
+          Verdict(acquisitions >= kPoolSize,
+                  std::string(label) + " at least kPoolSize acquisitions recorded while parked",
+                  std::to_string(acquisitions));
+        }
+        ReleaseBounded(deadline30());
+        if (job.wait_until(deadline30()) != std::future_status::ready) {
+          FatalTimeout((std::string(label) + " job cleanup deadline").c_str());
+        }
+        job.get();
+        Verdict(Is(batch_status, "SEMB_OK"), std::string(label) + " the batch call completes successfully",
+                Name(batch_status));
+        return Is(batch_status, "SEMB_OK");
+      };
+
+      const bool first_ok = RunFullPoolBatch("C52-first");
+      if (first_ok) {
+        bool rows_match = true;
+        for (size_t i = 0; i < kDocCount; ++i) {
+          auto b = reinterpret_cast<uint8_t*>(aligned) + i * required1;
+          const std::vector<uint8_t> row(b, b + required1);
+          if (row != reference[i]) rows_match = false;
+        }
+        Verdict(rows_match,
+                "C52 every one of " + std::to_string(kDocCount) +
+                    " documents in a genuinely T == kPoolSize parallel batch call is byte-identical to "
+                    "the serial (pool-of-1) reference -- threading changes only which worker computes "
+                    "which document, never what it computes",
+                "");
+      }
+
+      // The leak-detection re-run: every workspace the first call acquired
+      // must be released before this second call, through the SAME handle,
+      // can reach kPoolSize simultaneous parks again.
+      ResetSeam(deadline30());
+      RunFullPoolBatch("C52-second (leak detection: every lease from the first call is released)");
+
+      semb_encoder_close(enc);
+      ResetSeam(deadline30());
+    } else {
+      Verdict(false, "C52 (setup) contended handle open or serial reference", "");
+    }
+  }
+
   std::printf("\nu1_batch_workspace_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
   return g_failures ? 1 : 0;
 }

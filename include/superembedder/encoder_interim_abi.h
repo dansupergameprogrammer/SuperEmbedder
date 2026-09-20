@@ -167,20 +167,33 @@ SembInterimStatus semb_interim_encode_ps_n(SembInterimEncoder* encoder, const in
                                             SembWaPoolStatus* out_dequantize_status,
                                             const char** out_engine_status_name);
 
-// THE BATCH COMPOSED PATH (TE-147, U1 slice 2): the SAME seam -> select ->
-// dequantize composition as semb_interim_encode_ps_n, run for `doc_count`
-// independent documents against ONE workspace acquired ONCE for the WHOLE
-// call (`Claude/Plans/SuperEmbedder_Plan.md` sec 3.1 concurrency clause;
-// TE-96 sec 4.2 step 12: "one workspace for the whole call ... rows run
-// serially on that slot") -- unlike calling semb_interim_encode_ps_n once
-// per document, which would acquire and release the pool's own slot once
-// PER DOCUMENT. `docs_content_ids[i]`/`docs_n_content[i]` describe document
+// THE BATCH COMPOSED PATH (TE-147, U1 slice 2; re-stated TE-350 for
+// cross-document parallelism): the SAME seam -> select -> dequantize
+// composition as semb_interim_encode_ps_n, run for `doc_count` independent
+// documents against AT MOST T workspaces acquired ONCE EACH for the WHOLE
+// call, T = min(doc_count, the pool's own size, hardware concurrency).
+// Every document's arithmetic is independent of every other document's
+// (TE-350's own premise), so this call's output -- every row, the seam
+// stream, and every manifest digest derived from either -- is byte-
+// identical regardless of T: T changes only how the doc_count documents are
+// scheduled across at most T workspaces, never what is computed for any one
+// of them (`Claude/Plans/SuperEmbedder_Plan.md` sec 3.1 concurrency clause;
+// TE-96 sec 4.2 step 12's original "one workspace for the whole call" is the
+// T == 1 case of this same contract, unchanged in that case). Distinct from
+// calling semb_interim_encode_ps_n once per document, which would acquire
+// and release the pool's own slot once PER DOCUMENT rather than at most once
+// per WORKER. `docs_content_ids[i]`/`docs_n_content[i]` describe document
 // `i`'s own content token ids (the terminator is appended internally,
 // exactly as the raw path does); `out_vectors` receives `doc_count`
 // consecutive `hidden`-sized rows, row-major, no padding. On any refusal
-// `*out_failed_index` names which document failed (0 on a precondition
-// refusal that precedes the loop); the workspace is released exactly once,
-// on every return path, by RAII.
+// `*out_failed_index` and `*out_engine_status_name` name the LOWEST-indexed
+// document that failed, deterministically, regardless of which worker
+// thread reached it first or how the workers finished relative to each
+// other (0 on a precondition refusal that precedes any worker). Every
+// workspace acquired is released before return, on every path including
+// every failure path, by RAII; no two workers ever hold the same workspace
+// at once (TryAcquireWorkspace's own mutex-guarded `in_use` flag, unchanged
+// by this contract's restatement).
 //
 // out_vectors == nullptr: the row-output half of the composition (select +
 // dequantize) is SKIPPED entirely for every document -- a caller that wants

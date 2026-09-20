@@ -233,16 +233,39 @@ struct Handles {
   }
 };
 
-semb_status OpenEncoder(const char* model, const char* tokenizer, Handles* handles) {
+// TE-350: the workspace pool `semb bake` (and `semb verify`'s own re-encode,
+// which is a bake in every way that matters here) requests, sized to the
+// machine rather than to 1 -- `semb_interim_encode_batch_ps_n`'s own T =
+// min(documents, pool size, hardware concurrency) means a pool of 1 is what
+// pinned every bake to a single worker thread regardless of how many logical
+// CPUs the box has (the defect this round closes). Sized by a real
+// measurement, not by construction (StandardsDocument.md sec 5.4): on the
+// real Qwen3-Embedding-0.6B artifact (num_layers=28, context_cap=32768,
+// num_kv_heads=8, head_dim=128), one workspace slot is 1,879,048,192 bytes
+// (~1.75 GiB) -- fixed by context_cap, the model's own worst-case sequence
+// length, independent of how long any real document actually is. This
+// project's own development box has 32 logical CPUs and ~64 GiB of RAM,
+// shared with other work; a pool of 16 or 32 would commit ~28-57 GiB to
+// workspace alone, which is not sane to request on a machine other seats
+// are using concurrently. A pool of 8 commits ~14 GiB (about 22% of that
+// box's RAM), leaving headroom for the model weights, the OS, and whatever
+// else is running, while every BEIR-scale corpus this tool bakes (hundreds
+// of documents) has doc_count far above 8, so this cap -- not doc_count --
+// is what bounds the real speedup. Query's own workload is always exactly
+// one text, so a pool above 1 buys it nothing; it keeps requesting 1.
+constexpr uint32_t kBakeMaxConcurrency = 8;
+
+semb_status OpenEncoder(const char* model, const char* tokenizer, Handles* handles,
+                        uint32_t max_concurrency) {
   if (!model || !tokenizer) return SEMB_NULL_ARGUMENT;
   const semb_config config{sizeof(config), model, std::strlen(model), tokenizer,
-                           std::strlen(tokenizer), 1};
+                           std::strlen(tokenizer), max_concurrency};
   return semb_encoder_open(&config, &handles->encoder);
 }
 
 semb_status OpenCheckedQuery(const std::string& stem, const char* model, const char* tokenizer,
-                             Handles* handles) {
-  semb_status status = OpenEncoder(model, tokenizer, handles);
+                             Handles* handles, uint32_t max_concurrency) {
+  semb_status status = OpenEncoder(model, tokenizer, handles, max_concurrency);
   if (status != SEMB_OK) return status;
   status = semb_bank_open(stem.data(), stem.size(), &handles->bank);
   if (status != SEMB_OK) return status;
@@ -615,7 +638,7 @@ int Bake(const std::vector<std::string>& args) {
     return Refuse("semb bake", SEMB_DOCUMENT_ID_DUPLICATE);
   }
   Handles handles;
-  semb_status status = OpenEncoder(model, tokenizer, &handles);
+  semb_status status = OpenEncoder(model, tokenizer, &handles, kBakeMaxConcurrency);
   if (status != SEMB_OK) return Refuse("semb_encoder_open", status);
   status = semb_bake_to_path(handles.encoder, kept.data(), kept.size(), out, std::strlen(out));
   if (status != SEMB_OK) return Refuse("semb_bake_to_path", status);
@@ -668,7 +691,10 @@ int Query(const std::vector<std::string>& args) {
 #endif
   Handles handles;
   const std::string stem = parsed.positional[0];
-  semb_status status = OpenCheckedQuery(stem, parsed.model, parsed.tokenizer, &handles);
+  // TE-350: query always encodes exactly one text per call, so a workspace
+  // pool above 1 buys nothing here -- this stays the single-workspace path
+  // the batch verb has always supported (T == 1 by construction).
+  semb_status status = OpenCheckedQuery(stem, parsed.model, parsed.tokenizer, &handles, /*max_concurrency=*/1);
   if (status != SEMB_OK) return Refuse("semb query", status);
   auto emit = [&](const std::string& text) -> bool {
     std::vector<float> vector;
@@ -719,7 +745,10 @@ int Verify(const std::vector<std::string>& args) {
   }
   if (!model || !tokenizer || !corpus || positional.size() != 1) return Refuse("semb verify", SEMB_NULL_ARGUMENT);
   Handles handles;
-  semb_status status = OpenCheckedQuery(positional[0], model, tokenizer, &handles);
+  // TE-350: verify re-encodes the whole corpus (semb_bake_to_path below) to
+  // compare digests, which is the bake path in every way that matters here
+  // -- it gets the same machine-sized pool as `semb bake` itself.
+  semb_status status = OpenCheckedQuery(positional[0], model, tokenizer, &handles, kBakeMaxConcurrency);
   if (status != SEMB_OK) return Refuse("semb verify", status);
 
   std::vector<std::string> ids, texts;

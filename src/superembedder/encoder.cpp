@@ -369,7 +369,8 @@ std::string ComposeDocumentInput(std::string_view text) {
 // composition -- everything semb_encode_batch does after validating the
 // caller's own buffers: per-document tokenization, the document frame
 // (empty under PS-N, D-SLM4726), the >= context_cap refusal, the
-// appended terminator, the single workspace acquisition, the
+// appended terminator, the workspace acquisition(s) (TE-350: at most one
+// per worker thread, all released before return), the
 // chunk-batched forward -- called by the public batch verb, by the raw
 // entry semb_encode as a batch of one (D-SLM7197), and by ComputeWbDigest,
 // the latter with the seam tapped instead of the row output. No
@@ -417,9 +418,10 @@ semb_status ComposeBatch(semb_encoder_s* h, const std::string_view* texts, size_
     doc_lens[i] = content_ids[i].size();
   }
 
-  // The appended terminator, the single workspace acquisition and the
-  // chunk-batched forward all live in the interim layer's own composed
-  // path, reached identically by the public verb and by W-B's seam tap.
+  // The appended terminator, the workspace acquisition(s) (TE-350: at most
+  // one per worker thread) and the chunk-batched forward all live in the
+  // interim layer's own composed path, reached identically by the public
+  // verb and by W-B's seam tap.
   SembWaPoolStatus dequantize = kSembOk;
   const char* engine_status = nullptr;
   size_t failed_index = 0;
@@ -1169,7 +1171,8 @@ extern "C" semb_status semb_encode_batch(semb_encoder enc, const semb_document* 
     // Steps 11-13 (TE-96 sec 4.2): the ONE internal batch composition
     // (TE-165, D-SLM6390 item 1) -- per-document tokenization, the
     // document frame, the >= context_cap refusal, the appended
-    // terminator, the single workspace acquisition, the chunk-batched
+    // terminator, the workspace acquisition(s) (TE-350: at most one per
+    // worker thread), the chunk-batched
     // forward -- shared with ComputeWbDigest's own open-time derivation
     // (the seam tap, above). Forwards into staged storage; any refusal
     // discards the stage entirely (out_rows is only ever written on full

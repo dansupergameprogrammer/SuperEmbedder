@@ -72,7 +72,8 @@ extern "C" {
 // tapped -- the ONE internal batch composition `semb_encode_batch` itself
 // validates the caller's buffers and calls: per-document tokenization,
 // the document frame, the `>= context_cap` refusal, the appended
-// terminator, the single workspace acquisition, the chunk-batched
+// terminator, the workspace acquisition(s) (TE-350: at most one per worker
+// thread), the chunk-batched
 // forward. TE-159's own remedy shared only the interim function
 // (`semb_interim_encode_batch_ps_n`) and kept a second, independent
 // tokenize-and-cut inside `ComputeWbDigest`, so a change to the batch
