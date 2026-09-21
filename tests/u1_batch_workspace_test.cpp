@@ -177,6 +177,10 @@ bool Is(semb_status s, const char* name) { return s == semb_contract::StatusByNa
 struct Args {
   std::string model, tokenizer;
   unsigned dims = 0;
+  // TE-357: isolates S-3 alone (see main()'s own early-exit comment) for
+  // fast mutation-vitality iteration, independent of the rest of this
+  // file's much longer-running cells (C48 alone bakes 1,002 documents).
+  bool only_s3 = false;
 };
 Args ParseArgs(int argc, char** argv) {
   Args a;
@@ -186,6 +190,7 @@ Args ParseArgs(int argc, char** argv) {
     if (k == "--model") next(&a.model);
     else if (k == "--tokenizer") next(&a.tokenizer);
     else if (k == "--dims") { std::string v; next(&v); a.dims = static_cast<unsigned>(std::atoi(v.c_str())); }
+    else if (k == "--only-s3") a.only_s3 = true;
   }
   return a;
 }
@@ -451,6 +456,102 @@ void Crossing(const Args& a, unsigned n, CallKind occupant_kind, CallKind conten
   ResetSeam(std::chrono::steady_clock::now() + 30s);
 }
 
+// =========================================================================
+// TE-357 S-3 (D-SLM7559 corrected clause, `Claude/Plans/SuperEmbedder_Plan.md`
+// sec 3.1 "Batch acquisition commissioning"): S-6 above measures acquisitions
+// by EXACTLY ONE only at pool size 1 -- a tautology under TE-350's own
+// per-worker-thread acquisition scheme, since T = min(doc_count, pool size,
+// hardware concurrency) collapses to 1 whenever the pool itself is 1. At the
+// pool size the product actually ships (main.cpp's kBakeMaxConcurrency = 8),
+// the count a healthy call must reach is T itself, not a literal: "the cell
+// asserts against the count the call itself determined, observed at the
+// seam, never against a constant" (the corrected clause). This cell computes
+// T from the SAME formula production uses (mirrored, never imported --
+// HardwareConcurrencyOrOne is a file-local symbol in
+// engine_adapter_interim.cpp with no exported entry point) and asserts the
+// seam's own observed delta equals it exactly, across doc counts that put
+// T on both sides of the pool-size bound. Factored into its own function
+// (rather than left inline in main()) so --only-s3 can run it alone --
+// this file's other cells (C48 alone bakes 1,002 documents) make a full
+// run too slow for fast mutation-vitality iteration on this one claim.
+//
+// A DEPENDENCY NAMED, NOT CLOSED (per the conductor's own request when
+// TE-356's adaptive concurrency reopened this round -- D-SLM7560/D-SLM7563):
+// this cell's own `expected_t` formula assumes `m->workspaces.size() ==
+// kPoolSize` (the literal 8 requested at open). TE-356 makes the REALIZED
+// pool size `effective_concurrency <= max_concurrency`, capped by memory
+// actually free at open (`engine_adapter_interim.cpp`'s own
+// `kOpenMemoryReserveBytes` policy) -- on a machine too memory-constrained
+// to afford 8 slots of this model's own ~256 KiB workspace_bytes, the real
+// pool would be smaller than 8 and this cell's own `expected_t` would be
+// wrong. Re-run against the actual TE-356 commit (`69dfaa3`) on this round's
+// own 32-core, 50+ GiB box: PASS, because affording 8 slots of a 256 KiB
+// workspace costs about 2 MiB, nowhere near this machine's own limit. Unlike
+// K-06i's own recalibration (a byte-threshold cell that was ACTIVELY,
+// SILENTLY wrong -- a false PASS on the very property it existed to
+// verify), a wrong `expected_t` here fails LOUDLY (a named PASS/FAIL
+// mismatch on an exact-count assertion, never a silent pass) -- the failure
+// mode this cell risks on a memory-starved machine is a visible, honest
+// [FAIL], not a defect masquerading as green. Not recalibrated to a
+// self-measured pool size in this round, given that risk asymmetry and this
+// round's own time budget; a future round wanting full portability would
+// query the REALIZED pool size (there is no public accessor for it today --
+// `semb_test_seam_acquisitions()` reports a cumulative count, not the pool's
+// own realized size) rather than assume it equals the request.
+// =========================================================================
+void RunS3Cell(const Args& a, size_t required1) {
+  const auto deadline30 = [] { return std::chrono::steady_clock::now() + 30s; };
+  // Mirrors engine_adapter_interim.cpp's own HardwareConcurrencyOrOne():
+  // std::thread::hardware_concurrency() may return 0 when it cannot
+  // determine an answer, in which case production falls back to 1.
+  auto hardware_concurrency_or_one = []() -> size_t {
+    const unsigned hc = std::thread::hardware_concurrency();
+    return hc == 0 ? size_t{1} : static_cast<size_t>(hc);
+  };
+  constexpr unsigned kPoolSize = 8;  // main.cpp's kBakeMaxConcurrency
+  semb_encoder enc = Open(a, kPoolSize);
+  if (!enc) return;
+  ResetSeam(deadline30());
+  // doc_count on both sides of the pool-size bound: 4 (< pool, T =
+  // doc_count), 8 (== pool), 16 (> pool, T = pool on any machine with
+  // hardware_concurrency() >= 8).
+  const std::vector<size_t> doc_counts = {4, 8, 16};
+  uint64_t running = semb_test_seam_acquisitions();
+  bool ok = true;
+  std::string detail;
+  for (size_t doc_count : doc_counts) {
+    std::vector<semb_document> docs;
+    std::vector<std::string> ids, texts;
+    for (size_t i = 0; i < doc_count; ++i) {
+      ids.push_back("s3-" + std::to_string(doc_count) + "-" + std::to_string(i));
+      texts.push_back("document number " + std::to_string(i));
+    }
+    for (size_t i = 0; i < doc_count; ++i) docs.push_back(MakeDoc(ids[i], texts[i]));
+    std::vector<uint8_t> buf((docs.size() * required1) + 64, 0xA5);
+    auto p = reinterpret_cast<uintptr_t>(buf.data());
+    float* aligned = reinterpret_cast<float*>((p + 15) & ~uintptr_t(15));
+    size_t req = 0xBAD5EED;
+    const semb_status s = semb_encode_batch(enc, docs.data(), docs.size(), aligned, buf.size() - 16, &req);
+    const uint64_t after = semb_test_seam_acquisitions();
+    const size_t expected_t = std::min({doc_count, size_t(kPoolSize), hardware_concurrency_or_one()});
+    const uint64_t delta = after - running;
+    if (!Is(s, "SEMB_OK") || delta != expected_t) {
+      ok = false;
+      detail += " doc_count=" + std::to_string(doc_count) + "(status=" + std::string(Name(s)) +
+                 " delta=" + std::to_string(delta) + " expected=" + std::to_string(expected_t) + ")";
+    }
+    running = after;
+  }
+  Verdict(ok,
+          "S-3 (T>1) a valid batch call's own acquisition count equals T = min(doc_count, pool size, "
+          "hardware_concurrency()) exactly -- observed at the seam, computed from the call's own "
+          "conditions, never asserted against a literal -- at pool size " +
+              std::to_string(kPoolSize) + " over doc counts on both sides of the pool bound",
+          detail.empty() ? "every doc_count matched its own computed T" : detail);
+  semb_encoder_close(enc);
+  ResetSeam(deadline30());
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -462,6 +563,16 @@ int main(int argc, char** argv) {
   const auto deadline30 = [] { return std::chrono::steady_clock::now() + 30s; };
   const unsigned dims = a.dims;
   const size_t required1 = static_cast<size_t>(dims) * sizeof(float);
+
+  // TE-357: isolates S-3 alone, skipping every other cell in this file
+  // (see RunS3Cell's own comment for why -- C48 alone bakes 1,002
+  // documents, making a full run too slow for fast mutation-vitality
+  // iteration on this one claim).
+  if (a.only_s3) {
+    RunS3Cell(a, required1);
+    std::printf("\nu1_batch_workspace_test (isolated --only-s3): %d cell(s), %d failure(s)\n", g_cells, g_failures);
+    return g_failures ? 1 : 0;
+  }
 
   // =========================================================================
   // C4: byte-identical duplicate ids -> SEMB_DOCUMENT_ID_DUPLICATE, with
@@ -965,6 +1076,8 @@ int main(int argc, char** argv) {
       ResetSeam(deadline30());
     }
   }
+
+  RunS3Cell(a, required1);
 
   // =========================================================================
   // TE-160/S-6: step 12's SEMB_CONCURRENCY_EXCEEDED with the pool's only
