@@ -474,6 +474,30 @@ void Crossing(const Args& a, unsigned n, CallKind occupant_kind, CallKind conten
 // (rather than left inline in main()) so --only-s3 can run it alone --
 // this file's other cells (C48 alone bakes 1,002 documents) make a full
 // run too slow for fast mutation-vitality iteration on this one claim.
+//
+// A DEPENDENCY NAMED, NOT CLOSED (per the conductor's own request when
+// TE-356's adaptive concurrency reopened this round -- D-SLM7560/D-SLM7563):
+// this cell's own `expected_t` formula assumes `m->workspaces.size() ==
+// kPoolSize` (the literal 8 requested at open). TE-356 makes the REALIZED
+// pool size `effective_concurrency <= max_concurrency`, capped by memory
+// actually free at open (`engine_adapter_interim.cpp`'s own
+// `kOpenMemoryReserveBytes` policy) -- on a machine too memory-constrained
+// to afford 8 slots of this model's own ~256 KiB workspace_bytes, the real
+// pool would be smaller than 8 and this cell's own `expected_t` would be
+// wrong. Re-run against the actual TE-356 commit (`69dfaa3`) on this round's
+// own 32-core, 50+ GiB box: PASS, because affording 8 slots of a 256 KiB
+// workspace costs about 2 MiB, nowhere near this machine's own limit. Unlike
+// K-06i's own recalibration (a byte-threshold cell that was ACTIVELY,
+// SILENTLY wrong -- a false PASS on the very property it existed to
+// verify), a wrong `expected_t` here fails LOUDLY (a named PASS/FAIL
+// mismatch on an exact-count assertion, never a silent pass) -- the failure
+// mode this cell risks on a memory-starved machine is a visible, honest
+// [FAIL], not a defect masquerading as green. Not recalibrated to a
+// self-measured pool size in this round, given that risk asymmetry and this
+// round's own time budget; a future round wanting full portability would
+// query the REALIZED pool size (there is no public accessor for it today --
+// `semb_test_seam_acquisitions()` reports a cumulative count, not the pool's
+// own realized size) rather than assume it equals the request.
 // =========================================================================
 void RunS3Cell(const Args& a, size_t required1) {
   const auto deadline30 = [] { return std::chrono::steady_clock::now() + 30s; };

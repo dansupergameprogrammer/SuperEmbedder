@@ -59,6 +59,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <new>
 #include <string>
@@ -1520,58 +1521,141 @@ int main(int argc, char** argv) {
   // K-06i (TE-101, TE-97 regression): section 5.6 steps 9-10 require the
   // vocabulary join refusal BEFORE allocating the workspace pool. This is
   // synthetic-only: real artifacts can reach the hook during their reads.
-  // The fixed 16 MiB threshold is not calibrated from product observations.
-  // At 1,000,000 slots, the current contiguous slot vector reaches it before
-  // malloc; no large allocation or OS-overcommit failure is required. The
-  // controls below must fire correctly before that attribution is trusted.
+  //
+  // TE-357 RECALIBRATION (D-SLM7560, confirmed by execution in D-SLM7563,
+  // `Claude/Brunel/te356-bake-fix-2026-09-20.md` sec 9): this cell originally
+  // armed a FIXED 16 MiB total-bytes threshold against the workspace
+  // CONTAINER's own resize (`max_concurrency * sizeof(WorkspaceSlot)`),
+  // reasoning that a literal 1,000,000-slot request would cross it (~30.5
+  // MiB) while a 1-slot request (32 bytes) would not. TE-356's adaptive
+  // concurrency (`effective_concurrency`, sized from memory actually free on
+  // THIS machine at open) makes that container size machine-dependent: on
+  // this box the 1,000,000-slot request is capped to ~190,700 affordable
+  // slots, whose container resize (~5.82 MiB) no longer crosses 16 MiB, and
+  // the hook silently stopped firing (measured: `hook_firings=0`) -- the
+  // exact "K-17 passing at concurrency 1" failure shape, on a different
+  // cell.
+  //
+  // TWO FIXED-BYTE APPROACHES WERE TRIED AND REJECTED BEFORE THIS ONE, both
+  // EXECUTED, not merely reasoned through (StandardsDocument.md sec 5.4):
+  //   1. Matching the per-slot allocation's own size (`workspace_bytes =
+  //      num_layers * context_cap * num_kv_heads * head_dim * 2`, a function
+  //      of the model's own geometry, invariant under the machine and the
+  //      slot count) and requiring it to recur before firing. REJECTED,
+  //      measured: 177 occurrences of that exact size (262144, observed at
+  //      262183 under this MSVC STL's own alignment header) during a
+  //      SINGLE-slot open. That size is not unique to the persistent
+  //      workspace pool -- something inside the forward composition
+  //      allocates and frees a scratch buffer of the identical size
+  //      repeatedly, independent of slot count, so "does it recur" does not
+  //      discriminate slot count at all for this quantity.
+  //   2. A fixed byte threshold picked to sit above the largest OTHER
+  //      allocation the open sequence makes on its own (the model buffer,
+  //      observed ~141,755 bytes under this MSVC STL's alignment header --
+  //      the same +39 K-17a's own comment below records for a different
+  //      request). REJECTED, measured: the open sequence for this tiny
+  //      synthetic model makes SEVERAL allocations well past 141,755 bytes
+  //      that have nothing to do with the workspace pool at all (327,719;
+  //      729,719 twice; a repeating 262,183/131,111/131,111 triple dozens of
+  //      times over) -- there is no single fixed threshold below which
+  //      every one of those sits and above which only a multi-slot
+  //      workspace pool sits, because they are not bounded by anything this
+  //      test can name in advance.
+  //
+  // FINAL APPROACH: a self-calibrated cumulative budget, no hardcoded byte
+  // figure of any kind. This run's OWN healthy opens at slots=1 and slots=2
+  // are measured (the SAME cumulative-budget hook below, armed with an
+  // unreachable ceiling so nothing throws), giving baseline1 and baseline2 --
+  // the TOTAL bytes THIS machine's THIS build allocates to open the matched
+  // pair at each pool size, whatever those totals are and however many
+  // unrelated allocations of whatever size contribute to them. Their
+  // midpoint is the fail-injection's own budget for every cell below: a
+  // healthy slots=1 open (matching baseline1, always below the midpoint)
+  // never crosses it; a call whose realized concurrency is 2 or more
+  // allocates at least a second slot's worth beyond baseline1 (reaching at
+  // least baseline2, past the midpoint) and is refused mid-allocation with
+  // SEMB_ALLOCATION_FAILED -- the same status K-17a's own real-allocator-
+  // failure cells already prove that name for, on the identical mechanism
+  // (Policy 1's cumulative-budget hook, `g_safety_*`, this file's own K-06i
+  // original author already built for exactly this purpose as a backstop;
+  // this recalibration promotes it to the primary trigger). This needs no
+  // assumption about what else the open sequence allocates or how many
+  // times -- both approaches above broke by assuming something about that;
+  // this one measures it instead, on whichever machine is running it.
+  //
+  // The one residual assumption, named rather than hidden: the machine
+  // running this cell can afford the DIFFERENCE between a 1-slot and a
+  // 2-slot open of THIS model (one workspace slot's worth, ~256 KiB for the
+  // mechanism synthetic pair) beyond whatever the open sequence needs
+  // regardless of slot count. That is the same order of magnitude the
+  // adapter's own `kOpenMemoryReserveBytes` (1 GiB) is built to leave
+  // available, so any machine capable of opening this pair at all clears it.
   if (a.workspace_precedence) {
-    constexpr size_t kPoolFailThreshold = 16u * 1024u * 1024u;
     constexpr uint32_t kPoolSlots = 1000000;
-    auto open_cell = [&](const char* cell, const std::string& model,
-                         uint32_t slots, int32_t expected, uint64_t expected_firings) {
+    // Measures the total bytes a healthy open at `slots` allocates, using
+    // the cumulative-budget hook armed with a ceiling no real open could
+    // reach (so this measurement pass itself never throws).
+    auto measure_open_bytes = [&](const std::string& model, uint32_t slots) -> uint64_t {
       semb_config cfg = MakeConfig(model, a.tokenizer, slots);
       semb_encoder enc = OutSentinel();
-      const uint64_t before = alloc_hook::g_fail_fired.load();
-      alloc_hook::g_fail_fired_size.store(0);
-      alloc_hook::g_safety_remaining.store(128u * 1024u * 1024u);
+      constexpr size_t kUnreachableCeiling = std::numeric_limits<size_t>::max() / 2;
+      alloc_hook::g_safety_remaining.store(kUnreachableCeiling);
       alloc_hook::g_safety_fired.store(false);
-      alloc_hook::g_safety_armed.store(slots == kPoolSlots);
-      alloc_hook::ArmFail(kPoolFailThreshold);
-      const semb_status result = semb_encoder_open(&cfg, &enc);
-      alloc_hook::DisarmFail();
+      alloc_hook::g_safety_armed.store(true);
+      const semb_status s = semb_encoder_open(&cfg, &enc);
       alloc_hook::g_safety_armed.store(false);
-      const uint64_t fired = alloc_hook::g_fail_fired.load() - before;
-      const size_t fired_size = alloc_hook::g_fail_fired_size.load();
+      const size_t remaining = alloc_hook::g_safety_remaining.load();
+      if (s == st.ok && enc != nullptr && enc != OutSentinel()) semb_encoder_close(enc);
+      return static_cast<uint64_t>(kUnreachableCeiling - remaining);
+    };
+    const uint64_t baseline1 = measure_open_bytes(a.model, 1);
+    const uint64_t baseline2 = measure_open_bytes(a.model, 2);
+    const bool calibration_ok = baseline1 > 0 && baseline2 > baseline1;
+    Verdict(calibration_ok,
+            "K-06i (setup) self-calibration: a healthy 2-slot open allocates strictly more than a "
+            "healthy 1-slot open, on this machine, this run",
+            "baseline1=" + std::to_string(baseline1) + " baseline2=" + std::to_string(baseline2));
+    const uint64_t kPoolFailBudget = calibration_ok ? (baseline1 + baseline2) / 2 : 0;
+    auto open_cell = [&](const char* cell, const std::string& model, uint32_t slots, int32_t expected,
+                         bool expect_budget_exceeded) {
+      semb_config cfg = MakeConfig(model, a.tokenizer, slots);
+      semb_encoder enc = OutSentinel();
+      alloc_hook::g_safety_remaining.store(kPoolFailBudget);
+      alloc_hook::g_safety_fired.store(false);
+      alloc_hook::g_safety_armed.store(true);
+      const semb_status result = semb_encoder_open(&cfg, &enc);
+      alloc_hook::g_safety_armed.store(false);
+      const bool budget_exceeded = alloc_hook::g_safety_fired.load();
       const bool output_ok = expected == st.ok ? enc != nullptr && enc != OutSentinel() : enc == nullptr;
-      const bool safety_fired = alloc_hook::g_safety_fired.load();
-      const bool ok = result == expected && output_ok && fired == expected_firings && !safety_fired;
+      const bool ok = result == expected && output_ok && budget_exceeded == expect_budget_exceeded;
       Verdict(ok, cell, std::string(Name(result)) + "; slots=" + std::to_string(slots) +
-              "; out_null=" + std::to_string(enc == nullptr) + "; hook_firings=" +
-              std::to_string(fired) + "; intercepted_bytes=" + std::to_string(fired_size) +
-              "; safety_fired=" + std::to_string(safety_fired));
+              "; out_null=" + std::to_string(enc == nullptr) + "; budget_exceeded=" +
+              std::to_string(budget_exceeded) + "; budget=" + std::to_string(kPoolFailBudget));
       if (result == st.ok && enc != nullptr && enc != OutSentinel()) {
         const semb_status closed = semb_encoder_close(enc);
         Verdict(closed == st.ok, std::string(cell) + " close", Name(closed));
       }
       return ok;
     };
-    const bool matched_control = open_cell("K-06i1 matched control: no large request during normal open",
-                                           a.model, 1, st.ok, 0);
-    const bool mismatch_control = open_cell("K-06i2 mismatch control: mismatch and null output before injection",
-                                            a.other_model, 1, st.tokenizer_model_mismatch, 0);
+    const bool matched_control = calibration_ok &&
+        open_cell("K-06i1 matched control: no large request during normal open", a.model, 1, st.ok, false);
+    const bool mismatch_control = calibration_ok &&
+        open_cell("K-06i2 mismatch control: mismatch and null output before injection", a.other_model, 1,
+                  st.tokenizer_model_mismatch, false);
     if (matched_control && mismatch_control) {
-      const bool injected_control = open_cell("K-06i3 matched pool-allocation failure: ALLOCATION_FAILED and null output",
-                                               a.model, kPoolSlots, st.allocation_failed, 1);
+      const bool injected_control = open_cell(
+          "K-06i3 matched pool-allocation failure: ALLOCATION_FAILED and null output", a.model, kPoolSlots,
+          st.allocation_failed, true);
       if (injected_control) {
         open_cell("K-06i4 mismatch precedes pool allocation: TOKENIZER_MODEL_MISMATCH, null output, zero pool requests",
-                  a.other_model, kPoolSlots, st.tokenizer_model_mismatch, 0);
+                  a.other_model, kPoolSlots, st.tokenizer_model_mismatch, false);
       } else {
         Verdict(false, "K-06i4 precedence attribution unavailable", "matched injection control failed");
       }
     } else {
-      Verdict(false, "K-06i3/i4 precedence attribution unavailable", "normal-open controls failed");
+      Verdict(false, "K-06i3/i4 precedence attribution unavailable", "normal-open or calibration controls failed");
     }
-    open_cell("K-06i5 healthy matched open after refused opens", a.model, 1, st.ok, 0);
+    if (calibration_ok) open_cell("K-06i5 healthy matched open after refused opens", a.model, 1, st.ok, false);
   }
 
   std::printf("\nu1_raw_text_contract_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
