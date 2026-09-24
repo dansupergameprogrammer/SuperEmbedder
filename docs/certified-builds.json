@@ -2,9 +2,9 @@
   "schemaVersion": 1,
   "release": "1.0.0-interim",
   "enginePin": {
-    "tag": "v1.5.0",
-    "commit": "321be4634e14fa5e541bfb8611f06cd7fbb2ae9a",
-    "engine_tree_sha": "acaf4b0f22362868422eb9f370ebee280f6820b2fff55953301d3b9060f094e0"
+    "tag": "v1.7.1",
+    "commit": "2a32042a71cebc0845e85d02693c4a75245d00f8",
+    "engine_tree_sha": "5bac162de27f451371641e49b576117bff02298c3b473ea31ab680db51b9f6f2"
   },
   "builds": [
     {
@@ -32,8 +32,8 @@
     {
       "a": "win-x64-msvc-avx2-zen2",
       "b": "win-x64-clangcl-avx2-zen2",
-      "runId": "te265-interim-2026-09-18",
-      "date": "2026-09-18",
+      "runId": "te413-interim-2026-09-24",
+      "date": "2026-09-24",
       "rowDigest": "e8ad5d05c31eced1afa8967f0babc72212718effea9e19b0c46d2282e9bcde72",
       "tokenIdDigest": "e440e227fb5bdd3cc58895ac4fa536e533c8e5988fc993c4f3286e36680de835",
       "evidence": "docs/certification/interim"
