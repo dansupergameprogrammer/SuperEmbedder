@@ -332,6 +332,15 @@ def configure_engine(clone: Path, build: Path, cmake: str, ninja: str, generator
         "-DCMAKE_BUILD_TYPE=Release",
         "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
     ]
+    # U2-1 (F40): off Windows the engine is linked into the product's shared
+    # library, which a static archive of non-position-independent objects
+    # cannot enter (GCC's `ld` refuses the link, "recompile with -fPIC").
+    # CMAKE_POSITION_INDEPENDENT_CODE puts -fPIC on the engine's own compile
+    # lines, where the flag record reads it, and -- unlike a CMAKE_CXX_FLAGS
+    # on this command line -- leaves the CXXFLAGS channel untouched. A PE/COFF
+    # DLL needs no such flag, so Windows pins are unchanged.
+    if os.name != "nt":
+        cmd.append("-DCMAKE_POSITION_INDEPENDENT_CODE=ON")
     if generator == "Ninja" and ninja:
         cmd.append(f"-DCMAKE_MAKE_PROGRAM={ninja}")
     run(cmd)

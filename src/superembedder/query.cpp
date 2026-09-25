@@ -1,5 +1,6 @@
 #include "superembedder/semb.h"
 
+#include "superembedder/encoder_interim_abi.h"
 #include "query_internal.h"
 #include "semb_wq_population.h"
 #include "c_boundary.h"
@@ -11,13 +12,13 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <unordered_map>
+#include <map>
 #include <vector>
 
 #include "superslm/sha256.h"
 
 // These are deliberately TU-private declarations: the frozen public surface
-// remains semb.h's twelve verbs. The query implementation alone bridges the
+// remains semb.h's fourteen verbs. The query implementation alone bridges the
 // bank registry and encoder's opening-time W-Q composition.
 extern "C" semb_status semb_bank_acquire_query(semb_bank bank, const uint8_t fingerprint[32]);
 extern "C" semb_status semb_bank_release_query(semb_bank bank);
@@ -114,7 +115,11 @@ std::mutex& RegistryMutex() {
   static auto* mutex = new std::mutex();
   return *mutex;
 }
-using RegistryType = std::unordered_map<semb_query, std::unique_ptr<semb_query_opaque>>;
+// R20 (U2-1): an ordered container. Its member functions do no floating-point
+// arithmetic, so no certified object carries a substitutable floating-point
+// instantiation for it; the registry is read only by find, emplace and erase,
+// never iterated, so its order changes nothing.
+using RegistryType = std::map<semb_query, std::unique_ptr<semb_query_opaque>>;
 RegistryType& Registry() {
   static auto* registry = new RegistryType();
   return *registry;
@@ -170,6 +175,15 @@ semb_status semb_compute_wq_digest(semb_encoder_s* encoder, std::array<uint8_t, 
   hash.Final(out_digest->data());
   return SEMB_OK;
 }
+
+namespace semb {
+
+semb_status EncodeQuery(semb_encoder enc, std::string_view text, std::vector<float>* out_vector) {
+  const std::string composed = ComposeQuery(text);
+  return EncodeQueryComposed(enc, composed, std::numeric_limits<size_t>::max(), out_vector);
+}
+
+}  // namespace semb
 
 static semb_status QueryOpenBody(semb_encoder enc, semb_bank bank, semb_query* out) {
   if (out) *out = nullptr;
@@ -243,10 +257,9 @@ static semb_status QueryEncodeBody(semb_query q, const char* utf8, size_t utf8_l
   if (!utf8) return SEMB_NULL_ARGUMENT;
   if (!semb::EncoderValidUtf8(utf8, utf8_len)) return SEMB_INVALID_UTF8;
   try {
-    const std::string composed = ComposeQuery(std::string_view(utf8, utf8_len));
     std::vector<float> staged_vector;
-    const semb_status encoded = semb::EncodeQueryComposed(
-        lease.get()->encoder, composed, std::numeric_limits<size_t>::max(), &staged_vector);
+    const semb_status encoded =
+        semb::EncodeQuery(lease.get()->encoder, std::string_view(utf8, utf8_len), &staged_vector);
     if (encoded != SEMB_OK) return encoded;
     std::memcpy(out_vector, staged_vector.data(), required);
     *out_required_bytes = required;
@@ -305,5 +318,31 @@ static semb_status FingerprintOfBody(semb_encoder enc, semb_fingerprint* out) {
 extern "C" semb_status semb_fingerprint_of(semb_encoder enc, semb_fingerprint* out) {
   return semb::c_boundary::Status([&] {
     return FingerprintOfBody(enc, out);
+  });
+}
+
+// U2-7 item 6 (R17): the body-token count. The composition is ComposeQuery,
+// the tokenization is the one EncodeQueryComposed runs, and the forward does
+// not run; the prefix's own count is taken the same way on every call.
+static SembInterimStatus QueryTokenCountBody(semb_encoder enc, const char* utf8, size_t utf8_len,
+                                             int64_t* out_body_tokens) {
+  if (!enc || !out_body_tokens || (!utf8 && utf8_len > 0)) return kSembInterimNullArgument;
+  const std::string composed = ComposeQuery(std::string_view(utf8 ? utf8 : "", utf8_len));
+  size_t composed_tokens = 0;
+  size_t prefix_tokens = 0;
+  semb_status counted = semb::ComposedQueryTokenCount(enc, composed, &composed_tokens);
+  if (counted == SEMB_OK) {
+    counted = semb::ComposedQueryTokenCount(enc, std::string_view(kQueryPrefix), &prefix_tokens);
+  }
+  if (counted == SEMB_NULL_ARGUMENT) return kSembInterimNullArgument;
+  if (counted != SEMB_OK) return kSembInterimEngineRefused;
+  *out_body_tokens = static_cast<int64_t>(composed_tokens) - static_cast<int64_t>(prefix_tokens);
+  return kSembInterimOk;
+}
+
+extern "C" SembInterimStatus semb_interim_query_token_count(semb_encoder enc, const char* utf8,
+                                                            size_t utf8_len, int64_t* out_body_tokens) {
+  return semb::c_boundary::Interim(nullptr, [&] {
+    return QueryTokenCountBody(enc, utf8, utf8_len, out_body_tokens);
   });
 }

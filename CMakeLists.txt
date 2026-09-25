@@ -13,6 +13,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+include(GNUInstallDirs)
 
 include(EngineGuards)   # find_package(superslm), the two version guards, provenance (C33)
 include(BuildFlags)     # the precise-FP flag (directory-wide) + semb_assert_precise_fp() (C14)
@@ -181,6 +182,135 @@ endif()
 semb_verify_source_provenance(superembedder SIDECAR "${SEMB_SOURCE_PROVENANCE_SIDECAR_superembedder}"
 	STATUS_NAME "SEMB_SOURCE_SET_DRIFT")
 
+# ---------------------------------------------------------------------------
+# U2-1 (F4, F38, F40, F41): the installed library is SHARED, linked from the
+# static target's own objects, with the engine linked in privately. The
+# static target stays the build's internal library (semb, semb_witness and
+# the tests use its internal interfaces) and is not installed.
+#
+# The objects are position-independent (a shared object needs it on Linux,
+# F40) and compiled with hidden visibility, inline functions included, so
+# only what semb.h marks SEMB_API has default visibility. The export list is
+# generated from semb.h at configure time by one scan rule
+# (tools/generate_export_list.py) -- a .def on Windows, a version script on
+# Linux, an exported-symbols list on macOS -- and after the link a check
+# refuses SEMB_EXPORT_LIST_MISMATCH unless the library's dynamic symbols
+# equal that scan exactly. Neither mechanism alone carries the claim.
+# ---------------------------------------------------------------------------
+set_target_properties(superembedder PROPERTIES
+	POSITION_INDEPENDENT_CODE ON
+	CXX_VISIBILITY_PRESET hidden
+	VISIBILITY_INLINES_HIDDEN ON)
+target_compile_definitions(superembedder PRIVATE SEMB_BUILDING_LIBRARY)
+
+set(_semb_public_header "${CMAKE_SOURCE_DIR}/include/superembedder/semb.h")
+set(_semb_export_tool "${CMAKE_SOURCE_DIR}/tools/generate_export_list.py")
+if(WIN32)
+	set(_semb_export_format def)
+	set(_semb_export_list "${CMAKE_BINARY_DIR}/generated/semb_exports.def")
+elseif(APPLE)
+	set(_semb_export_format exported-symbols)
+	set(_semb_export_list "${CMAKE_BINARY_DIR}/generated/semb_exports.txt")
+else()
+	set(_semb_export_format version-script)
+	set(_semb_export_list "${CMAKE_BINARY_DIR}/generated/semb_exports.map")
+endif()
+execute_process(
+	COMMAND "${Python3_EXECUTABLE}" "${_semb_export_tool}" generate
+		--header "${_semb_public_header}" --format ${_semb_export_format} --out "${_semb_export_list}"
+	RESULT_VARIABLE _semb_export_result
+	OUTPUT_VARIABLE _semb_export_output
+	ERROR_VARIABLE _semb_export_output)
+if(NOT _semb_export_result EQUAL 0)
+	message(FATAL_ERROR "The export list could not be generated from semb.h:\n${_semb_export_output}")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_semb_public_header}" "${_semb_export_tool}")
+
+add_library(superembedder_shared SHARED $<TARGET_OBJECTS:superembedder>)
+set_target_properties(superembedder_shared PROPERTIES
+	OUTPUT_NAME semb
+	EXPORT_NAME superembedder
+	LINK_DEPENDS "${_semb_export_list}"
+	# Its own directory: on Windows the DLL's import library is semb.lib,
+	# which must not meet anything the executables beside it write.
+	RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/shared"
+	LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/shared"
+	ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/shared")
+target_include_directories(superembedder_shared
+	INTERFACE
+		$<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+		$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_compile_definitions(superembedder_shared INTERFACE SEMB_SHARED)
+target_link_libraries(superembedder_shared PRIVATE superslm::superslm)
+if(WIN32)
+	target_sources(superembedder_shared PRIVATE "${_semb_export_list}")
+elseif(APPLE)
+	target_link_options(superembedder_shared PRIVATE "LINKER:-exported_symbols_list,${_semb_export_list}")
+else()
+	target_link_options(superembedder_shared PRIVATE
+		"LINKER:--version-script=${_semb_export_list}" "LINKER:--no-undefined")
+endif()
+if(NOT WIN32)
+	add_custom_command(TARGET superembedder_shared POST_BUILD
+		COMMAND "${Python3_EXECUTABLE}" "${_semb_export_tool}" check
+			--header "${_semb_public_header}" --library "$<TARGET_FILE:superembedder_shared>"
+			--format $<IF:$<BOOL:${APPLE}>,macho,elf> --nm "${CMAKE_NM}"
+		VERBATIM)
+endif()
+
+# R20 (U2-1): no certified object defines a floating-point substitutable
+# function. After the archive is built, the census reads every object it
+# contains (never a linked image) and fails the build naming each one. The
+# reader is the R20 cell's own, per object format: COFF through dumpbin and
+# lib.exe, ELF through binutils. Mach-O has no reader yet (REL-2's macOS leg).
+set(_semb_r20_reader "${CMAKE_SOURCE_DIR}/tests/te331_r20_object_census_check.py")
+set(_semb_r20_stamp "${CMAKE_BINARY_DIR}/superembedder_r20_census.stamp")
+if(WIN32)
+	get_filename_component(_semb_linker_dir "${CMAKE_LINKER}" DIRECTORY)
+	find_program(SEMB_DUMPBIN NAMES dumpbin HINTS "${_semb_linker_dir}")
+	find_program(SEMB_LIB_EXE NAMES lib HINTS "${_semb_linker_dir}")
+	set(_semb_r20_command msvc --lib "$<TARGET_FILE:superembedder>"
+		--dumpbin "${SEMB_DUMPBIN}" --libexe "${SEMB_LIB_EXE}")
+elseif(NOT APPLE)
+	set(_semb_r20_command gcc --archive "$<TARGET_FILE:superembedder>"
+		--ar "${CMAKE_AR}" --readelf "${CMAKE_READELF}" --objdump "${CMAKE_OBJDUMP}")
+endif()
+if(DEFINED _semb_r20_command)
+	add_custom_command(OUTPUT "${_semb_r20_stamp}"
+		COMMAND "${Python3_EXECUTABLE}" "${_semb_r20_reader}" ${_semb_r20_command}
+		COMMAND "${CMAKE_COMMAND}" -E touch "${_semb_r20_stamp}"
+		DEPENDS superembedder "${_semb_r20_reader}"
+		COMMENT "R20: floating-point substitutable functions in the certified archive's objects"
+		VERBATIM)
+	add_custom_target(superembedder_r20_census ALL DEPENDS "${_semb_r20_stamp}")
+else()
+	message(STATUS "R20: no object reader for this format; the census does not run on this build")
+endif()
+
+include(CMakePackageConfigHelpers)
+install(TARGETS superembedder_shared EXPORT superembedderTargets
+	RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+	LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+	ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+install(FILES
+	"${CMAKE_SOURCE_DIR}/include/superembedder/semb.h"
+	"${CMAKE_SOURCE_DIR}/include/superembedder/version.h"
+	DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/superembedder")
+install(EXPORT superembedderTargets
+	NAMESPACE superembedder::
+	DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/superembedder")
+file(WRITE "${CMAKE_BINARY_DIR}/superembedderConfig.cmake"
+	"# superembedder::superembedder, the shared library. The engine is linked into\n"
+	"# it privately, so this package depends on no other.\n"
+	"include(\"\${CMAKE_CURRENT_LIST_DIR}/superembedderTargets.cmake\")\n")
+write_basic_package_version_file("${CMAKE_BINARY_DIR}/superembedderConfigVersion.cmake"
+	VERSION "${PROJECT_VERSION}"
+	COMPATIBILITY SameMajorVersion)
+install(FILES
+	"${CMAKE_BINARY_DIR}/superembedderConfig.cmake"
+	"${CMAKE_BINARY_DIR}/superembedderConfigVersion.cmake"
+	DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/superembedder")
+
 
 # ---------------------------------------------------------------------------
 # The semb CLI exposes Slice 6's bake, query, verify, and inspect verbs over
@@ -189,6 +319,21 @@ semb_verify_source_provenance(superembedder SIDECAR "${SEMB_SOURCE_PROVENANCE_SI
 add_executable(semb src/main.cpp)
 target_link_libraries(semb PRIVATE superembedder)
 target_include_directories(semb PRIVATE "${CMAKE_BINARY_DIR}/generated" "${CMAKE_SOURCE_DIR}/src/superembedder")
+# U2-1: `semb --version`'s build line, from what CMake itself recorded.
+if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT)
+	set(_semb_frontend "${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}")
+else()
+	set(_semb_frontend "${CMAKE_CXX_COMPILER_ID}")
+endif()
+target_compile_definitions(semb PRIVATE
+	"SEMB_BUILD_OS=\"${CMAKE_SYSTEM_NAME}\""
+	"SEMB_BUILD_ARCH=\"${CMAKE_SYSTEM_PROCESSOR}\""
+	"SEMB_BUILD_COMPILER_ID=\"${CMAKE_CXX_COMPILER_ID}\""
+	"SEMB_BUILD_COMPILER_VERSION=\"${CMAKE_CXX_COMPILER_VERSION}\""
+	"SEMB_BUILD_COMPILER_FRONTEND=\"${_semb_frontend}\""
+	"SEMB_BUILD_CONFIGURATION=\"$<CONFIG>\"")
+# U2-1: the CLI is installed beside the shared library and the header.
+install(TARGETS semb RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
 # ---------------------------------------------------------------------------
 # TE-166 diagnostic only (not part of the red suite, not wired to ctest):

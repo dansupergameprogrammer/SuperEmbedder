@@ -204,7 +204,10 @@ bool ManifestField(const std::string& manifest, const char* field, std::string* 
 
 bool LoadCorpus(const std::string& path, std::vector<std::string>* ids,
                 std::vector<std::string>* texts, std::vector<semb_document>* docs) {
-  std::ifstream stream(path);
+  // Binary mode on every platform (U2-7 item 3, F19): a line is the bytes up
+  // to each LF, so a CR is document text everywhere, and a final line without
+  // an LF is still a line.
+  std::ifstream stream(path, std::ios::binary);
   if (!stream) return false;
   // Format is selected by the path, never by a line's contents: a
   // case-insensitive `.jsonl` extension selects JSONL; every other extension
@@ -745,6 +748,12 @@ int Query(const std::vector<std::string>& args) {
   if (parsed.raw && _setmode(_fileno(stdout), _O_BINARY) == -1) {
     return Refuse("semb query --raw", SEMB_ARTIFACT_UNREADABLE);
   }
+  // U2-7 item 3 (F19): stdin is read in binary mode, so a query line is the
+  // bytes up to each LF and a CR before it is query text, as on every other
+  // platform.
+  if (parsed.stdin_mode && _setmode(_fileno(stdin), _O_BINARY) == -1) {
+    return Refuse("semb query --stdin", SEMB_ARTIFACT_UNREADABLE);
+  }
 #endif
   Handles handles;
   const std::string stem = parsed.positional[0];
@@ -900,6 +909,20 @@ int main(int argc, char** argv) {
     return 0;
   }
   const std::string command = argv[1];
+  if (command == "--version" && argc == 2) {
+    // U2-1: the version, the engine pin, and the build descriptor's fields the
+    // build system records today. The rest of the descriptor U2-3 defines
+    // (the dispatched CPU tier, the cell verdict, the flag digests, the
+    // standard library, the linked engine's own report) is not printed until
+    // U2-3 builds it, so this line claims no certification.
+    std::cout << "semb " << superembedder::Version() << " (engine pin " << SEMB_ENGINE_PIN_TAG
+              << " @ " << SEMB_ENGINE_PIN_COMMIT << ", engine_path_sha=" << SEMB_ENGINE_PATH_SHA << ")\n"
+              << "build: os=" << SEMB_BUILD_OS << " arch=" << SEMB_BUILD_ARCH
+              << " compiler=" << SEMB_BUILD_COMPILER_ID << "/" << SEMB_BUILD_COMPILER_VERSION
+              << " frontend=" << SEMB_BUILD_COMPILER_FRONTEND << " configuration=" << SEMB_BUILD_CONFIGURATION
+              << " buildSystem=cmake\n";
+    return 0;
+  }
   std::vector<std::string> args;
   for (int i = 2; i < argc; ++i) args.emplace_back(argv[i]);
   if (command == "bake") return Bake(args);

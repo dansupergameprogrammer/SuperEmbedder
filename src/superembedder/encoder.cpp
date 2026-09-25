@@ -30,18 +30,21 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <new>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -160,8 +163,11 @@ std::mutex& RegistryMutex() {
   return *mutex;
 }
 
-using HandleRegistry =
-    std::unordered_map<semb_encoder, std::unique_ptr<semb_encoder_s>>;
+// R20 (U2-1): an ordered container. Its member functions do no floating-point
+// arithmetic, so no certified object carries a substitutable floating-point
+// instantiation for it; the registry is read only by find, emplace and erase,
+// never iterated, so its order changes nothing.
+using HandleRegistry = std::map<semb_encoder, std::unique_ptr<semb_encoder_s>>;
 
 HandleRegistry& Registry() {
   static auto* registry = new HandleRegistry();
@@ -444,11 +450,17 @@ semb_status ComposeBatch(semb_encoder_s* h, const std::string_view* texts, size_
 // function is called; it tokenizes that whole composition, then applies the
 // caller-selected content ceiling, leaving the interim layer to append the
 // canonical special token. W-Q and semb_query_encode both reach this path.
+// The query side's one tokenization of a composed query: the encode below and
+// the body-token count (semb_interim_query_token_count) both call it.
+std::vector<int32_t> TokenizeComposedQuery(const semb_encoder_s* h, std::string_view composed) {
+  return h->tokenizer.Encode(composed);
+}
+
 semb_status EncodeQueryComposedImpl(semb_encoder_s* h, std::string_view composed,
                                     size_t max_content_ids,
                                     std::vector<float>* out_vector) {
   if (!h || !out_vector) return SEMB_NULL_ARGUMENT;
-  std::vector<int32_t> ids = h->tokenizer.Encode(composed);
+  std::vector<int32_t> ids = TokenizeComposedQuery(h, composed);
   if (ids.empty()) return SEMB_INPUT_EMPTY;
   const size_t context_limit = h->context_cap > 0 ? h->context_cap - 1 : 0;
   const size_t permitted = std::min(context_limit, max_content_ids);
@@ -740,21 +752,87 @@ extern "C" const char* semb_status_name(semb_status status) {
   return "SEMB_UNKNOWN";
 }
 
-static semb_status EncoderOpenBody(const semb_config* cfg, semb_encoder* out) {
-  if (out) *out = nullptr;
-  if (!cfg || !out) return SEMB_NULL_ARGUMENT;
-  if (cfg->struct_size != sizeof(semb_config)) return SEMB_STRUCT_SIZE_MISMATCH;
-  if ((!cfg->model_path && cfg->model_path_len > 0) ||
-      (!cfg->tokenizer_path && cfg->tokenizer_path_len > 0)) return SEMB_NULL_ARGUMENT;
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+// U2 cloud build, C52 (d)'s park point (tests/support/semb_u2_7_memory_open_seam.h).
+// Test-only; absent from the shipped library.
+namespace semb::test_seam {
+namespace {
+std::mutex memory_open_mutex;
+std::condition_variable memory_open_changed;
+bool memory_open_armed = false;
+bool memory_open_parked = false;
+uint64_t memory_open_release_generation = 0;
+}  // namespace
 
+// Called by the memory route of OpenEncoder after both owned copies are
+// digested and before the interim open loads them. Armed, it parks there
+// until released; one shot.
+void MemoryOpenParkPoint() {
+  std::unique_lock<std::mutex> lock(memory_open_mutex);
+  if (!memory_open_armed) return;
+  memory_open_armed = false;
+  memory_open_parked = true;
+  const uint64_t generation = memory_open_release_generation;
+  memory_open_changed.notify_all();
+  memory_open_changed.wait(lock, [generation] { return memory_open_release_generation != generation; });
+  memory_open_parked = false;
+}
+}  // namespace semb::test_seam
+
+extern "C" int32_t semb_test_seam_memory_open_arm_park(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::memory_open_mutex);
+  if (semb::test_seam::memory_open_parked) return 0;
+  semb::test_seam::memory_open_armed = true;
+  return 1;
+}
+
+extern "C" int32_t semb_test_seam_memory_open_wait_parked(uint32_t timeout_ms) {
+  std::unique_lock<std::mutex> lock(semb::test_seam::memory_open_mutex);
+  return semb::test_seam::memory_open_changed.wait_for(
+             lock, std::chrono::milliseconds(timeout_ms),
+             [] { return semb::test_seam::memory_open_parked; })
+             ? 1
+             : 0;
+}
+
+extern "C" void semb_test_seam_memory_open_release(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::memory_open_mutex);
+  semb::test_seam::memory_open_armed = false;
+  ++semb::test_seam::memory_open_release_generation;
+  semb::test_seam::memory_open_changed.notify_all();
+}
+#endif
+
+namespace {
+
+// How an open receives its two artifacts. Each function fills a buffer the
+// encoder owns and returns SEMB_OK or the refusal; every later step of the
+// open reads only those buffers. The path verb reads each file once; the
+// memory verb copies each caller span (U2-7 item 1).
+enum class OpenRoute { kPath, kMemory };
+struct ArtifactSource {
+  OpenRoute route;
+  std::function<semb_status(std::vector<uint8_t>*)> tokenizer;
+  std::function<semb_status(std::vector<uint8_t>*)> model;
+};
+
+semb_status CopySpan(const uint8_t* bytes, size_t len, std::vector<uint8_t>* out) {
+  if (len > 0) out->assign(bytes, bytes + len);
+  return SEMB_OK;
+}
+
+}  // namespace
+
+// The one internal open both public open verbs call. The two differ only in
+// `source`, the way the bytes arrive; everything checked and derived here
+// runs on the encoder's own copies.
+static semb_status OpenEncoder(const ArtifactSource& source, uint32_t requested_max_concurrency,
+                               semb_encoder* out) {
   try {
     std::vector<uint8_t> model_bytes;
     std::vector<uint8_t> tokenizer_bytes;
-    if (!ReadFileOnce(std::string_view(cfg->tokenizer_path ? cfg->tokenizer_path : "",
-                                      cfg->tokenizer_path_len),
-                      &tokenizer_bytes)) {
-      return SEMB_ARTIFACT_UNREADABLE;
-    }
+    const semb_status tokenizer_acquired = source.tokenizer(&tokenizer_bytes);
+    if (tokenizer_acquired != SEMB_OK) return tokenizer_acquired;
 
     auto handle = std::make_unique<semb_encoder_s>();
     handle->tokenizer_bytes = std::move(tokenizer_bytes);
@@ -782,10 +860,8 @@ static semb_status EncoderOpenBody(const semb_config* cfg, semb_encoder* out) {
     }
     const int32_t appended_token_id = canonical_end_ids[0];
 
-    if (!ReadFileOnce(std::string_view(cfg->model_path ? cfg->model_path : "",
-                                      cfg->model_path_len), &model_bytes)) {
-      return SEMB_ARTIFACT_UNREADABLE;
-    }
+    const semb_status model_acquired = source.model(&model_bytes);
+    if (model_acquired != SEMB_OK) return model_acquired;
     // The interim owned-open entry requires nonempty backing. Zero bytes
     // were successfully read but cannot form an engine artifact.
     if (model_bytes.empty()) return SEMB_ENGINE_REFUSED;
@@ -801,8 +877,11 @@ static semb_status EncoderOpenBody(const semb_config* cfg, semb_encoder* out) {
     uint8_t model_sha[32], tokenizer_sha[32];
     Hash(model_bytes.data(), model_bytes.size(), model_sha);
     Hash(handle->tokenizer_bytes.data(), handle->tokenizer_bytes.size(), tokenizer_sha);
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+    if (source.route == OpenRoute::kMemory) semb::test_seam::MemoryOpenParkPoint();
+#endif
 
-    const uint32_t max_concurrency = cfg->max_concurrency == 0 ? 1 : cfg->max_concurrency;
+    const uint32_t max_concurrency = requested_max_concurrency == 0 ? 1 : requested_max_concurrency;
     SembInterimEncoder* interim = nullptr;
     const char* engine_status = nullptr;
     bool vocab_mismatch = false;
@@ -933,9 +1012,52 @@ static semb_status EncoderOpenBody(const semb_config* cfg, semb_encoder* out) {
   }
 }
 
+static semb_status EncoderOpenBody(const semb_config* cfg, semb_encoder* out) {
+  if (out) *out = nullptr;
+  if (!cfg || !out) return SEMB_NULL_ARGUMENT;
+  if (cfg->struct_size != sizeof(semb_config)) return SEMB_STRUCT_SIZE_MISMATCH;
+  if ((!cfg->model_path && cfg->model_path_len > 0) ||
+      (!cfg->tokenizer_path && cfg->tokenizer_path_len > 0)) return SEMB_NULL_ARGUMENT;
+  const auto read_file = [](const char* path, size_t path_len, std::vector<uint8_t>* bytes) {
+    return ReadFileOnce(std::string_view(path ? path : "", path_len), bytes) ? SEMB_OK
+                                                                            : SEMB_ARTIFACT_UNREADABLE;
+  };
+  ArtifactSource source{
+      OpenRoute::kPath,
+      [&](std::vector<uint8_t>* bytes) {
+        return read_file(cfg->tokenizer_path, cfg->tokenizer_path_len, bytes);
+      },
+      [&](std::vector<uint8_t>* bytes) { return read_file(cfg->model_path, cfg->model_path_len, bytes); }};
+  return OpenEncoder(source, cfg->max_concurrency, out);
+}
+
 extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* out) {
   return semb::c_boundary::Status([&] {
     return EncoderOpenBody(cfg, out);
+  });
+}
+
+// U2-7 item 1: the same open, with each span copied into an encoder-owned
+// buffer where the path verb reads a file. The copy is what the fingerprint
+// is digested from and what the engine loads, so a caller rewriting its span
+// during the call cannot make the fingerprint describe bytes the engine did
+// not load; and the caller may release its spans once the call returns.
+static semb_status EncoderOpenMemoryBody(const semb_memory_config* cfg, semb_encoder* out) {
+  if (out) *out = nullptr;
+  if (!cfg || !out) return SEMB_NULL_ARGUMENT;
+  if (cfg->struct_size != sizeof(semb_memory_config)) return SEMB_STRUCT_SIZE_MISMATCH;
+  if ((!cfg->model_bytes && cfg->model_len > 0) ||
+      (!cfg->tokenizer_bytes && cfg->tokenizer_len > 0)) return SEMB_NULL_ARGUMENT;
+  ArtifactSource source{
+      OpenRoute::kMemory,
+      [&](std::vector<uint8_t>* bytes) { return CopySpan(cfg->tokenizer_bytes, cfg->tokenizer_len, bytes); },
+      [&](std::vector<uint8_t>* bytes) { return CopySpan(cfg->model_bytes, cfg->model_len, bytes); }};
+  return OpenEncoder(source, cfg->max_concurrency, out);
+}
+
+extern "C" semb_status semb_encoder_open_memory(const semb_memory_config* cfg, semb_encoder* out) {
+  return semb::c_boundary::Status([&] {
+    return EncoderOpenMemoryBody(cfg, out);
   });
 }
 
@@ -1061,6 +1183,63 @@ extern "C" semb_status semb_encode(semb_encoder enc, const char* utf8, size_t ut
   });
 }
 
+// U2-7 item 2: the raw path's query form. semb_encode's validation order and
+// output-buffer convention; the vector comes from semb::EncodeQuery, the one
+// composition semb_query_encode also calls, and the fingerprint is the
+// encoder's, as semb_encode returns it. The lease held for the call is
+// semb_encode's per-encoder concurrency.
+static semb_status EncodeQueryBody(semb_encoder enc, const char* utf8, size_t utf8_len,
+                                   float* out_vector, size_t out_capacity_bytes,
+                                   size_t* out_required_bytes,
+                                   semb_fingerprint* out_fingerprint) {
+  if (!enc || !out_required_bytes || !out_fingerprint) return SEMB_NULL_ARGUMENT;
+  try {
+    HandleLease lease(enc);
+    if (!lease.get()) return SEMB_INVALID_HANDLE;
+    if (out_fingerprint->struct_size != sizeof(semb_fingerprint)) {
+      return SEMB_STRUCT_SIZE_MISMATCH;
+    }
+    const size_t required = static_cast<size_t>(lease.get()->dims) * sizeof(float);
+    if (out_vector && (reinterpret_cast<uintptr_t>(out_vector) & 15u) != 0) {
+      return SEMB_MISALIGNED_BUFFER;
+    }
+    if (out_capacity_bytes < required) {
+      *out_required_bytes = required;
+      return SEMB_BUFFER_TOO_SMALL;
+    }
+    if (!out_vector) return SEMB_NULL_ARGUMENT;
+    if (utf8_len == 0) return SEMB_INPUT_EMPTY;
+    if (!utf8) return SEMB_NULL_ARGUMENT;
+    if (!ValidUtf8(utf8, utf8_len)) return SEMB_INVALID_UTF8;
+
+    std::vector<float> staged_vector;
+    const semb_status encoded =
+        semb::EncodeQuery(enc, std::string_view(utf8, utf8_len), &staged_vector);
+    if (encoded != SEMB_OK) return encoded;
+    std::memcpy(out_vector, staged_vector.data(), required);
+    *out_required_bytes = required;
+    std::memcpy(out_fingerprint->digest, lease.get()->fingerprint.data(),
+                lease.get()->fingerprint.size());
+    return SEMB_OK;
+  } catch (const std::bad_alloc&) {
+    return SEMB_ALLOCATION_FAILED;
+  } catch (const std::length_error&) {
+    return SEMB_ALLOCATION_FAILED;
+  } catch (...) {
+    return SEMB_ENGINE_REFUSED;
+  }
+}
+
+extern "C" semb_status semb_encode_query(semb_encoder enc, const char* utf8, size_t utf8_len,
+                                          float* out_vector, size_t out_capacity_bytes,
+                                          size_t* out_required_bytes,
+                                          semb_fingerprint* out_fingerprint) {
+  return semb::c_boundary::Status([&] {
+    return EncodeQueryBody(enc, utf8, utf8_len, out_vector, out_capacity_bytes, out_required_bytes,
+                           out_fingerprint);
+  });
+}
+
 // TE-147 (U1 slice 2 build): W-B's own diagnostic accessor
 // (`include/superembedder/witness_abi.h`; the contract of record is
 // `tests/semb_wb_witness_abi_contract.h`, AMENDED TE-151 to this
@@ -1156,6 +1335,14 @@ semb_status EncodeQueryComposed(semb_encoder enc, std::string_view composed,
   return EncodeQueryComposedImpl(lease.get(), composed, max_content_ids, out_vector);
 }
 
+semb_status ComposedQueryTokenCount(semb_encoder enc, std::string_view composed, size_t* out_count) {
+  if (!enc || !out_count) return SEMB_NULL_ARGUMENT;
+  HandleLease lease(enc);
+  if (!lease.get()) return SEMB_INVALID_HANDLE;
+  *out_count = TokenizeComposedQuery(lease.get(), composed).size();
+  return SEMB_OK;
+}
+
 }  // namespace semb
 
 // TE-147 (U1 slice 2 build): the bake-side corpus entry
@@ -1235,8 +1422,9 @@ static semb_status EncodeBatchBody(semb_encoder enc, const semb_document* docs, 
     // normalization, no case folding) -> DOCUMENT_ID_DUPLICATE. Reached
     // only once every document has individually passed step 9.
     {
-      std::unordered_set<std::string_view> seen;
-      seen.reserve(n);
+      // R20 (U2-1): an ordered set, for the reason the handle registry is one;
+      // it is read only by emplace and never iterated.
+      std::set<std::string_view> seen;
       for (size_t i = 0; i < n; ++i) {
         if (!seen.emplace(std::string_view(docs[i].id, docs[i].id_len)).second) {
           return SEMB_DOCUMENT_ID_DUPLICATE;

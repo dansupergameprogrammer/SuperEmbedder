@@ -185,6 +185,23 @@
       }
     },
     {
+      "name": "semb_encoder_open_memory",
+      "tu": "src/superembedder/encoder.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": {
+        "short": {
+          "note": "no pre-build reading: the function is U2-7's, added by the U2 cloud build under the rule and joining the table in the change that adds it (U2-10 Builds item 6)"
+        }
+      }
+    },
+    {
       "name": "semb_encoder_close",
       "tu": "src/superembedder/encoder.cpp",
       "return_type": "semb_status",
@@ -285,6 +302,23 @@
           "a": "green 6 of 6 graded",
           "a2": "green 6 of 6 graded",
           "b": "green 6 of 6 graded"
+        }
+      }
+    },
+    {
+      "name": "semb_encode_query",
+      "tu": "src/superembedder/encoder.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": {
+        "short": {
+          "note": "no pre-build reading: the function is U2-7's, added by the U2 cloud build under the rule and joining the table in the change that adds it (U2-10 Builds item 6)"
         }
       }
     },
@@ -975,6 +1009,23 @@
       "c64_pre_build": {
         "short": {
           "note": "no pre-build reading: the function is U2-9 item 2's end-of-open release verb, added by the U2 cloud build and joining the table in the change that adds it (U2-10 Builds item 6)"
+        }
+      }
+    },
+    {
+      "name": "semb_interim_query_token_count",
+      "tu": "src/superembedder/query.cpp",
+      "return_type": "SembInterimStatus",
+      "disposition": "boundary",
+      "status_family": "SembInterimStatus",
+      "allocation_status": "kSembInterimAllocationFailed",
+      "catch_all_status": "kSembInterimEngineRefused",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": {
+        "short": {
+          "note": "no pre-build reading: the function is U2-7's, added by the U2 cloud build under the rule and joining the table in the change that adds it (U2-10 Builds item 6)"
         }
       }
     },

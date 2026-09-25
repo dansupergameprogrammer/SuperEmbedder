@@ -5,6 +5,28 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* SEMB_API marks each verb this header declares, and only those (U2-1). The
+ * shared library exports exactly the verbs a line-anchored scan of this header
+ * reads (tools/generate_export_list.py); its objects are compiled with hidden
+ * visibility, so SEMB_API is also what gives each verb default visibility.
+ * On Windows it is dllexport while the library itself is compiled
+ * (SEMB_BUILDING_LIBRARY), dllimport for a consumer of the shared library
+ * (SEMB_SHARED, set by the installed package's target), and empty for a
+ * static link. */
+#if defined(_WIN32)
+#  if defined(SEMB_BUILDING_LIBRARY)
+#    define SEMB_API __declspec(dllexport)
+#  elif defined(SEMB_SHARED)
+#    define SEMB_API __declspec(dllimport)
+#  else
+#    define SEMB_API
+#  endif
+#elif defined(__GNUC__) || defined(__clang__)
+#  define SEMB_API __attribute__((visibility("default")))
+#else
+#  define SEMB_API
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -116,6 +138,21 @@ struct semb_config {
   uint32_t max_concurrency;
 };
 
+// semb_encoder_open_memory's argument: the model and tokenizer artifacts as
+// sized byte spans in place of paths. A span is required iff its length is
+// nonzero. The open copies both spans into buffers the encoder owns before it
+// reads them, so the caller may release or rewrite its spans once the call
+// returns. `max_concurrency` is semb_config's.
+typedef struct semb_memory_config semb_memory_config;
+struct semb_memory_config {
+  uint32_t struct_size;
+  const uint8_t* model_bytes;
+  size_t model_len;
+  const uint8_t* tokenizer_bytes;
+  size_t tokenizer_len;
+  uint32_t max_concurrency;
+};
+
 typedef struct semb_fingerprint semb_fingerprint;
 struct semb_fingerprint {
   uint32_t struct_size;
@@ -152,17 +189,39 @@ struct semb_document {
 // under the clauses above. Any other internal failure returns
 // SEMB_ENGINE_REFUSED, or SEMB_ARTIFACT_UNREADABLE from semb_bank_open.
 
+SEMB_API
 semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* out);
+// Opens an encoder from artifacts already in memory. It runs the open
+// semb_encoder_open runs, on copies of the two spans: the same checks, the
+// same fingerprint, the same refusals. A span of zero bytes is refused as an
+// empty file is by semb_encoder_open.
+SEMB_API
+semb_status semb_encoder_open_memory(const semb_memory_config* cfg, semb_encoder* out);
+SEMB_API
 semb_status semb_encoder_close(semb_encoder enc);
+SEMB_API
 semb_status semb_encoder_dims(semb_encoder enc, uint32_t* out_dims);
+SEMB_API
 semb_status semb_encode(semb_encoder enc, const char* utf8, size_t utf8_len,
                         float* out_vector, size_t out_capacity_bytes,
                         size_t* out_required_bytes,
                         semb_fingerprint* out_fingerprint);
+// The query form of semb_encode: applies the query instruction prefix exactly
+// as semb_query_encode does, through the same composition, and returns the
+// fingerprint the vector was emitted under, as semb_encode does, with
+// semb_encode's validation order and output-buffer convention. It checks
+// nothing against a bank; what the caller does with the fingerprint is the
+// caller's.
+SEMB_API
+semb_status semb_encode_query(semb_encoder enc, const char* utf8, size_t utf8_len,
+                              float* out_vector, size_t out_capacity_bytes,
+                              size_t* out_required_bytes,
+                              semb_fingerprint* out_fingerprint);
 // The bake-side corpus entry (`Claude/Fable/te96-u1-contract-closure-2026-09-05.md`
 // sec 4.2). Validation is shape-before-content-before-work; nothing is
 // written to `out_rows` on any non-SEMB_OK return; `*out_required_bytes` is
 // written on exactly SEMB_OK and SEMB_BUFFER_TOO_SMALL.
+SEMB_API
 semb_status semb_encode_batch(semb_encoder enc, const semb_document* docs, size_t n,
                               float* out_rows, size_t out_capacity_bytes,
                               size_t* out_required_bytes);
@@ -172,16 +231,23 @@ semb_status semb_encode_batch(semb_encoder enc, const semb_document* docs, size_
 // is set to a live handle only on SEMB_OK; every refusal leaves
 // `*out == NULL` (when `out` is non-NULL) (`Claude/Plans/SuperEmbedder_Plan.md`
 // sec 3.1; `tests/semb_bank_abi_contract.h`).
+SEMB_API
 semb_status semb_bank_open(const char* path, size_t path_len, semb_bank* out);
 // Releases the handle. A bank with one or more live query handles returns
 // SEMB_BANK_IN_USE and remains live; close those query handles and retry.
+SEMB_API
 semb_status semb_bank_close(semb_bank bank);
+SEMB_API
 semb_status semb_query_open(semb_encoder enc, semb_bank bank, semb_query* out);
+SEMB_API
 semb_status semb_query_encode(semb_query q, const char* utf8, size_t utf8_len,
                               float* out_vector, size_t out_capacity_bytes,
                               size_t* out_required_bytes);
+SEMB_API
 semb_status semb_query_close(semb_query q);
+SEMB_API
 semb_status semb_fingerprint_of(semb_encoder enc, semb_fingerprint* out);
+SEMB_API
 const char* semb_status_name(semb_status s);
 
 #ifdef __cplusplus
