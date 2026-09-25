@@ -24,7 +24,7 @@ MUTANTS = {
     # Deliberately perform the witness cut on raw content before composition.
     # One byte makes this observable even on the frozen cap-64 pair; the
     # production path instead composes first and cuts the full sequence.
-    "TRUNCATION_ORDERING": ("if (!HashWitnessPosition(encoder, BuildTruncationQuery(), kWitnessQueryContentCap, &hash)) return false;", "const std::string truncation = BuildTruncationQuery();\n  if (!HashWitnessPosition(encoder, truncation.substr(0, 1), kWitnessQueryContentCap, &hash)) return false;"),
+    "TRUNCATION_ORDERING": ("  const semb_status st =\n      HashWitnessPosition(encoder, BuildTruncationQuery(), kWitnessQueryContentCap, &hash);", "  const std::string truncation = BuildTruncationQuery();\n  const semb_status st =\n      HashWitnessPosition(encoder, truncation.substr(0, 1), kWitnessQueryContentCap, &hash);"),
     "PREFIX_SINGLE_SOURCE": ("query\\nQuery:\";", "query\\nQuery-v2:\";"),
 }
 
@@ -121,7 +121,11 @@ def main(argv: list[str]) -> int:
         if baseline_exe is None:
             raise RuntimeError("C17 baseline probe executable is absent" +
                                (f" (expected {args.probe_exe})" if args.probe_exe else ""))
-        base = read_probe(baseline_exe, Path(args.build_dir) / "_scratch/c17_baseline", model, tokenizer)
+        # The probe bakes to this stem and does not create its directory; a
+        # fresh build tree has no _scratch/ until some test makes one.
+        baseline_stem = Path(args.build_dir) / "_scratch/c17_baseline"
+        baseline_stem.parent.mkdir(parents=True, exist_ok=True)
+        base = read_probe(baseline_exe, baseline_stem, model, tokenizer)
         root, build = prepare(scratch, args.cmake_executable, compiler, prefix)
         query_tu = root / "src/superembedder/query.cpp"
         original = query_tu.read_text(encoding="utf-8")
