@@ -13,7 +13,13 @@
       "c64_drivers": [
         "call"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "call": {
+          "seconds": 0.0,
+          "K": 0,
+          "leaf": "K=0"
+        }
+      }
     },
     {
       "name": "semb_adapter_self_id",
@@ -26,7 +32,13 @@
       "c64_drivers": [
         "call"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "call": {
+          "seconds": 0.0,
+          "K": 0,
+          "leaf": "K=0"
+        }
+      }
     },
     {
       "name": "semb_ps1_version_label",
@@ -39,7 +51,13 @@
       "c64_drivers": [
         "call"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "call": {
+          "seconds": 0.0,
+          "K": 0,
+          "leaf": "K=0"
+        }
+      }
     },
     {
       "name": "semb_ps_n_version_label",
@@ -52,7 +70,13 @@
       "c64_drivers": [
         "call"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "call": {
+          "seconds": 0.0,
+          "K": 0,
+          "leaf": "K=0"
+        }
+      }
     },
     {
       "name": "semb_library_build_generation",
@@ -65,7 +89,13 @@
       "c64_drivers": [
         "call"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "call": {
+          "seconds": 0.0,
+          "K": 0,
+          "leaf": "K=0"
+        }
+      }
     },
     {
       "name": "semb_seam_serialize_document",
@@ -78,7 +108,13 @@
       "c64_drivers": [
         "call"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "call": {
+          "seconds": 0.0,
+          "K": 0,
+          "leaf": "K=0"
+        }
+      }
     },
     {
       "name": "semb_wa_pooled_spread",
@@ -91,7 +127,13 @@
       "c64_drivers": [
         "call"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "call": {
+          "seconds": 0.0,
+          "K": 0,
+          "leaf": "K=0"
+        }
+      }
     },
     {
       "name": "semb_interim_encoder_close",
@@ -104,7 +146,13 @@
       "c64_drivers": [
         "call"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "call": {
+          "seconds": 0.1,
+          "K": 0,
+          "leaf": "K=0"
+        }
+      }
     },
     {
       "name": "semb_encoder_open",
@@ -117,7 +165,24 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short@mc1": {
+          "seconds": 54.3,
+          "sampled": "every 592158th k and K (not the verdict: full sweep est. 592158.0 min)",
+          "K": 11117186,
+          "a": "green 20 of 20 graded",
+          "a2": "green 20 of 20 graded",
+          "b": "green 20 of 20 graded"
+        },
+        "short@mc2": {
+          "seconds": 61.8,
+          "sampled": "every 554217th k and K (not the verdict: full sweep est. 554216.4 min)",
+          "K": 11117189,
+          "a": "green 22 of 22 graded",
+          "a2": "green 22 of 22 graded",
+          "b": "green 22 of 22 graded"
+        }
+      }
     },
     {
       "name": "semb_encoder_close",
@@ -130,7 +195,22 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short@mc1": {
+          "seconds": 3.0,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        },
+        "short@mc2": {
+          "seconds": 3.1,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        }
+      }
     },
     {
       "name": "semb_encoder_dims",
@@ -143,7 +223,22 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short@mc1": {
+          "seconds": 4.5,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        },
+        "short@mc2": {
+          "seconds": 4.7,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        }
+      }
     },
     {
       "name": "semb_encode",
@@ -158,7 +253,40 @@
         "growth",
         "long"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short@mc1": {
+          "seconds": 6.0,
+          "sampled": "every 72th k and K (not the verdict: full sweep est. 71.7 min)",
+          "K": 1842,
+          "a": "green 27 of 27 graded",
+          "a2": "green 27 of 27 graded",
+          "b": "green 27 of 27 graded"
+        },
+        "short@mc2": {
+          "seconds": 6.2,
+          "sampled": "every 68th k and K (not the verdict: full sweep est. 67.6 min)",
+          "K": 1842,
+          "a": "green 29 of 29 graded",
+          "a2": "green 29 of 29 graded",
+          "b": "green 29 of 29 graded"
+        },
+        "growth": {
+          "seconds": 49.0,
+          "sampled": "every 463th k and K (not the verdict: full sweep est. 462.9 min)",
+          "K": 11780,
+          "a": "green 27 of 27 graded",
+          "a2": "green 27 of 27 graded",
+          "b": "green 27 of 27 graded"
+        },
+        "long": {
+          "seconds": 66.4,
+          "sampled": "every 18960th k and K (not the verdict: full sweep est. 18960.0 min)",
+          "K": 83520,
+          "a": "green 6 of 6 graded",
+          "a2": "green 6 of 6 graded",
+          "b": "green 6 of 6 graded"
+        }
+      }
     },
     {
       "name": "semb_encode_batch",
@@ -174,7 +302,48 @@
         "growth",
         "long"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short@mc1": {
+          "seconds": 6.1,
+          "sampled": "every 134th k and K (not the verdict: full sweep est. 133.2 min)",
+          "K": 3660,
+          "a": "green 29 of 29 graded",
+          "a2": "green 29 of 29 graded",
+          "b": "green 29 of 29 graded"
+        },
+        "short@mc2": {
+          "seconds": 6.5,
+          "sampled": "every 144th k and K (not the verdict: full sweep est. 144.0 min)",
+          "K": 3662,
+          "a": "green 27 of 27 graded",
+          "a2": "green 27 of 27 graded",
+          "b": "green 27 of 27 graded"
+        },
+        "batch_mc2": {
+          "seconds": 6.7,
+          "sampled": "every 378th k and K (not the verdict: full sweep est. 377.8 min)",
+          "K": 9519,
+          "a": "green 27 of 27 graded",
+          "a2": "green 27 of 27 graded",
+          "b": "green 27 of 27 graded"
+        },
+        "growth": {
+          "seconds": 46.5,
+          "sampled": "every 479th k and K (not the verdict: full sweep est. 478.7 min)",
+          "K": 11783,
+          "a": "green 26 of 26 graded",
+          "a2": "green 26 of 26 graded",
+          "b": "green 26 of 26 graded"
+        },
+        "long": {
+          "seconds": 67.5,
+          "sampled": "every 19085th k and K (not the verdict: full sweep est. 19084.4 min)",
+          "K": 83523,
+          "a": "green 6 of 6 graded",
+          "a2": "green 6 of 6 graded",
+          "b": "green 6 of 6 graded"
+        }
+      }
     },
     {
       "name": "semb_bank_open",
@@ -187,7 +356,16 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 2.6,
+          "sampled": "every 4th k and K (not the verdict: full sweep est. 3.1 min)",
+          "K": 122,
+          "a": "red 22 of 32 graded (first k=13: ARM 0 k=13 status=11 want=17 fired=1 escaped=0 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 22 of 32 graded (first k=13: ARM 1 k=13 status=11 want=17 fired=1 escaped=0 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "green 32 of 32 graded"
+        }
+      }
     },
     {
       "name": "semb_bank_close",
@@ -200,7 +378,15 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 2.8,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        }
+      }
     },
     {
       "name": "semb_query_open",
@@ -213,7 +399,22 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short@mc1": {
+          "seconds": 10.4,
+          "K": 2,
+          "a": "green 2 of 2 graded",
+          "a2": "red 2 of 2 graded (first k=1: ARM 1 k=1 status=-1000 want=17 fired=1 escaped=1 leak=0 follow=1 close=0 leak_after_close=2135)",
+          "b": "red 2 of 2 graded (first k=1: ARM 2 k=1 status=-1000 want=12 fired=1 escaped=1 leak=0 follow=1 close=0 leak_after_close=2135)"
+        },
+        "short@mc2": {
+          "seconds": 10.8,
+          "K": 2,
+          "a": "green 2 of 2 graded",
+          "a2": "red 2 of 2 graded (first k=1: ARM 1 k=1 status=-1000 want=17 fired=1 escaped=1 leak=0 follow=1 close=0 leak_after_close=2136)",
+          "b": "red 2 of 2 graded (first k=1: ARM 2 k=1 status=-1000 want=12 fired=1 escaped=1 leak=0 follow=1 close=0 leak_after_close=2136)"
+        }
+      }
     },
     {
       "name": "semb_query_encode",
@@ -229,7 +430,48 @@
         "growth",
         "long"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short@mc1": {
+          "seconds": 9.4,
+          "sampled": "every 225th k and K (not the verdict: full sweep est. 224.3 min)",
+          "K": 3655,
+          "a": "green 18 of 18 graded",
+          "a2": "red 18 of 18 graded (first k=1: ARM 1 k=1 status=-1000 want=17 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 18 of 18 graded (first k=1: ARM 2 k=1 status=-1000 want=12 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "short@mc2": {
+          "seconds": 9.5,
+          "sampled": "every 219th k and K (not the verdict: full sweep est. 218.2 min)",
+          "K": 3655,
+          "a": "green 18 of 18 graded",
+          "a2": "red 18 of 18 graded (first k=1: ARM 1 k=1 status=-1000 want=17 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 18 of 18 graded (first k=1: ARM 2 k=1 status=-1000 want=12 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "truncated_query": {
+          "seconds": 79.2,
+          "sampled": "every 34877th k and K (not the verdict: full sweep est. 34876.9 min)",
+          "K": 101572,
+          "a": "green 4 of 4 graded",
+          "a2": "red 4 of 4 graded (first k=1: ARM 1 k=1 status=-1000 want=17 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 4 of 4 graded (first k=1: ARM 2 k=1 status=-1000 want=12 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "growth": {
+          "seconds": 36.8,
+          "sampled": "every 853th k and K (not the verdict: full sweep est. 852.8 min)",
+          "K": 13584,
+          "a": "green 17 of 17 graded",
+          "a2": "red 17 of 17 graded (first k=1: ARM 1 k=1 status=-1000 want=17 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 17 of 17 graded (first k=1: ARM 2 k=1 status=-1000 want=12 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "long": {
+          "seconds": 61.5,
+          "sampled": "every 22111th k and K (not the verdict: full sweep est. 22110.1 min)",
+          "K": 85303,
+          "a": "green 5 of 5 graded",
+          "a2": "red 5 of 5 graded (first k=1: ARM 1 k=1 status=-1000 want=17 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 5 of 5 graded (first k=1: ARM 2 k=1 status=-1000 want=12 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        }
+      }
     },
     {
       "name": "semb_query_close",
@@ -242,7 +484,22 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short@mc1": {
+          "seconds": 5.4,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        },
+        "short@mc2": {
+          "seconds": 5.4,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        }
+      }
     },
     {
       "name": "semb_fingerprint_of",
@@ -255,7 +512,22 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short@mc1": {
+          "seconds": 4.4,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        },
+        "short@mc2": {
+          "seconds": 4.8,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        }
+      }
     },
     {
       "name": "semb_bake_to_path",
@@ -271,7 +543,48 @@
         "growth",
         "long"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short@mc1": {
+          "seconds": 17.4,
+          "sampled": "every 708901th k and K (not the verdict: full sweep est. 708900.8 min)",
+          "K": 11059887,
+          "a": "green 17 of 17 graded",
+          "a2": "green 17 of 17 graded",
+          "b": "green 17 of 17 graded"
+        },
+        "short@mc2": {
+          "seconds": 18.8,
+          "sampled": "every 644753th k and K (not the verdict: full sweep est. 644752.2 min)",
+          "K": 11059889,
+          "a": "green 19 of 19 graded",
+          "a2": "green 19 of 19 graded",
+          "b": "green 19 of 19 graded"
+        },
+        "batch_mc2": {
+          "seconds": 18.4,
+          "sampled": "every 665290th k and K (not the verdict: full sweep est. 665290.0 min)",
+          "K": 11065805,
+          "a": "green 18 of 18 graded",
+          "a2": "green 18 of 18 graded",
+          "b": "green 18 of 18 graded"
+        },
+        "growth": {
+          "seconds": 47.0,
+          "sampled": "every 679503th k and K (not the verdict: full sweep est. 679502.6 min)",
+          "K": 11067994,
+          "a": "green 18 of 18 graded",
+          "a2": "green 18 of 18 graded",
+          "b": "green 18 of 18 graded"
+        },
+        "long": {
+          "seconds": 80.2,
+          "sampled": "every 2917401th k and K (not the verdict: full sweep est. 2917400.2 min)",
+          "K": 11139746,
+          "a": "green 5 of 5 graded",
+          "a2": "green 5 of 5 graded",
+          "b": "green 5 of 5 graded"
+        }
+      }
     },
     {
       "name": "semb_wb_digest",
@@ -284,7 +597,22 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short@mc1": {
+          "seconds": 4.6,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        },
+        "short@mc2": {
+          "seconds": 4.6,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        }
+      }
     },
     {
       "name": "semb_wq_digest",
@@ -297,7 +625,22 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short@mc1": {
+          "seconds": 4.5,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        },
+        "short@mc2": {
+          "seconds": 4.5,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        }
+      }
     },
     {
       "name": "semb_bank_acquire_query",
@@ -310,7 +653,15 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 2.6,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        }
+      }
     },
     {
       "name": "semb_bank_release_query",
@@ -323,7 +674,15 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 2.6,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        }
+      }
     },
     {
       "name": "semb_bank_debug_state",
@@ -336,7 +695,15 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 2.6,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        }
+      }
     },
     {
       "name": "semb_bank_ranked_state",
@@ -349,7 +716,15 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 2.7,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        }
+      }
     },
     {
       "name": "semb_interim_encoder_open",
@@ -362,7 +737,15 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 17.3,
+          "K": 94,
+          "a": "red 95 of 95 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 95 of 95 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 95 of 95 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        }
+      }
     },
     {
       "name": "semb_interim_encoder_open_from_memory",
@@ -375,7 +758,22 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short@mc1": {
+          "seconds": 17.2,
+          "K": 92,
+          "a": "red 93 of 93 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 93 of 93 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 93 of 93 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "short@mc2": {
+          "seconds": 17.2,
+          "K": 93,
+          "a": "red 94 of 94 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 94 of 94 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 94 of 94 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        }
+      }
     },
     {
       "name": "semb_interim_encoder_geometry",
@@ -388,7 +786,15 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 0.3,
+          "K": 0,
+          "a": "K=0 (graded by reading)",
+          "a2": "K=0 (graded by reading)",
+          "b": "K=0 (graded by reading)"
+        }
+      }
     },
     {
       "name": "semb_interim_encode_seam",
@@ -405,7 +811,46 @@
         "growth",
         "long"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 0.6,
+          "K": 156,
+          "a": "red 156 of 156 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 156 of 156 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 156 of 156 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "per_token": {
+          "seconds": 0.7,
+          "K": 254,
+          "a": "red 254 of 254 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 254 of 254 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 254 of 254 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "two_chunk": {
+          "seconds": 5.9,
+          "sampled": "every 14th k and K (not the verdict: full sweep est. 13.2 min)",
+          "K": 4070,
+          "a": "red 292 of 292 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 292 of 292 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 292 of 292 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "growth": {
+          "seconds": 30.9,
+          "sampled": "every 65th k and K (not the verdict: full sweep est. 64.2 min)",
+          "K": 10276,
+          "a": "red 160 of 160 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 160 of 160 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 160 of 160 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "long": {
+          "seconds": 66.7,
+          "sampled": "every 15720th k and K (not the verdict: full sweep est. 15719.9 min)",
+          "K": 81976,
+          "a": "red 7 of 7 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 7 of 7 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 7 of 7 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        }
+      }
     },
     {
       "name": "semb_interim_ps_n_select",
@@ -418,7 +863,15 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 0.5,
+          "K": 1,
+          "a": "red 2 of 2 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 2 of 2 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 2 of 2 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        }
+      }
     },
     {
       "name": "semb_interim_encode_ps_n",
@@ -432,7 +885,24 @@
         "short",
         "growth"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 0.8,
+          "sampled": "every 4th k and K (not the verdict: full sweep est. 4.0 min)",
+          "K": 1623,
+          "a": "red 407 of 407 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 407 of 407 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 407 of 407 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "growth": {
+          "seconds": 30.7,
+          "sampled": "every 83th k and K (not the verdict: full sweep est. 82.1 min)",
+          "K": 11774,
+          "a": "red 143 of 143 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 143 of 143 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 143 of 143 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        }
+      }
     },
     {
       "name": "semb_interim_encode_batch_ps_n",
@@ -448,7 +918,48 @@
         "growth",
         "long"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short@mc1": {
+          "seconds": 0.7,
+          "sampled": "every 19th k and K (not the verdict: full sweep est. 18.2 min)",
+          "K": 3314,
+          "a": "red 176 of 176 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 176 of 176 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 176 of 176 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "short@mc2": {
+          "seconds": 1.8,
+          "sampled": "every 14th k and K (not the verdict: full sweep est. 13.9 min)",
+          "K": 3316,
+          "a": "red 238 of 238 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 238 of 238 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 238 of 238 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "batch_mc2": {
+          "seconds": 6.1,
+          "sampled": "every 31th k and K (not the verdict: full sweep est. 30.6 min)",
+          "K": 9345,
+          "a": "red 303 of 303 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 303 of 303 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 303 of 303 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "growth": {
+          "seconds": 26.1,
+          "sampled": "every 97th k and K (not the verdict: full sweep est. 96.8 min)",
+          "K": 11775,
+          "a": "red 123 of 123 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 123 of 123 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 123 of 123 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "long": {
+          "seconds": 67.2,
+          "sampled": "every 16364th k and K (not the verdict: full sweep est. 16363.4 min)",
+          "K": 83409,
+          "a": "red 7 of 7 graded (first k=1: ARM 0 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 7 of 7 graded (first k=1: ARM 1 k=1 status=-1000 want=10 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 7 of 7 graded (first k=1: ARM 2 k=1 status=-1000 want=2 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        }
+      }
     },
     {
       "name": "semb_encode_document_for_witness",
@@ -464,7 +975,39 @@
         "growth",
         "long"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 44.6,
+          "K": 248,
+          "a": "red 249 of 249 graded (first k=1: ARM 0 k=1 status=-1000 want=3 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 249 of 249 graded (first k=1: ARM 1 k=1 status=-1000 want=3 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 249 of 249 graded (first k=1: ARM 2 k=1 status=-1000 want=1 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "two_chunk": {
+          "seconds": 77.7,
+          "sampled": "every 14th k and K (not the verdict: full sweep est. 14.0 min)",
+          "K": 4162,
+          "a": "red 300 of 300 graded (first k=1: ARM 0 k=1 status=-1000 want=3 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 300 of 300 graded (first k=1: ARM 1 k=1 status=-1000 want=3 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 300 of 300 graded (first k=1: ARM 2 k=1 status=-1000 want=1 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "growth": {
+          "seconds": 58.0,
+          "sampled": "every 94th k and K (not the verdict: full sweep est. 93.6 min)",
+          "K": 10368,
+          "a": "red 113 of 113 graded (first k=1: ARM 0 k=1 status=-1000 want=3 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 113 of 113 graded (first k=1: ARM 1 k=1 status=-1000 want=3 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 113 of 113 graded (first k=1: ARM 2 k=1 status=-1000 want=1 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        },
+        "long": {
+          "seconds": 123.4,
+          "sampled": "every 24020th k and K (not the verdict: full sweep est. 24019.5 min)",
+          "K": 82068,
+          "a": "red 6 of 6 graded (first k=1: ARM 0 k=1 status=-1000 want=3 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 6 of 6 graded (first k=1: ARM 1 k=1 status=-1000 want=3 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 6 of 6 graded (first k=1: ARM 2 k=1 status=-1000 want=1 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        }
+      }
     },
     {
       "name": "semb_wa_pool_run",
@@ -477,7 +1020,15 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 0.2,
+          "K": 971,
+          "a": "red 971 of 971 graded (first k=1: ARM 0 k=1 status=-1000 want=6 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 971 of 971 graded (first k=1: ARM 1 k=1 status=-1000 want=6 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 971 of 971 graded (first k=1: ARM 2 k=1 status=-1000 want=7 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        }
+      }
     },
     {
       "name": "semb_ps_n_dequantize",
@@ -490,7 +1041,15 @@
       "c64_drivers": [
         "short"
       ],
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 0.1,
+          "K": 506,
+          "a": "red 506 of 506 graded (first k=1: ARM 0 k=1 status=-1000 want=6 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 506 of 506 graded (first k=1: ARM 1 k=1 status=-1000 want=6 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 506 of 506 graded (first k=1: ARM 2 k=1 status=-1000 want=7 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        }
+      }
     },
     {
       "name": "semb_wa_digest",
@@ -504,7 +1063,16 @@
         "short"
       ],
       "return_type_after_build": "semb_status",
-      "c64_pre_build": null
+      "c64_pre_build": {
+        "short": {
+          "seconds": 63.8,
+          "sampled": "every 283755th k and K (not the verdict: full sweep est. 283754.6 min)",
+          "K": 11056055,
+          "a": "red 40 of 40 graded (first k=1: ARM 0 k=1 status=-1000 want=17 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "a2": "red 40 of 40 graded (first k=1: ARM 1 k=1 status=-1000 want=17 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)",
+          "b": "red 40 of 40 graded (first k=1: ARM 2 k=1 status=-1000 want=12 fired=1 escaped=1 leak=0 follow=1 close=1 leak_after_close=0)"
+        }
+      }
     }
   ]
 }
