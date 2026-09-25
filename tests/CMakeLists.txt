@@ -160,13 +160,25 @@ add_test(
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
+# The converter-emitted Qwen3-Embedding-0.6B tokenizer artifact (3.4 MB, never
+# committed; regenerated bit-for-bit by tools/tokenizer/regenerate_qwen3_tokenizer_artifact.py
+# and held to tests/fixtures/tokenizer/qwen3-embedding-0.6b-tokenizer.manifest.json).
+# Empty = the product legs report MISSING PREREQUISITE; with SEMB_C12B_MODEL it
+# turns the real-pair legs on.
+# Defined here, above every reader. `if(NOT SEMB_U1_TOKENIZER STREQUAL "")` on
+# a name that is not yet a variable compares the NAME itself, which is not
+# empty, so a reader placed above this line appended a bare `--tokenizer`
+# (no value) to its driver's arguments on a first configure.
+set(SEMB_U1_TOKENIZER "" CACHE FILEPATH
+	"U1 raw-text product cells: the converter-emitted Qwen3-Embedding-0.6B tokenizer .sslm (empty = MISSING PREREQUISITE)")
+
 # TE-144 (U1 slice 1): C23, token-id determinism across the {machine, tier,
 # toolchain} crossing. SEMB_TEST_SECOND_TOOLCHAIN_CXX names a second
 # compiler (clang-cl) this driver also builds and runs the standalone
 # instrument under, comparing digests; empty (the default) files that
 # toolchain leg as UNREACHABLE rather than silently narrowing the crossing
-# to one member. SEMB_U1_TOKENIZER (already defined below by the U1
-# raw-text suite) doubles as this cell's own real-artifact gate, matching
+# to one member. SEMB_U1_TOKENIZER (defined just above) doubles as this
+# cell's own real-artifact gate, matching
 # every other real-artifact leg's single-flag convention in this suite.
 set(SEMB_TEST_SECOND_TOOLCHAIN_CXX "" CACHE FILEPATH
 	"C23/second toolchain leg: a second C++ compiler (e.g. clang-cl.exe) this driver cross-builds the token-id instrument with (empty = filed UNREACHABLE)")
@@ -462,13 +474,7 @@ if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
 	set_tests_properties(u1_batch_contract_check PROPERTIES LABELS "real_artifact" TIMEOUT 7200)
 endif()
 
-# The converter-emitted Qwen3-Embedding-0.6B tokenizer artifact (3.4 MB, never
-# committed; regenerated bit-for-bit by tools/tokenizer/regenerate_qwen3_tokenizer_artifact.py
-# and held to tests/fixtures/tokenizer/qwen3-embedding-0.6b-tokenizer.manifest.json).
-# Empty = the product legs report MISSING PREREQUISITE; with SEMB_C12B_MODEL it
-# turns the real-pair legs on.
-set(SEMB_U1_TOKENIZER "" CACHE FILEPATH
-	"U1 raw-text product cells: the converter-emitted Qwen3-Embedding-0.6B tokenizer .sslm (empty = MISSING PREREQUISITE)")
+# SEMB_U1_TOKENIZER is defined near the top of this file, before its first use.
 set(_semb_u1_args --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}")
 if(NOT SEMB_C12B_MODEL STREQUAL "")
 	list(APPEND _semb_u1_args --model "${SEMB_C12B_MODEL}")
