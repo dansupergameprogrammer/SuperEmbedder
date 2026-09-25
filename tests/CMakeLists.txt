@@ -1651,3 +1651,56 @@ function(semb_require_python_gate)
 endfunction()
 semb_require_python_gate()
 cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_require_python_gate)
+
+# ---------------------------------------------------------------------------
+# U2 cloud build: ordering that `ctest -j` needs and ctest cannot infer.
+#
+# build/_scratch/u1_pair (the mechanism synthetic model+tokenizer pair) is
+# minted by u1_raw_text_cells_check. The tests below read it; some would mint
+# it themselves when absent, and some (u1_interim_batch_optional_output_test,
+# c41_environment_invariance_test) only read it and fail at open without it.
+# Under -j nothing ordered them after the mint, so they raced it: a reader
+# found no pair, or two mints rewrote the same files under a reader. The
+# fixture runs the minting test first, and `ctest -R <consumer>` pulls it in.
+# ---------------------------------------------------------------------------
+set_property(GLOBAL PROPERTY SEMB_U1_PAIR_CONSUMERS
+	c23_token_id_determinism_check
+	c2_lineage_equality_test_synthetic
+	c2_lineage_equality_test_synthetic_empty_corpus_jsonl_exits_nonzero
+	c2_lineage_equality_test_synthetic_empty_corpus_jsonl_fails_named
+	c2_lineage_equality_test_synthetic_missing_corpus_jsonl_exits_nonzero
+	c2_lineage_equality_test_synthetic_missing_corpus_jsonl_fails_named
+	c41_environment_invariance_test
+	epoch_store_check
+	epoch_store_constructions_check
+	te163_bank_pair_check
+	te194_query_check
+	te194_query_workspace_check
+	te196_manifest_binding_check
+	te222_query_ownership_check
+	te237_bank_cross_handle_check
+	te264_fingerprint_epoch_check
+	te264_fingerprint_epoch_edit_check
+	te264_fingerprint_template_check
+	te264_fingerprint_untagged_check
+	u1_batch_contract_check
+	u1_interim_batch_optional_output_test
+	u1_trailing_special_mutants_check
+	u1_workspace_control_vitality_check)
+
+# Applied in the directory that registered each test, like
+# semb_require_python_gate above: here, and by a call deferred to the root for
+# the tests registered there by this file's deferred calls.
+function(semb_apply_ctest_ordering)
+	if(TEST u1_raw_text_cells_check)
+		set_property(TEST u1_raw_text_cells_check APPEND PROPERTY FIXTURES_SETUP semb_u1_pair)
+	endif()
+	get_property(_tests GLOBAL PROPERTY SEMB_U1_PAIR_CONSUMERS)
+	foreach(_test IN LISTS _tests)
+		if(TEST ${_test})
+			set_property(TEST ${_test} APPEND PROPERTY FIXTURES_REQUIRED semb_u1_pair)
+		endif()
+	endforeach()
+endfunction()
+semb_apply_ctest_ordering()
+cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_apply_ctest_ordering)
