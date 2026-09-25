@@ -30,6 +30,7 @@ HANDLE_ROWS = {
     "semb_encoder_open", "semb_encoder_close", "semb_encoder_dims", "semb_encode", "semb_encode_batch",
     "semb_query_open", "semb_query_encode", "semb_query_close", "semb_fingerprint_of", "semb_bake_to_path",
     "semb_wb_digest", "semb_wq_digest", "semb_interim_encoder_open_from_memory", "semb_interim_encode_batch_ps_n",
+    "semb_interim_release_workspaces",
 }
 
 

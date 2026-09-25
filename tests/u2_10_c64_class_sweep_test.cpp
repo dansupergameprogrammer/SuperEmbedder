@@ -53,6 +53,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cerrno>
@@ -100,6 +101,11 @@ std::atomic<uint64_t> count{0};
 std::atomic<uint64_t> fail_at{0};  // absolute allocation index to fail; 0 = disarmed
 std::atomic<int> mode{0};          // 0 bad_alloc, 1 length_error, 2 foreign
 std::atomic<int> fired{0};
+// Counts successful allocations of exactly `watch_size` bytes: a slot growth
+// allocates P * C bytes, so this counts the growths to one C (the batch
+// drivers' warm-up, below).
+std::atomic<size_t> watch_size{0};
+std::atomic<uint64_t> watch_hits{0};
 struct Foreign {  // not derived from std::exception
   int code;
 };
@@ -120,6 +126,7 @@ void* Allocate(size_t n, size_t align) {
   const size_t a = align < sizeof(void*) ? sizeof(void*) : align;
   if (posix_memalign(&p, a, n ? n : 1) != 0) throw std::bad_alloc();
   live.fetch_add(1, std::memory_order_relaxed);
+  if (n != 0 && n == watch_size.load(std::memory_order_relaxed)) watch_hits.fetch_add(1);
   return p;
 }
 void Release(void* p) {
@@ -213,6 +220,7 @@ Expected ExpectedFor(const std::string& row) {
       {"semb_interim_encoder_open", 1}, {"semb_interim_encoder_open_from_memory", 1},
       {"semb_interim_encoder_geometry", 1}, {"semb_interim_encode_seam", 1}, {"semb_interim_ps_n_select", 1},
       {"semb_interim_encode_ps_n", 1}, {"semb_interim_encode_batch_ps_n", 1},
+      {"semb_interim_release_workspaces", 1},  // U2-9 item 2's release verb, U2-10 Builds item 6
       {"semb_encode_document_for_witness", 2},
       {"semb_wa_pool_run", 3}, {"semb_ps_n_dequantize", 3},
   };
@@ -248,7 +256,7 @@ const char* const kAllRows[] = {
     "semb_interim_encoder_open", "semb_interim_encoder_open_from_memory", "semb_interim_encoder_geometry",
     "semb_interim_encode_seam", "semb_interim_ps_n_select", "semb_interim_encode_ps_n",
     "semb_interim_encode_batch_ps_n", "semb_encode_document_for_witness", "semb_wa_pool_run",
-    "semb_ps_n_dequantize", "semb_wa_digest",
+    "semb_ps_n_dequantize", "semb_wa_digest", "semb_interim_release_workspaces",
 };
 
 
@@ -401,13 +409,21 @@ const std::vector<float>& RefVec(const std::string& t) {
 }
 const std::string kShort = "a short document";
 
-bool EncFollow(Ctx& c) {
+bool EncFollowText(Ctx& c, const std::string& t) {
   semb_encoder e = c.enc ? c.enc : c.out_enc;
   if (!e) return false;
   semb_status s = SEMB_OK;
-  const auto v = EncodeVec(e, kShort, &s);
-  return s == SEMB_OK && v == RefVec(kShort);
+  const auto v = EncodeVec(e, t, &s);
+  return s == SEMB_OK && v == RefVec(t);
 }
+bool EncFollow(Ctx& c) { return EncFollowText(c, kShort); }
+// The long drivers' follow-up is the driver's own long document (U2-9 item 5
+// releases its buffer after it), so every armed call on the handle grows from
+// capacity 0, as C64's long driver states. A short follow-up would leave record
+// 0 holding P * 64, and the next armed call's release-before-grow (item 3)
+// would read -1 on the live count by design. A long follow-up also takes the
+// gate, so a gate the failed call did not give back stalls it, which the
+// per-k watchdog reads red.
 struct SeamRef {
   SembInterimStatus st = kSembInterimOk;
   std::vector<int8_t> codes;
@@ -451,6 +467,19 @@ bool InterimFollow(Ctx& c) {
   SembInterimEncoder* e = c.ienc ? c.ienc : c.out_ienc;
   return e && Seam(e, Ids(6), 0, kSembForwardLegChunkBatched) == RefSeam();
 }
+// The interim long drivers' follow-up: the 4,097-position document on the
+// same handle, equal to a fresh handle's (see EncFollowText).
+bool InterimFollowLong(Ctx& c) {
+  static SeamRef ref;
+  static bool done = false;
+  if (!done) {
+    SembInterimEncoder* f = OpenInterim();
+    if (f) { ref = Seam(f, Ids(4097), 0, kSembForwardLegChunkBatched); semb_interim_encoder_close(f); }
+    done = true;
+  }
+  SembInterimEncoder* e = c.ienc ? c.ienc : c.out_ienc;
+  return e && ref.st == kSembInterimOk && Seam(e, Ids(4097), 0, kSembForwardLegChunkBatched) == ref;
+}
 bool BankFollow(Ctx& c) {
   semb_bank b = c.bank ? c.bank : c.out_bank;
   if (!b) return false;
@@ -458,29 +487,31 @@ bool BankFollow(Ctx& c) {
   int64_t count = 0, dims = 0;
   return semb_bank_debug_state(b, fp, &count, &dims) == SEMB_OK && count == 1 && dims > 0;
 }
-bool QueryFollow(Ctx& c) {
+bool QueryFollowText(Ctx& c, const std::string& text) {
   semb_query q = c.query ? c.query : c.out_query;
   if (!q) return false;
   uint32_t dims = 0;
   semb_encoder_dims(c.enc, &dims);
-  static std::vector<float> ref;
-  static bool have = false;
-  if (!have) {
+  static std::map<std::string, std::vector<float>> refs;
+  auto it = refs.find(text);
+  if (it == refs.end()) {
+    std::vector<float> ref;
     semb_encoder e = OpenEnc(1);
     semb_bank b = OpenBank();
     semb_query rq = nullptr;
     if (e && b && semb_query_open(e, b, &rq) == SEMB_OK) {
-      ref = QueryVec(rq, kShort, dims);
+      ref = QueryVec(rq, text, dims);
       semb_query_close(rq);
     }
     if (b) semb_bank_close(b);
     if (e) semb_encoder_close(e);
-    have = true;
+    it = refs.emplace(text, ref).first;
   }
   semb_status s = SEMB_OK;
-  const auto v = QueryVec(q, kShort, dims, &s);
-  return s == SEMB_OK && !ref.empty() && v == ref;
+  const auto v = QueryVec(q, text, dims, &s);
+  return s == SEMB_OK && !it->second.empty() && v == it->second;
 }
+bool QueryFollow(Ctx& c) { return QueryFollowText(c, kShort); }
 
 int32_t BatchCall(semb_encoder e, const std::vector<std::string>& texts) {
   Docs d(texts);
@@ -522,6 +553,53 @@ bool WitnessFollow(size_t positions, size_t budget) { return WitnessCall(positio
 void WarmEnc(Ctx& c, uint32_t mc) {
   c.enc = OpenEnc(mc);
   if (c.enc) EncodeVec(c.enc, Text(6));
+}
+
+// P, the slot's bytes per position, read from the fixture through the interim
+// geometry (the public handle has no geometry reader). Cached per process; the
+// first read happens in the warm-up cycle, before the live-count baseline.
+uint64_t PBytes() {
+  static uint64_t p = 0;
+  if (p == 0) {
+    SembInterimEncoder* e = OpenInterim();
+    if (e) {
+      SembInterimGeometry gm{};
+      gm.struct_size = sizeof(gm);
+      if (semb_interim_encoder_geometry(e, &gm) == kSembInterimOk) {
+        p = uint64_t{gm.num_hidden_layers} * gm.num_key_value_heads * gm.head_dim * 2;
+      }
+      semb_interim_encoder_close(e);
+    }
+  }
+  return p;
+}
+
+// The batch drivers at T = 2 (TE-416 F2 (ii)): "a record either already holds
+// P * C and does not grow, or grows from 0". A cold record that grows in an
+// armed run keeps its buffer (U2-9 item 3), which is +1 on the live count by
+// design, and which record a batch worker takes is not deterministic. So every
+// record is warmed before the swept call, to C = 1,024 (a 1,000-position
+// document; 1,000 is not a power of two, so no other allocation of the call
+// has P * 1,024 bytes), above every swept batch document's C = 64: no armed
+// batch then grows a record, and (c)'s per-call equality holds exactly. The
+// warm-up counts the growths it causes and repeats until `records` records
+// have grown; a warm-up that cannot reach them fails the setup, which the
+// driver then reports red (a null handle), never green.
+constexpr size_t kWarmPositions = 1000;
+constexpr uint64_t kWarmC = 1024;
+bool WarmAllRecords(const std::function<void()>& batch_of_two, uint64_t records) {
+  hook::watch_hits.store(0);
+  hook::watch_size.store(static_cast<size_t>(PBytes() * kWarmC));
+  for (int i = 0; i < 50 && hook::watch_hits.load() < records; ++i) batch_of_two();
+  const uint64_t hits = hook::watch_hits.load();
+  hook::watch_size.store(0);
+  if (hits != records) {
+    std::printf("SETUP-FAIL warm-up grew %llu of %llu records to C=%llu\n", static_cast<unsigned long long>(hits),
+                static_cast<unsigned long long>(records), static_cast<unsigned long long>(kWarmC));
+    std::fflush(stdout);
+    return false;
+  }
+  return true;
 }
 
 bool BuildDriver(const std::string& row, const std::string& drv, uint32_t mc, Driver* d) {
@@ -605,6 +683,8 @@ bool BuildDriver(const std::string& row, const std::string& drv, uint32_t mc, Dr
     } else if (drv == "long") {
       d->setup = [](Ctx& c) { c.enc = OpenEnc(1); };
       d->call = [L](Ctx& c) { semb_status s; EncodeVec(c.enc, L, &s); return static_cast<int32_t>(s); };
+      d->follow = [L](Ctx& c) { return EncFollowText(c, L); };
+      return true;
     } else {
       return false;
     }
@@ -616,12 +696,22 @@ bool BuildDriver(const std::string& row, const std::string& drv, uint32_t mc, Dr
     auto run = [bake, row](semb_encoder e, const std::vector<std::string>& t) {
       return bake ? BakeCall(e, t, "x") : BatchCall(e, t);
     };
+    // At T = 2 every record is warmed first (WarmAllRecords, above).
+    auto open_warm = [](Ctx& c, uint32_t m) {
+      c.enc = OpenEnc(m);
+      if (c.enc && m >= 2 &&
+          !WarmAllRecords([&c] { BatchCall(c.enc, {Text(kWarmPositions), Text(kWarmPositions)}); }, m)) {
+        semb_encoder_close(c.enc);
+        c.enc = nullptr;
+      }
+    };
+    d->follow = EncFollow;
     if (drv == "short") {
-      d->setup = [mc](Ctx& c) { c.enc = OpenEnc(mc); };
+      d->setup = [mc, open_warm](Ctx& c) { open_warm(c, mc); };
       d->call = [run](Ctx& c) { return run(c.enc, {kShort, "another short one"}); };
     } else if (drv == "batch_mc2") {
       // Documents of one C, at max_concurrency 2 (TE-416 F2 (ii)).
-      d->setup = [](Ctx& c) { c.enc = OpenEnc(2); };
+      d->setup = [open_warm](Ctx& c) { open_warm(c, 2); };
       d->call = [run](Ctx& c) { return run(c.enc, {Text(40), Text(41), Text(42), Text(43)}); };
     } else if (drv == "growth") {
       d->setup = [](Ctx& c) { WarmEnc(c, 1); };
@@ -630,10 +720,10 @@ bool BuildDriver(const std::string& row, const std::string& drv, uint32_t mc, Dr
     } else if (drv == "long") {
       d->setup = [](Ctx& c) { c.enc = OpenEnc(1); };
       d->call = [run, L](Ctx& c) { return run(c.enc, {L}); };
+      d->follow = [L](Ctx& c) { return EncFollowText(c, L); };
     } else {
       return false;
     }
-    d->follow = EncFollow;
     return true;
   }
   if (row == "semb_bank_open" && drv == "short") {
@@ -702,7 +792,13 @@ bool BuildDriver(const std::string& row, const std::string& drv, uint32_t mc, Dr
       QueryVec(c.query, text, dims, &s);
       return static_cast<int32_t>(s);
     };
-    d->follow = QueryFollow;
+    // The long and truncated queries (C > 4,096) follow up with their own
+    // text, as the long drivers do (EncFollowText).
+    if (drv == "long" || drv == "truncated_query") {
+      d->follow = [text](Ctx& c) { return QueryFollowText(c, text); };
+    } else {
+      d->follow = QueryFollow;
+    }
     d->fresh_per_k = d->growth = growth;
     return true;
   }
@@ -846,7 +942,7 @@ bool BuildDriver(const std::string& row, const std::string& drv, uint32_t mc, Dr
     d->call = [positions, budget, leg](Ctx& c) {
       return static_cast<int32_t>(Seam(c.ienc, Ids(positions), budget, leg).st);
     };
-    d->follow = InterimFollow;
+    d->follow = drv == "long" ? InterimFollowLong : InterimFollow;
     d->fresh_per_k = d->growth = growth;
     return true;
   }
@@ -904,10 +1000,32 @@ bool BuildDriver(const std::string& row, const std::string& drv, uint32_t mc, Dr
       const char* name = nullptr;
       semb_interim_encoder_open_from_memory(bytes.data(), bytes.size(), kPairAppended, imc, &c.ienc, &name);
       if (growth && c.ienc) InterimBatchCall(c.ienc, {Ids(6)});
+      // At T = 2 every record is warmed first (WarmAllRecords, above).
+      if (!growth && imc >= 2 && c.ienc &&
+          !WarmAllRecords([&c] { InterimBatchCall(c.ienc, {Ids(kWarmPositions), Ids(kWarmPositions)}); }, imc)) {
+        semb_interim_encoder_close(c.ienc);
+        c.ienc = nullptr;
+      }
     };
     d->call = [docs](Ctx& c) { return InterimBatchCall(c.ienc, docs); };
-    d->follow = InterimFollow;
+    d->follow = drv == "long" ? InterimFollowLong : InterimFollow;
     d->fresh_per_k = d->growth = growth;
+    return true;
+  }
+
+  if (row == "semb_interim_release_workspaces" && drv == "short") {
+    // U2-9 item 2's end-of-open release verb (U2-10 Builds item 6). The
+    // handle holds a grown buffer when the release runs, so the call has one
+    // to release.
+    static std::vector<uint8_t> bytes;
+    if (bytes.empty()) bytes = ReadAll(g.model);
+    d->setup = [mc](Ctx& c) {
+      const char* name = nullptr;
+      semb_interim_encoder_open_from_memory(bytes.data(), bytes.size(), kPairAppended, mc, &c.ienc, &name);
+      if (c.ienc) Seam(c.ienc, Ids(6), 0, kSembForwardLegChunkBatched);
+    };
+    d->call = [](Ctx& c) { return static_cast<int32_t>(SW(semb_interim_release_workspaces(c.ienc))); };
+    d->follow = InterimFollow;
     return true;
   }
 
@@ -1002,6 +1120,11 @@ Counted WarmAndCount(Driver& d) {
   return r;
 }
 
+// Per-k watchdog (seconds): a call or follow-up that stalls (a gate or a slot
+// never given back makes the next waiter wait forever) ends the child with
+// SIGALRM, which the parent reports as TERMINATED at that k -- red, not a hang.
+unsigned g_watchdog_s = 0;
+
 void RunArm(Driver& d, int arm, uint64_t K, uint64_t k0, int64_t live_after_warm, int32_t want) {
   Ctx c;
   bool open = false;
@@ -1011,6 +1134,7 @@ void RunArm(Driver& d, int arm, uint64_t K, uint64_t k0, int64_t live_after_warm
       open = true;
     }
     Line("BEGIN " + std::to_string(arm) + " k=" + std::to_string(k));
+    if (g_watchdog_s) alarm(g_watchdog_s);
     const int64_t live_before = hook::live.load();
     hook::fired.store(0);
     hook::mode.store(arm);
@@ -1042,9 +1166,11 @@ void RunArm(Driver& d, int arm, uint64_t K, uint64_t k0, int64_t live_after_warm
       << " escaped=" << (escaped ? 1 : 0) << " leak=" << (d.growth ? 0 : leak) << " follow=" << (follow ? 1 : 0)
       << " close=" << (close_ok ? 1 : 0) << " leak_after_close=" << leak_after_close;
     Line(o.str());
+    alarm(0);
   }
   if (open) {
     const bool close_ok = Closes(c);
+    c = Ctx{};  // the driver's carried state (e.g. ps_n_select's codes, m, e) is the harness's, not a leak
     Line("CLOSES " + std::to_string(arm) + " ok=" + std::to_string(close_ok ? 1 : 0) +
          " leak_after_close=" + std::to_string(hook::live.load() - live_after_warm));
   }
@@ -1118,6 +1244,7 @@ int main(int argc, char** argv) {
           char b[128];
           std::snprintf(b, sizeof(b), "PERK %.6f", per_k);
           Line(b);
+          g_watchdog_s = static_cast<unsigned>(std::max(120.0, 30.0 * per_k));
         }
         if (!leaf && !g.count_only) RunArm(d, arm, cnt.k, k0, cnt.live_after_warm, want);
         Line("DONE");
