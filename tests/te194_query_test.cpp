@@ -40,6 +40,7 @@
 #include "semb_wb_witness_abi_contract.h"
 #include "superembedder/witness_abi.h"
 #include "json_mini.h"
+#include "support/semb_epoch_oracle.h"
 #include "superslm/sha256.h"
 
 namespace {
@@ -551,12 +552,16 @@ int main(int argc, char** argv) {
     // TE-264 (U1 Slice 7 steps 3-5): the final five-field form. The template
     // digests three length-prefixed literals -- the empty PS-N frame, the
     // plan sec 2.1 query prefix and the plan sec 3.2 end token
-    // `<|endoftext|>`; certification_epoch is the SHA-256 of
-    // docs/certified-builds.json's exact bytes, read from the repository; the
-    // fingerprint is the full 32-byte SHA-256 over the five length-prefixed
-    // fields, untagged. RED by design until steps 3, 4 and 5 all landed.
+    // `<|endoftext|>`; certification_epoch is the identity file's digest in
+    // the verdict's form (U2-3 items 1 and 9, te267 P:1003-1006 and
+    // P:1156-1158; tests/support/semb_epoch_oracle.h), over
+    // docs/certification-identity.json's exact bytes read from the
+    // repository, the form being the verdict bank B's own manifest reports
+    // for this encoder; the fingerprint is the full 32-byte SHA-256 over the
+    // five length-prefixed fields, untagged.
     constexpr char kEndToken[] = "<|endoftext|>";
-    const std::string cert_doc = ReadFile("docs/certified-builds.json");
+    const std::string cert_doc = ReadFile(semb_epoch_oracle::kIdentityPath);
+    const std::string cell_b = semb_epoch_oracle::CertifiedCellOf(ReadFile(stem_b + ".semb.json"));
     std::vector<uint8_t> template_stream;
     auto put_len = [&template_stream](uint64_t v) {
       for (size_t i = 0; i < 8; ++i) template_stream.push_back(static_cast<uint8_t>(v >> (8 * i)));
@@ -572,14 +577,14 @@ int main(int argc, char** argv) {
     uint8_t expected[32]{}, actual[32]{};
     bool composed = false;
     if (wq_s == SEMB_OK && wb_s == SEMB_OK && !model_bytes.empty() && !tokenizer_bytes.empty() &&
-        !cert_doc.empty()) {
+        !cert_doc.empty() && !cell_b.empty()) {
       uint8_t witness[32], epoch[32];
       std::vector<uint8_t> witness_stream;
       witness_stream.insert(witness_stream.end(), wa, wa + 32);
       witness_stream.insert(witness_stream.end(), wb, wb + 32);
       witness_stream.insert(witness_stream.end(), wq, wq + 32);
       hash_bytes(witness_stream.data(), witness_stream.size(), witness);
-      hash_bytes(reinterpret_cast<const uint8_t*>(cert_doc.data()), cert_doc.size(), epoch);
+      semb_epoch_oracle::EpochFor(cell_b, cert_doc, epoch);
       std::vector<uint8_t> stream;
       for (const uint8_t* field : {model_sha, tokenizer_sha, template_sha, witness, epoch}) {
         for (size_t i = 0; i < 8; ++i) stream.push_back(i == 0 ? 32 : 0);
@@ -594,12 +599,13 @@ int main(int argc, char** argv) {
       std::memcpy(actual, fp.digest, sizeof(actual));
       composed = raw_s == SEMB_OK && std::memcmp(expected, actual, sizeof(expected)) == 0;
       why = std::string("wq=") + Name(wq_s) + " wb=" + Name(wb_s) + " raw=" + Name(raw_s) +
-            " expected=" + Hex(expected, 32) + " actual=" + Hex(actual, 32);
+            " certified_cell=" + cell_b + " expected=" + Hex(expected, 32) + " actual=" + Hex(actual, 32);
     } else {
       why = "wq=" + std::string(Name(wq_s)) + " wb=" + Name(wb_s);
       if (model_bytes.empty() || tokenizer_bytes.empty()) why += " model/tokenizer artifact bytes unreadable";
       if (cert_doc.empty())
-        why += " docs/certified-builds.json is absent or empty in the repository (U1 Slice 7 step 4 writes it)";
+        why += " docs/certification-identity.json is absent or empty in the repository (U2-3 item 9 writes it)";
+      if (cell_b.empty()) why += " bank B's manifest carries no certified_cell (U2-3 items 1 and 9)";
     }
     Verdict(composed, "cell6 W-Q accessor digest folds into the emitted five-field fingerprint", why);
     if (query) semb_query_close(query);
