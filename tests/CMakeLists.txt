@@ -1550,3 +1550,90 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_misc_absence_check.py"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+
+# ---------------------------------------------------------------------------
+# U2-0 item 1 (te267 sec 5 U2-0): the tests that need the tokenizer converter
+# refuse an interpreter too old for it, by name; configure refuses nothing.
+# The converter at the engine pin needs `unicodedata` 15.1.0 (Python 3.13's).
+# When the configured interpreter's is older, configure prints one line naming
+# both versions and registers a gate test that fails with the same line, and
+# every test that runs a fixture regenerator (a script that imports or runs
+# the converter, directly or through another such script) requires the gate
+# as a ctest fixture, so a sweep reports the gate's named failure and those
+# tests as not run. A test that runs no regenerator does not require it.
+# ---------------------------------------------------------------------------
+set(SEMB_CONVERTER_UNICODE_VERSION "15.1.0")
+execute_process(
+	COMMAND "${Python3_EXECUTABLE}" -c "import unicodedata; print(unicodedata.unidata_version)"
+	OUTPUT_VARIABLE _semb_python_unicode_version
+	OUTPUT_STRIP_TRAILING_WHITESPACE
+	ERROR_QUIET
+	RESULT_VARIABLE _semb_python_unicode_result)
+if(_semb_python_unicode_result OR _semb_python_unicode_version STREQUAL "")
+	set(_semb_python_unicode_version "unknown")
+endif()
+set_property(GLOBAL PROPERTY SEMB_PYTHON_GATE_FIXTURE "")
+if(_semb_python_unicode_version STREQUAL "unknown" OR
+   _semb_python_unicode_version VERSION_LESS SEMB_CONVERTER_UNICODE_VERSION)
+	set(_semb_python_gate_line
+		"SEMB_PYTHON_TOO_OLD: ${Python3_EXECUTABLE} has unicodedata ${_semb_python_unicode_version}; the tokenizer converter needs ${SEMB_CONVERTER_UNICODE_VERSION} (Python 3.13 or newer), so the tests that regenerate fixtures do not run")
+	message(STATUS "${_semb_python_gate_line}")
+	add_test(
+		NAME u2_0_python_unicode_gate
+		COMMAND "${Python3_EXECUTABLE}" -c "import sys; print(sys.argv[1]); sys.exit(1)"
+			"${_semb_python_gate_line}")
+	set_tests_properties(u2_0_python_unicode_gate PROPERTIES FIXTURES_SETUP semb_python_unicode)
+	set_property(GLOBAL PROPERTY SEMB_PYTHON_GATE_FIXTURE semb_python_unicode)
+endif()
+
+# Every registered test that runs a fixture regenerator. Tests registered only
+# under a configuration (the real-artifact legs) are skipped when absent.
+set_property(GLOBAL PROPERTY SEMB_PYTHON_GATE_TESTS
+	c12b_epoch_store_cross_check
+	c23_token_id_determinism_check
+	epoch_store_check
+	epoch_store_constructions_check
+	superfaiss_roundtrip_real_artifact
+	superfaiss_roundtrip_synthetic
+	te163_bank_pair_check
+	te194_c17_sixth_leg_construction
+	te194_query_check
+	te194_query_workspace_check
+	te196_manifest_binding_check
+	te222_query_ownership_check
+	te230_c4_zero_gain_check
+	te230_semb_cli_check
+	te237_bank_cross_handle_check
+	te264_fingerprint_epoch_check
+	te264_fingerprint_epoch_edit_check
+	te264_fingerprint_template_check
+	te264_fingerprint_untagged_check
+	u1_batch_contract_check
+	u1_raw_text_cells_check
+	u1_trailing_special_mutants_check
+	u1_workspace_control_vitality_check
+	u1_workspace_source_properties_check
+	u2_10_c64_class_sweep_check
+	u2_10_c66b_rlimit_sweep_check
+	u2_1_c56_so_check
+	u2_5_c19_check
+	u2_7_c52d_c55_check
+	u2_9_workspace_cells_check)
+
+# Applied in the directory that registered each test: here for this file's
+# own tests, and by a call deferred to the root for the tests this file's
+# deferred calls register there (it is scheduled after them, so it runs last).
+function(semb_require_python_gate)
+	get_property(_fixture GLOBAL PROPERTY SEMB_PYTHON_GATE_FIXTURE)
+	if(_fixture STREQUAL "")
+		return()
+	endif()
+	get_property(_tests GLOBAL PROPERTY SEMB_PYTHON_GATE_TESTS)
+	foreach(_test IN LISTS _tests)
+		if(TEST ${_test})
+			set_property(TEST ${_test} APPEND PROPERTY FIXTURES_REQUIRED ${_fixture})
+		endif()
+	endforeach()
+endfunction()
+semb_require_python_gate()
+cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_require_python_gate)
