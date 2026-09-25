@@ -9,6 +9,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 TRIPLE = (".wvbank.json", ".wvbank.bin", ".semb.json")
+# The cap-512 pair mint alone takes ~390-410 s on an idle 4-core box, so the
+# 480 s this mint shared with every other call in this driver timed out
+# under `ctest -j`, where it competes for the same cores. 1,800 s leaves ~4x
+# headroom; the ctest TIMEOUT on this test (tests/CMakeLists.txt) is set
+# above this plus the rest of the run.
+MINT_TIMEOUT_S = 1800
 
 
 def call(args: list[str], timeout: int = 480) -> subprocess.CompletedProcess[str]:
@@ -30,7 +36,8 @@ def main(argv: list[str]) -> int:
     model, tokenizer = pair / "u1_pair_model.sslm", pair / "u1_pair_tokenizer.sslm"
     if not model.exists() or not tokenizer.exists():
         fixture = ROOT / "tests" / "fixtures" / "wq" / "regenerate_c4_zero_final_norm_fixture.py"
-        minted = call([sys.executable, str(fixture), "--lock", "superslm.lock", "--out-dir", str(pair)])
+        minted = call([sys.executable, str(fixture), "--lock", "superslm.lock", "--out-dir", str(pair)],
+                      timeout=MINT_TIMEOUT_S)
         if minted.returncode:
             print(f"[FAIL] C4 fixture: {(minted.stdout + minted.stderr)[-3000:]}")
             return 1

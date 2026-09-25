@@ -1331,6 +1331,13 @@ add_test(
 		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+# Both drivers (and te194_c17_sixth_leg_construction above) may mint a cap-512
+# pair first, under their own 1,800 s bound (MINT_TIMEOUT_S in each driver: the
+# mint alone takes ~390-410 s idle and much longer under `ctest -j`). The ctest
+# TIMEOUT covers that bound plus the rest of the run; ctest's 1,500 s default
+# would kill the test before the driver's own bound could report.
+set_tests_properties(te230_semb_cli_check te230_c4_zero_gain_check te194_c17_sixth_leg_construction
+	PROPERTIES TIMEOUT 3600)
 # C5 is purely real (no mechanism leg), so it is registered only when the
 # pair is configured, the same form as te163_c34_manifest_honesty_check: an
 # unconfigured tree does not register it, so ctest cannot report it Passed

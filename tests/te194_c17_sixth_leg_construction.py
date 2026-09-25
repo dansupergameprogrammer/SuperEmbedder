@@ -11,6 +11,11 @@ import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# The cap-512 pair mint alone takes ~390-410 s on an idle 4-core box, so a
+# 480 s bound on it timed out under `ctest -j`, where it competes for the
+# same cores. 1,800 s leaves ~4x headroom; the ctest TIMEOUT on this test
+# (tests/CMakeLists.txt) is set above this plus the rest of the run.
+MINT_TIMEOUT_S = 1800
 
 MUTANTS = {
     "JOIN": ("composed.append(kQueryPrefix);\n  composed.append(text);", "composed.append(kQueryPrefix);\n  composed.append(\"\\n[mutant-boundary]\\n\");\n  composed.append(text);"),
@@ -92,7 +97,8 @@ def main(argv: list[str]) -> int:
     if not model.exists() or not tokenizer.exists():
         fixture = REPO_ROOT / "tests/fixtures/wq/regenerate_c17_highcap_pair_fixture.py"
         generated = subprocess.run([sys.executable, str(fixture), "--lock", "superslm.lock",
-                                    "--out-dir", str(pair)], capture_output=True, text=True, timeout=480)
+                                    "--out-dir", str(pair)], capture_output=True, text=True,
+                                   timeout=MINT_TIMEOUT_S)
         if generated.returncode or not model.exists() or not tokenizer.exists():
             print("[FAIL] C17-sixth-leg: high-cap synthetic fixture generation failed:\n" +
                   (generated.stdout + generated.stderr)[-3000:])

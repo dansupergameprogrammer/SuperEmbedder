@@ -101,6 +101,11 @@ import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# The cap-512 pair mint alone takes ~390-410 s on an idle 4-core box, so a
+# 480 s bound on it timed out under `ctest -j`, where it competes for the
+# same cores. 1,800 s leaves ~4x headroom; the ctest TIMEOUT on this test
+# (tests/CMakeLists.txt) is set above this plus the rest of the run.
+MINT_TIMEOUT_S = 1800
 STATUSES = {
     "fingerprint": "SEMB_FINGERPRINT_MISMATCH",
     "schema": "SEMB_MANIFEST_SCHEMA_UNSUPPORTED",
@@ -329,7 +334,8 @@ def main(argv: list[str]) -> int:
         model_path, tokenizer_path = pair / "u1_pair_model.sslm", pair / "u1_pair_tokenizer.sslm"
         if not model_path.exists() or not tokenizer_path.exists():
             fixture = ROOT / "tests" / "fixtures" / "wq" / "regenerate_c17_highcap_pair_fixture.py"
-            generated = call([sys.executable, str(fixture), "--lock", "superslm.lock", "--out-dir", str(pair)], timeout=480)
+            generated = call([sys.executable, str(fixture), "--lock", "superslm.lock", "--out-dir", str(pair)],
+                             timeout=MINT_TIMEOUT_S)
             if generated.returncode:
                 raise RuntimeError((generated.stdout + generated.stderr)[-3000:])
         model, tokenizer = str(pair / "u1_pair_model.sslm"), str(pair / "u1_pair_tokenizer.sslm")
