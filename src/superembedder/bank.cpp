@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "json_lite.h"
+#include "c_boundary.h"
 #include "superslm/sha256.h"
 
 #include "superembedder/bank_internal_abi.h"
@@ -340,7 +341,7 @@ bool HexToBytes(const std::string& hex, std::vector<uint8_t>* out) {
 
 }  // namespace
 
-extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_bank* out) {
+static semb_status BankOpenBody(const char* path, size_t path_len, semb_bank* out) {
   if (out) *out = nullptr;
   if ((!path && path_len > 0) || !out) return SEMB_NULL_ARGUMENT;
   if (!path || path_len == 0) return SEMB_ARTIFACT_UNREADABLE;
@@ -364,6 +365,10 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
       // before payload or manifest reads.
       try {
         semb::json::Validate(header_text);
+      } catch (const std::bad_alloc&) {
+        throw;  // U2-10 Builds item 2b: an allocation failure reaches the boundary
+      } catch (const std::length_error&) {
+        throw;
       } catch (const std::exception&) {
         return SEMB_ARTIFACT_UNREADABLE;
       }
@@ -379,6 +384,10 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
     try {
       header = js::Parse(header_text);
       manifest = js::Parse(manifest_text);
+    } catch (const std::bad_alloc&) {
+      throw;  // U2-10 Builds item 2b: an allocation failure reaches the boundary
+    } catch (const std::length_error&) {
+      throw;
     } catch (const std::exception&) {
       return SEMB_ARTIFACT_UNREADABLE;
     }
@@ -740,7 +749,13 @@ extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_ba
   }
 }
 
-extern "C" semb_status semb_bank_close(semb_bank bank) {
+extern "C" semb_status semb_bank_open(const char* path, size_t path_len, semb_bank* out) {
+  return semb::c_boundary::Status<SEMB_ARTIFACT_UNREADABLE>([&] {
+    return BankOpenBody(path, path_len, out);
+  });
+}
+
+static semb_status BankCloseBody(semb_bank bank) {
   if (!bank) return SEMB_NULL_ARGUMENT;
   std::unique_ptr<semb_bank_opaque> closing;
   {
@@ -755,7 +770,13 @@ extern "C" semb_status semb_bank_close(semb_bank bank) {
   return SEMB_OK;
 }
 
-extern "C" semb_status semb_bank_acquire_query(semb_bank bank, const uint8_t fingerprint[32]) {
+extern "C" semb_status semb_bank_close(semb_bank bank) {
+  return semb::c_boundary::Status([&] {
+    return BankCloseBody(bank);
+  });
+}
+
+static semb_status BankAcquireQueryBody(semb_bank bank, const uint8_t fingerprint[32]) {
   if (!bank || !fingerprint) return SEMB_NULL_ARGUMENT;
   std::lock_guard<std::mutex> lock(RegistryMutex());
   const auto found = Registry().find(bank);
@@ -767,7 +788,13 @@ extern "C" semb_status semb_bank_acquire_query(semb_bank bank, const uint8_t fin
   return SEMB_OK;
 }
 
-extern "C" semb_status semb_bank_release_query(semb_bank bank) {
+extern "C" semb_status semb_bank_acquire_query(semb_bank bank, const uint8_t fingerprint[32]) {
+  return semb::c_boundary::Status([&] {
+    return BankAcquireQueryBody(bank, fingerprint);
+  });
+}
+
+static semb_status BankReleaseQueryBody(semb_bank bank) {
   if (!bank) return SEMB_NULL_ARGUMENT;
   std::lock_guard<std::mutex> lock(RegistryMutex());
   const auto found = Registry().find(bank);
@@ -777,11 +804,17 @@ extern "C" semb_status semb_bank_release_query(semb_bank bank) {
   return SEMB_OK;
 }
 
+extern "C" semb_status semb_bank_release_query(semb_bank bank) {
+  return semb::c_boundary::Status([&] {
+    return BankReleaseQueryBody(bank);
+  });
+}
+
 // TE-191 F4 (bank_internal_abi.h): reads exactly what `bank` retained at
 // open -- nothing here re-reads the manifest, header, or payload from
 // disk.
-extern "C" semb_status semb_bank_debug_state(semb_bank bank, uint8_t out_fingerprint[32],
-                                              int64_t* out_count, int64_t* out_dims) {
+static semb_status BankDebugStateBody(semb_bank bank, uint8_t out_fingerprint[32],
+                                      int64_t* out_count, int64_t* out_dims) {
   if (!bank || !out_fingerprint || !out_count || !out_dims) return SEMB_NULL_ARGUMENT;
   std::lock_guard<std::mutex> lock(RegistryMutex());
   const auto found = Registry().find(bank);
@@ -793,7 +826,14 @@ extern "C" semb_status semb_bank_debug_state(semb_bank bank, uint8_t out_fingerp
   return SEMB_OK;
 }
 
-extern "C" semb_status semb_bank_ranked_state(semb_bank bank, semb_bank_ranked_view* out) {
+extern "C" semb_status semb_bank_debug_state(semb_bank bank, uint8_t out_fingerprint[32],
+                                              int64_t* out_count, int64_t* out_dims) {
+  return semb::c_boundary::Status([&] {
+    return BankDebugStateBody(bank, out_fingerprint, out_count, out_dims);
+  });
+}
+
+static semb_status BankRankedStateBody(semb_bank bank, semb_bank_ranked_view* out) {
   if (!bank || !out) return SEMB_NULL_ARGUMENT;
   std::lock_guard<std::mutex> lock(RegistryMutex());
   const auto found = Registry().find(bank);
@@ -805,4 +845,10 @@ extern "C" semb_status semb_bank_ranked_state(semb_bank bank, semb_bank_ranked_v
   out->count = state.count;
   out->dims = state.dims;
   return SEMB_OK;
+}
+
+extern "C" semb_status semb_bank_ranked_state(semb_bank bank, semb_bank_ranked_view* out) {
+  return semb::c_boundary::Status([&] {
+    return BankRankedStateBody(bank, out);
+  });
 }

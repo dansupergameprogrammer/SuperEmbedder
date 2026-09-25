@@ -2,6 +2,7 @@
 
 #include "query_internal.h"
 #include "semb_wq_population.h"
+#include "c_boundary.h"
 
 #include <array>
 #include <atomic>
@@ -163,7 +164,7 @@ bool semb_compute_wq_digest(semb_encoder_s* encoder, std::array<uint8_t, 32>* ou
   return true;
 }
 
-extern "C" semb_status semb_query_open(semb_encoder enc, semb_bank bank, semb_query* out) {
+static semb_status QueryOpenBody(semb_encoder enc, semb_bank bank, semb_query* out) {
   if (out) *out = nullptr;
   if (!enc || !bank || !out) return SEMB_NULL_ARGUMENT;
   uint8_t fingerprint[32];
@@ -176,6 +177,19 @@ extern "C" semb_status semb_query_open(semb_encoder enc, semb_bank bank, semb_qu
     (void)semb::EncoderReleaseQuery(enc);
     return bank_status;
   }
+  // U2-10 Builds item 2b: both counts are raised, so this guard owns them
+  // and releases the bank's and the encoder's on every exit, an exception
+  // included, until the query is in the registry.
+  struct CountsGuard {
+    semb_encoder enc;
+    semb_bank bank;
+    bool armed = true;
+    ~CountsGuard() {
+      if (!armed) return;
+      (void)semb_bank_release_query(bank);
+      (void)semb::EncoderReleaseQuery(enc);
+    }
+  } counts_guard{enc, bank};
   try {
     auto query = std::make_unique<semb_query_opaque>();
     query->encoder = enc;
@@ -183,25 +197,26 @@ extern "C" semb_status semb_query_open(semb_encoder enc, semb_bank bank, semb_qu
     semb_query cookie = nullptr;
     {
       std::lock_guard<std::mutex> lock(RegistryMutex());
-      if (!AllocateCookie(&cookie)) {
-        (void)semb_bank_release_query(bank);
-        (void)semb::EncoderReleaseQuery(enc);
-        return SEMB_ALLOCATION_FAILED;
-      }
+      if (!AllocateCookie(&cookie)) return SEMB_ALLOCATION_FAILED;
       Registry().emplace(cookie, std::move(query));
+      counts_guard.armed = false;
     }
     *out = cookie;
     return SEMB_OK;
   } catch (const std::bad_alloc&) {
-    (void)semb_bank_release_query(bank);
-    (void)semb::EncoderReleaseQuery(enc);
     return SEMB_ALLOCATION_FAILED;
   }
 }
 
-extern "C" semb_status semb_query_encode(semb_query q, const char* utf8, size_t utf8_len,
-                                            float* out_vector, size_t out_capacity_bytes,
-                                            size_t* out_required_bytes) {
+extern "C" semb_status semb_query_open(semb_encoder enc, semb_bank bank, semb_query* out) {
+  return semb::c_boundary::Status([&] {
+    return QueryOpenBody(enc, bank, out);
+  });
+}
+
+static semb_status QueryEncodeBody(semb_query q, const char* utf8, size_t utf8_len,
+                                   float* out_vector, size_t out_capacity_bytes,
+                                   size_t* out_required_bytes) {
   if (!q || !out_required_bytes) return SEMB_NULL_ARGUMENT;
   QueryLease lease(q);
   if (!lease.get()) return lease.found() ? SEMB_HANDLE_IN_USE : SEMB_INVALID_HANDLE;
@@ -234,7 +249,15 @@ extern "C" semb_status semb_query_encode(semb_query q, const char* utf8, size_t 
   }
 }
 
-extern "C" semb_status semb_query_close(semb_query q) {
+extern "C" semb_status semb_query_encode(semb_query q, const char* utf8, size_t utf8_len,
+                                            float* out_vector, size_t out_capacity_bytes,
+                                            size_t* out_required_bytes) {
+  return semb::c_boundary::Status([&] {
+    return QueryEncodeBody(q, utf8, utf8_len, out_vector, out_capacity_bytes, out_required_bytes);
+  });
+}
+
+static semb_status QueryCloseBody(semb_query q) {
   if (!q) return SEMB_NULL_ARGUMENT;
   std::unique_ptr<semb_query_opaque> closing;
   {
@@ -245,15 +268,35 @@ extern "C" semb_status semb_query_close(semb_query q) {
     closing = std::move(found->second);
     Registry().erase(found);
   }
-  const semb_status released = semb_bank_release_query(closing->bank);
+  // U2-10 Builds item 2b: both releases run on every exit; the encoder's
+  // runs whether the bank's returned or threw.
+  semb_status released = SEMB_ENGINE_REFUSED;
+  try {
+    released = semb_bank_release_query(closing->bank);
+  } catch (...) {
+    (void)semb::EncoderReleaseQuery(closing->encoder);
+    throw;
+  }
   const semb_status encoder_released = semb::EncoderReleaseQuery(closing->encoder);
   return released != SEMB_OK ? released : encoder_released;
 }
 
-extern "C" semb_status semb_fingerprint_of(semb_encoder enc, semb_fingerprint* out) {
+extern "C" semb_status semb_query_close(semb_query q) {
+  return semb::c_boundary::Status([&] {
+    return QueryCloseBody(q);
+  });
+}
+
+static semb_status FingerprintOfBody(semb_encoder enc, semb_fingerprint* out) {
   if (!enc || !out) return SEMB_NULL_ARGUMENT;
   if (out->struct_size != sizeof(semb_fingerprint)) return SEMB_STRUCT_SIZE_MISMATCH;
   // The encoder fingerprint: the value semb_encode returns, every manifest
   // this encoder bakes records, and semb_query_open compares (plan sec 3.3).
   return semb::EncoderFingerprint(enc, out->digest);
+}
+
+extern "C" semb_status semb_fingerprint_of(semb_encoder enc, semb_fingerprint* out) {
+  return semb::c_boundary::Status([&] {
+    return FingerprintOfBody(enc, out);
+  });
 }
