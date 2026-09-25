@@ -1287,3 +1287,35 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te264_c42_checker_check.py"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+
+# U2-2 (plan te267-u2-release-plan.md, U2-2): the SuperFAISS round trip,
+# RT-1..RT-4. The harness builds its own SuperFAISS program from the tree
+# superfaiss.lock pins (a test-only pin, never linked into the product) and
+# drives `semb bake` / `semb query --stdin` through it. The synthetic variant
+# grades RT-1 and RT-2 on every run; the real-artifact form grades all four and
+# is registered only when the real pair is configured, like C5.
+# SEMB_SUPERFAISS_SOURCE names a local SuperFAISS clone (or a remote); empty
+# falls back to the environment variable of the same name, then the public
+# remote.
+set(SEMB_SUPERFAISS_SOURCE "" CACHE STRING "SuperFAISS clone or remote for the U2-2 round-trip harness")
+add_test(
+	NAME superfaiss_roundtrip_synthetic
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/superfaiss_roundtrip/roundtrip.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+		--cxx-compiler "${CMAKE_CXX_COMPILER}" --artifact synthetic
+		--superfaiss-source "${SEMB_SUPERFAISS_SOURCE}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+set_tests_properties(superfaiss_roundtrip_synthetic PROPERTIES TIMEOUT 3600)
+if(SEMB_C12B_MODEL AND SEMB_U1_TOKENIZER)
+	add_test(
+		NAME superfaiss_roundtrip_real_artifact
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/superfaiss_roundtrip/roundtrip.py"
+			--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+			--cxx-compiler "${CMAKE_CXX_COMPILER}" --artifact real
+			--model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
+			--superfaiss-source "${SEMB_SUPERFAISS_SOURCE}"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+	set_tests_properties(superfaiss_roundtrip_real_artifact PROPERTIES LABELS "real_artifact" TIMEOUT 7200)
+endif()
