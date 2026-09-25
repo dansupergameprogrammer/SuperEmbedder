@@ -319,6 +319,19 @@ install(FILES
 add_executable(semb src/main.cpp)
 target_link_libraries(semb PRIVATE superembedder)
 target_include_directories(semb PRIVATE "${CMAKE_BINARY_DIR}/generated" "${CMAKE_SOURCE_DIR}/src/superembedder")
+# U2-1: `semb --version`'s build line, from what CMake itself recorded.
+if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT)
+	set(_semb_frontend "${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}")
+else()
+	set(_semb_frontend "${CMAKE_CXX_COMPILER_ID}")
+endif()
+target_compile_definitions(semb PRIVATE
+	"SEMB_BUILD_OS=\"${CMAKE_SYSTEM_NAME}\""
+	"SEMB_BUILD_ARCH=\"${CMAKE_SYSTEM_PROCESSOR}\""
+	"SEMB_BUILD_COMPILER_ID=\"${CMAKE_CXX_COMPILER_ID}\""
+	"SEMB_BUILD_COMPILER_VERSION=\"${CMAKE_CXX_COMPILER_VERSION}\""
+	"SEMB_BUILD_COMPILER_FRONTEND=\"${_semb_frontend}\""
+	"SEMB_BUILD_CONFIGURATION=\"$<CONFIG>\"")
 # U2-1: the CLI is installed beside the shared library and the header.
 install(TARGETS semb RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 

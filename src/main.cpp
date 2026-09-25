@@ -909,6 +909,20 @@ int main(int argc, char** argv) {
     return 0;
   }
   const std::string command = argv[1];
+  if (command == "--version" && argc == 2) {
+    // U2-1: the version, the engine pin, and the build descriptor's fields the
+    // build system records today. The rest of the descriptor U2-3 defines
+    // (the dispatched CPU tier, the cell verdict, the flag digests, the
+    // standard library, the linked engine's own report) is not printed until
+    // U2-3 builds it, so this line claims no certification.
+    std::cout << "semb " << superembedder::Version() << " (engine pin " << SEMB_ENGINE_PIN_TAG
+              << " @ " << SEMB_ENGINE_PIN_COMMIT << ", engine_path_sha=" << SEMB_ENGINE_PATH_SHA << ")\n"
+              << "build: os=" << SEMB_BUILD_OS << " arch=" << SEMB_BUILD_ARCH
+              << " compiler=" << SEMB_BUILD_COMPILER_ID << "/" << SEMB_BUILD_COMPILER_VERSION
+              << " frontend=" << SEMB_BUILD_COMPILER_FRONTEND << " configuration=" << SEMB_BUILD_CONFIGURATION
+              << " buildSystem=cmake\n";
+    return 0;
+  }
   std::vector<std::string> args;
   for (int i = 2; i < argc; ++i) args.emplace_back(argv[i]);
   if (command == "bake") return Bake(args);
