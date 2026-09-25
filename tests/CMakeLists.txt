@@ -1540,9 +1540,16 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_c42_clauses_check.py"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+# The export-surface cells read the build's own shared library beside their
+# scratch constructions (off Windows; the .def and dumpbin legs are MSVC's).
+set(_semb_export_surface_args --work "${CMAKE_BINARY_DIR}/_scratch/te331_export_surface")
+if(NOT WIN32)
+	list(APPEND _semb_export_surface_args --library "$<TARGET_FILE:superembedder_shared>")
+endif()
 add_test(
 	NAME te331_u2_export_surface_check
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_export_surface_check.py"
+		${_semb_export_surface_args}
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 add_test(
