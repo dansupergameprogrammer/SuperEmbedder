@@ -1187,6 +1187,22 @@ if(_semb_c63_args)
 	set_tests_properties(u2_10_c63_keeper PROPERTIES LABELS "real_artifact")
 endif()
 
+# U2 cloud build -- U2-0 item 1's pin-carrier cell (the tokenizer manifest's
+# converter fields and the README's pin word equal the lock; must-rejects
+# mutation-proven in the cell) and the interpreter gate's red (a scratch
+# configure with an interpreter older than the converter's Unicode 15.1.0).
+add_test(
+	NAME u2_0_pin_carrier_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_0_pin_carrier_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+add_test(
+	NAME u2_0_python_gate_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_0_python_gate_check.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --prefix-path "${CMAKE_PREFIX_PATH}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
 add_executable(te222_c17_probe EXCLUDE_FROM_ALL te222_c17_probe.cpp)
 target_link_libraries(te222_c17_probe PRIVATE superembedder superslm::superslm)
 target_include_directories(te222_c17_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
