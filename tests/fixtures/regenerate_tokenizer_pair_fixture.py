@@ -87,6 +87,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fixture_mint_guard as mint_guard  # noqa: E402 -- per-process workdir, per-output mint lock
+
 DEFAULT_REMOTE = "https://github.com/dansupergameprogrammer/SuperSLM.git"
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # tests/fixtures/<this file>
 CHECKPOINT = REPO_ROOT / "tests" / "fixtures" / "tokenizer" / "u1-synthetic-checkpoint"
@@ -215,7 +218,8 @@ def main(argv: list) -> int:
     ap.add_argument("--lock", default="superslm.lock")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--source", default=DEFAULT_REMOTE)
-    ap.add_argument("--workdir", default="build/_u1_pair_fixture_workdir")
+    # Empty = a directory of this process's own (fixture_mint_guard.private_workdir).
+    ap.add_argument("--workdir", default="")
     args = ap.parse_args(argv)
 
     lock_path = Path(args.lock)
@@ -229,17 +233,23 @@ def main(argv: list) -> int:
             print(f"SEMB_FIXTURE_INPUT_MISSING: {req}", file=sys.stderr)
             return 1
     tag = read_lock_tag(lock_path)
+    started = mint_guard.now()
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = out_dir / "u1_pair.manifest.json"
+    _held = mint_guard.hold_output_lock(manifest_path)  # noqa: F841 -- held until exit
+    if mint_guard.minted_since(manifest_path, started):
+        print(f"{out_dir}: minted by a concurrent run while this one waited for it; reusing it")
+        return 0
     print(f"regenerating the U1 synthetic model+tokenizer pair from pinned tag {tag}")
 
-    workdir = Path(args.workdir)
+    workdir = mint_guard.private_workdir(args.workdir, "_u1_pair_fixture_workdir")
     try:
         clone = clone_engine_tools(tag, args.source, workdir)
     except subprocess.CalledProcessError as ex:
         print(f"SEMB_FIXTURE_CLONE_FAILED: {ex}", file=sys.stderr)
         return 2
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     model_out = out_dir / "u1_pair_model.sslm"
     tok_out = out_dir / "u1_pair_tokenizer.sslm"
     tok_no_eot_out = out_dir / "u1_pair_tokenizer_no_endoftext.sslm"
@@ -275,7 +285,7 @@ def main(argv: list) -> int:
             ids_out.name: {"sha256": sha256_file(ids_out), "bytes": ids_out.stat().st_size},
         },
     }
-    (out_dir / "u1_pair.manifest.json").write_text(json.dumps(manifest, indent=2) + "\n",
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n",
                                                    encoding="utf-8", newline="\n")
     print(json.dumps(manifest["files"], indent=2))
     return 0

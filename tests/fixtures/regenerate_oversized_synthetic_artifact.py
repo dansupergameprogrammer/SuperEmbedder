@@ -52,6 +52,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import fixture_mint_guard as mint_guard  # noqa: E402 -- per-process workdir, per-output mint lock
+
 DEFAULT_REMOTE = "https://github.com/dansupergameprogrammer/SuperSLM.git"
 
 # TE-147 (U1 slice 2 build): kSembWitnessMaxHidden rose from 64 to 1024
@@ -161,7 +164,8 @@ def main(argv: list) -> int:
     ap.add_argument("--lock", default="superslm.lock")
     ap.add_argument("--out", required=True)
     ap.add_argument("--source", default=DEFAULT_REMOTE)
-    ap.add_argument("--workdir", default="build/_oversized_fixture_workdir")
+    # Empty = a directory of this process's own (fixture_mint_guard.private_workdir).
+    ap.add_argument("--workdir", default="")
     ap.add_argument("--hidden-size", type=int, default=OVERSIZED_HIDDEN,
                      help="TE-83 (N-7): defaults to the over-the-ceiling value "
                           f"({OVERSIZED_HIDDEN}); pass --hidden-size 1024 (TE-147: the "
@@ -173,17 +177,22 @@ def main(argv: list) -> int:
         print(f"SEMB_FIXTURE_LOCK_MISSING: {lock_path} does not exist.", file=sys.stderr)
         return 1
     tag = read_lock_tag(lock_path)
+    started = mint_guard.now()
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    _held = mint_guard.hold_output_lock(out_path)  # noqa: F841 -- held until exit
+    if mint_guard.minted_since(out_path, started):
+        print(f"{out_path}: minted by a concurrent run while this one waited for it; reusing it")
+        return 0
     print(f"regenerating the oversized-hidden synthetic artifact from pinned tag {tag}")
 
-    workdir = Path(args.workdir)
+    workdir = mint_guard.private_workdir(args.workdir, "_oversized_fixture_workdir")
     try:
         clone = clone_engine_tools(tag, args.source, workdir)
     except subprocess.CalledProcessError as ex:
         print(f"SEMB_FIXTURE_CLONE_FAILED: {ex}", file=sys.stderr)
         return 2
 
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     try:
         generate(clone / "tools", out_path, hidden_size=args.hidden_size)
     except Exception as ex:  # noqa: BLE001 -- reported, not swallowed
