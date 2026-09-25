@@ -1120,6 +1120,29 @@ if(DEFINED SEMB_LIBRARY_SOURCES)
   cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_te222_query_ownership_tests)
 endif()
 
+# U2 cloud build -- U2-9's seam-observable cells (C60 (c), C60's poison
+# must-reject/must-accept, C61 (a)-(f)) and U2-10's C66 (a). Links the test
+# seam mirror; red on today's pool (see the executable's header).
+function(semb_add_u2_9_workspace_cells_tests)
+  if(NOT TARGET superembedder_testseam)
+    return()
+  endif()
+  set(_semb_u2_9_test_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
+  add_executable(u2_9_workspace_cells_test EXCLUDE_FROM_ALL "${_semb_u2_9_test_dir}/u2_9_workspace_cells_test.cpp")
+  target_link_libraries(u2_9_workspace_cells_test PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
+  target_include_directories(u2_9_workspace_cells_test PRIVATE "${_semb_u2_9_test_dir}")
+  add_test(
+    NAME u2_9_workspace_cells_check
+    COMMAND "${Python3_EXECUTABLE}" "${_semb_u2_9_test_dir}/u2_9_workspace_cells_check.py"
+      --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+    WORKING_DIRECTORY "${_semb_u2_9_test_dir}/.."
+  )
+  set_tests_properties(u2_9_workspace_cells_check PROPERTIES TIMEOUT 2400)
+endfunction()
+if(DEFINED SEMB_LIBRARY_SOURCES)
+  cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_u2_9_workspace_cells_tests)
+endif()
+
 add_executable(te222_c17_probe EXCLUDE_FROM_ALL te222_c17_probe.cpp)
 target_link_libraries(te222_c17_probe PRIVATE superembedder superslm::superslm)
 target_include_directories(te222_c17_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
