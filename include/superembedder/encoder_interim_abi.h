@@ -269,6 +269,24 @@ SembInterimStatus semb_interim_encode_batch_ps_n(
 // for a null encoder.
 SembInterimStatus semb_interim_release_workspaces(SembInterimEncoder* encoder);
 
+// The body-token count of a query (U2-7 item 6, R17): how many tokens
+// `utf8` adds to the composed query semb_query_encode and semb_encode_query
+// would tokenize, without running the forward --
+// len(Encode(ComposeQuery(text))) - len(Encode(kQueryPrefix)). It runs the
+// same composition and the same tokenization those verbs run, so a text
+// whose first bytes merge with the prefix's last token is counted as the
+// encode tokenizes it. The count is taken before the encode's truncation to
+// context_cap - 1 content tokens applies. An empty text counts 0.
+// kSembInterimNullArgument for a null `out_body_tokens`, a null `enc`, or a
+// null `utf8` with a nonzero length; kSembInterimEngineRefused for a handle
+// that names no open encoder. Not one of semb.h's frozen verbs, and not
+// exported by the shared library. It takes the public handle, which owns
+// the tokenizer, so it is declared only after semb.h, where that type is.
+#ifdef SUPEREMBEDDER_SEMB_H
+SembInterimStatus semb_interim_query_token_count(semb_encoder enc, const char* utf8, size_t utf8_len,
+                                                 int64_t* out_body_tokens);
+#endif
+
 }  // extern "C"
 
 // C++ product-layer entry: transfers the exactly-once file read into the
