@@ -258,6 +258,35 @@ if(NOT WIN32)
 		VERBATIM)
 endif()
 
+# R20 (U2-1): no certified object defines a floating-point substitutable
+# function. After the archive is built, the census reads every object it
+# contains (never a linked image) and fails the build naming each one. The
+# reader is the R20 cell's own, per object format: COFF through dumpbin and
+# lib.exe, ELF through binutils. Mach-O has no reader yet (REL-2's macOS leg).
+set(_semb_r20_reader "${CMAKE_SOURCE_DIR}/tests/te331_r20_object_census_check.py")
+set(_semb_r20_stamp "${CMAKE_BINARY_DIR}/superembedder_r20_census.stamp")
+if(WIN32)
+	get_filename_component(_semb_linker_dir "${CMAKE_LINKER}" DIRECTORY)
+	find_program(SEMB_DUMPBIN NAMES dumpbin HINTS "${_semb_linker_dir}")
+	find_program(SEMB_LIB_EXE NAMES lib HINTS "${_semb_linker_dir}")
+	set(_semb_r20_command msvc --lib "$<TARGET_FILE:superembedder>"
+		--dumpbin "${SEMB_DUMPBIN}" --libexe "${SEMB_LIB_EXE}")
+elseif(NOT APPLE)
+	set(_semb_r20_command gcc --archive "$<TARGET_FILE:superembedder>"
+		--ar "${CMAKE_AR}" --readelf "${CMAKE_READELF}" --objdump "${CMAKE_OBJDUMP}")
+endif()
+if(DEFINED _semb_r20_command)
+	add_custom_command(OUTPUT "${_semb_r20_stamp}"
+		COMMAND "${Python3_EXECUTABLE}" "${_semb_r20_reader}" ${_semb_r20_command}
+		COMMAND "${CMAKE_COMMAND}" -E touch "${_semb_r20_stamp}"
+		DEPENDS superembedder "${_semb_r20_reader}"
+		COMMENT "R20: floating-point substitutable functions in the certified archive's objects"
+		VERBATIM)
+	add_custom_target(superembedder_r20_census ALL DEPENDS "${_semb_r20_stamp}")
+else()
+	message(STATUS "R20: no object reader for this format; the census does not run on this build")
+endif()
+
 include(CMakePackageConfigHelpers)
 install(TARGETS superembedder_shared EXPORT superembedderTargets
 	RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
