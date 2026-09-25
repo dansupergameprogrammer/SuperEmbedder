@@ -26,6 +26,10 @@ re-encodes a bank's corpus and compares it with the bank (`semb verify`), and
 prints a bank's manifest (`semb inspect`). A document longer than the model's
 context is refused by name (`SEMB_CONTEXT_CAP_EXCEEDED`), never truncated; a
 query is cut to the context after its instruction prefix is applied.
+`semb bake` and `semb verify` read a corpus, and `semb query --stdin` reads
+queries, one line at a time; a line is the bytes up to each LF on every
+platform, so a CR before the LF is text, and a final line without an LF is
+still a line.
 `semb bake` and `semb verify` skip a document only when empty text (the
 library's own `SEMB_INPUT_EMPTY` refusal, unchanged for every other caller)
 is its sole defect; a document with an empty, NUL-containing, or invalid-UTF-8
@@ -63,6 +67,17 @@ derived from that document record a placeholder epoch in their manifests
 `encoder_fingerprint` differs from the current encoder's. Opening a query
 against one is refused with `SEMB_FINGERPRINT_MISMATCH`, and such banks must be
 re-baked.
+
+`semb_encoder_open_memory` opens an encoder from model and tokenizer bytes
+already in memory. It copies both spans before it reads them and then runs the
+open `semb_encoder_open` runs, so the same bytes give the same fingerprint by
+either verb, and the caller may release its spans once the call returns.
+`semb_encode_query` is the query form of `semb_encode`: it applies the
+instruction prefix `semb_query_encode` applies, through the same composition,
+and returns the fingerprint the vector was emitted under, with no bank. It
+checks nothing against a bank; a consumer that ships a fingerprint in place of
+the float bank compares the returned value with the manifest's
+`encoder_fingerprint` itself ([docs/FORMAT.md](docs/FORMAT.md)).
 
 The certified set is interim: the MSVC 19.33 and clang-cl 18.1.8 builds on one
 AVX2 host, which bake the 239-document corpus to identical bytes (evidence in

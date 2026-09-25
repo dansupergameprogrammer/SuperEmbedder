@@ -20,6 +20,11 @@ itself is SuperFAISS's format and is documented there.
 
 SuperFAISS reads the first two directly. SuperEmbedder reads all three when it opens a bank for queries.
 
+**The corpus `semb bake` and `semb verify` read.** A `.jsonl` corpus (the extension, in any case) is one
+`{"id", "text"}` object per line, and an empty line is skipped; any other corpus is one document per line, with
+its zero-based line number as its id. The file is read in binary mode: a line is the bytes up to each LF on every
+platform, so a CR before the LF belongs to the line, and a final line without an LF is still a line.
+
 ## 2. The manifest, `<stem>.semb.json`
 
 A JSON object. **Readers ignore members they do not recognise.** A manifest whose `schemaVersion` is not 1,
@@ -30,7 +35,7 @@ or that carries a `channels` member, is refused (`SEMB_MANIFEST_SCHEMA_UNSUPPORT
 | Member | Type | Meaning |
 |---|---|---|
 | `schemaVersion` | integer | `1` |
-| `encoder_fingerprint` | hex string, 64 | The encoder fingerprint ([DETERMINISM.md](DETERMINISM.md#what-the-fingerprint-covers)). A query handle refuses a bank whose value differs from its encoder's (`SEMB_FINGERPRINT_MISMATCH`). **This is the value a companion fingerprint asset copies** when a consumer ships a fingerprint in place of the float bank |
+| `encoder_fingerprint` | hex string, 64 | The encoder fingerprint ([DETERMINISM.md](DETERMINISM.md#what-the-fingerprint-covers)). A query handle refuses a bank whose value differs from its encoder's (`SEMB_FINGERPRINT_MISMATCH`). **This is the value a companion fingerprint asset copies** when a consumer ships a fingerprint in place of the float bank; `semb_fingerprint_of`, `semb_encode` and `semb_encode_query` return the same value from an open encoder, and comparing the two is the consumer's check |
 | `model_sha` | hex string, 64 | Fingerprint field 1 |
 | `tokenizer_sha` | hex string, 64 | Fingerprint field 2 |
 | `template_sha256` | hex string, 64 | Fingerprint field 3 |
