@@ -21,7 +21,7 @@
     "emit_command": "python convert_tokenizer.py --ckpt $HF_HUB_CACHE/models--Qwen--Qwen3-Embedding-0.6B/snapshots/97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3 --emit qwen3-embedding-0.6b-tokenizer.sslm"
   },
   "verification": {
-    "command": "python convert_tokenizer.py --ckpt $HF_HUB_CACHE/models--Qwen--Qwen3-Embedding-0.6B/snapshots/97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3 --verify tests/fixtures/tokenizer/tokenizer_golden_corpus.jsonl --verify-post-processor tests/fixtures/tokenizer/tokenizer_golden_corpus.jsonl",
+    "command": "python convert_tokenizer.py --ckpt $HF_HUB_CACHE/models--Qwen--Qwen3-Embedding-0.6B/snapshots/97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3 --verify $SUPEREMBEDDER_ROOT/tests/fixtures/tokenizer/tokenizer_golden_corpus.jsonl --verify-post-processor $SUPEREMBEDDER_ROOT/tests/fixtures/tokenizer/tokenizer_golden_corpus.jsonl",
     "exit_code": 0,
     "bpe_parity": "PASS",
     "post_processor_parity": "PASS",
