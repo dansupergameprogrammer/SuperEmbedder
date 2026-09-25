@@ -30,7 +30,13 @@ MODES
               it (a minting run grades nothing); records the exact command,
               the checkpoint revision and tokenizer.json SHA-256, the converter
               commit, the artifact SHA-256/size, and -- when --verify is also
-              given -- the two verification results.
+              given -- the two verification results. The recorded commands are
+              path-free: the interpreter is `python`, the snapshot is named
+              under `$HF_HUB_CACHE`, the artifact by its canonical filename and
+              the corpus by its path relative to this repository's root. The
+              commands run with the engine clone's `tools/` as the working
+              directory. --out must end in the canonical filename,
+              because the manifest's `artifact.name` is taken from it.
 
 USAGE
   python tools/tokenizer/regenerate_qwen3_tokenizer_artifact.py \\
@@ -63,6 +69,7 @@ CORPUS = FIXTURES / "tokenizer_golden_corpus.jsonl"
 CANDIDATE_REPO = "Qwen/Qwen3-Embedding-0.6B"
 CANDIDATE_REVISION = "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3"
 EXPECTED_TRAILING_SPECIAL_ID = 151643
+CANONICAL_ARTIFACT_NAME = "qwen3-embedding-0.6b-tokenizer.sslm"
 
 
 def _rmtree_onerror(func, path, exc_info):
@@ -91,6 +98,18 @@ def read_lock(lock_path: Path) -> dict:
             k, v = line.split("=", 1)
             out[k] = v
     return out
+
+
+def portable_command(cmd: list, snapshot: Path, out: Path) -> str:
+    """The form of a converter command the manifest records: the same arguments with
+    every machine-specific path replaced, so it can be re-run from any checkout."""
+    names = {
+        sys.executable: "python",
+        str(snapshot): f"$HF_HUB_CACHE/models--{CANDIDATE_REPO.replace('/', '--')}/snapshots/{CANDIDATE_REVISION}",
+        str(out): out.name,
+        str(CORPUS): CORPUS.relative_to(REPO_ROOT).as_posix(),
+    }
+    return " ".join(names.get(a, a) for a in cmd)
 
 
 def clone_engine(tag: str, source: str, workdir: Path) -> Path:
@@ -130,6 +149,10 @@ def main(argv: list) -> int:
     tag = lock.get("tag", "")
     if not tag:
         print(f"SEMB_FIXTURE_LOCK_MISSING: {args.lock} has no tag= line", file=sys.stderr)
+        return 1
+    if args.mint and Path(args.out).name != CANONICAL_ARTIFACT_NAME:
+        print(f"SEMB_TOKENIZER_ARTIFACT_NAME: --mint records artifact.name from --out, which is "
+              f"{Path(args.out).name!r}; pass a path ending in {CANONICAL_ARTIFACT_NAME}", file=sys.stderr)
         return 1
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8")) if MANIFEST.exists() else None
     if manifest is None and not args.mint:
@@ -173,7 +196,7 @@ def main(argv: list) -> int:
         pp_ok = ("post-processor-parity:" in text and " 0 mismatches" in text.split("post-processor-parity:")[-1]
                  and f"trailing_special_id={EXPECTED_TRAILING_SPECIAL_ID}" in text)
         verify_result = {
-            "command": " ".join(ver_cmd),
+            "command": portable_command(ver_cmd, snapshot, out),
             "exit_code": ver.returncode,
             "bpe_parity": "PASS" if bpe_ok else "FAIL",
             "post_processor_parity": "PASS" if pp_ok else "FAIL",
@@ -203,7 +226,7 @@ def main(argv: list) -> int:
                 "engine_tag": tag,
                 "engine_commit": lock.get("commit", ""),
                 "clone_head": converter_commit,
-                "emit_command": " ".join(emit_cmd),
+                "emit_command": portable_command(emit_cmd, snapshot, out),
             },
             "verification": verify_result,
             "corpus": {"path": "tests/fixtures/tokenizer/tokenizer_golden_corpus.jsonl",
