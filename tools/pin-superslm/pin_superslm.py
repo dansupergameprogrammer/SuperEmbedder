@@ -73,7 +73,7 @@ import sys
 from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from provenance_lib import digest_members  # noqa: E402
+from provenance_lib import DIGEST_FORMULA, digest_members  # noqa: E402
 
 DEFAULT_REMOTE = "https://github.com/dansupergameprogrammer/SuperSLM.git"
 
@@ -784,8 +784,7 @@ def main() -> int:
         "clean": clean,
         "dirty_paths": dirty_paths,
         "member_count": len(members),
-        "digest_formula": "sha256 over path-sorted entries len(path_utf8:8BE) || path || len(bytes:8BE) || bytes; "
-                           "path is '<root>:<relpath-posix>' with root in {compiled, installed}",
+        "digest_formula": DIGEST_FORMULA,
         # The path INDEX only (no content) — lets verify_provenance.py re-read
         # each member's CURRENT bytes at configure time and recompute the
         # digest, without re-deriving the closure itself (that derivation
