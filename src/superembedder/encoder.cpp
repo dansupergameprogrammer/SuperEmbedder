@@ -573,12 +573,13 @@ std::string_view CutWbDocumentText(const superslm::TokenizerView& tokenizer,
 // unwound by HandleInsertGuard at the call site, not by a rollback line
 // in this function.
 //
-// Returns false on any refusal from the composition (including the
-// composition's own >= context_cap refusal, restoring M-3's removed
-// guard -- see ComposeBatch's own comment). A caller maps a false return
-// to SEMB_ENGINE_REFUSED, the same status every other mid-open engine
-// failure already uses.
-bool ComputeWbDigest(semb_encoder_s* h, std::array<uint8_t, 32>* out_digest) {
+// Returns SEMB_OK, or SEMB_ALLOCATION_FAILED when the composition could not
+// allocate (U2-10 Builds item 3: a body that receives a callee's allocation
+// status returns its own), or SEMB_ENGINE_REFUSED on any other refusal from
+// the composition (including the composition's own >= context_cap refusal,
+// restoring M-3's removed guard -- see ComposeBatch's own comment), the same
+// status every other mid-open engine failure already uses.
+semb_status ComputeWbDigest(semb_encoder_s* h, std::array<uint8_t, 32>* out_digest) {
   std::vector<std::string_view> texts(semb::kWbCorpusDocumentCount);
   for (size_t doc_i = 0; doc_i < semb::kWbCorpusDocumentCount; ++doc_i) {
     const semb::WbCorpusDocument& doc = semb::kWbCorpusDocuments[doc_i];
@@ -597,7 +598,8 @@ bool ComputeWbDigest(semb_encoder_s* h, std::array<uint8_t, 32>* out_digest) {
       ComposeBatch(h, texts.data(), texts.size(), /*out_vectors=*/nullptr,
                   /*out_capacity_bytes=*/0, &rows_required_ignored, &probe,
                   /*out_seam_stream_capacity=*/0, &seam_required);
-  if (sizing_status != SEMB_BUFFER_TOO_SMALL) return false;
+  if (sizing_status == SEMB_ALLOCATION_FAILED) return SEMB_ALLOCATION_FAILED;
+  if (sizing_status != SEMB_BUFFER_TOO_SMALL) return SEMB_ENGINE_REFUSED;
 
   std::vector<uint8_t> seam_stream(seam_required);
   size_t seam_len = 0;
@@ -605,7 +607,8 @@ bool ComputeWbDigest(semb_encoder_s* h, std::array<uint8_t, 32>* out_digest) {
       ComposeBatch(h, texts.data(), texts.size(), /*out_vectors=*/nullptr,
                   /*out_capacity_bytes=*/0, &rows_required_ignored, seam_stream.data(),
                   seam_stream.size(), &seam_len);
-  if (status != SEMB_OK) return false;
+  if (status == SEMB_ALLOCATION_FAILED) return SEMB_ALLOCATION_FAILED;
+  if (status != SEMB_OK) return SEMB_ENGINE_REFUSED;
 
   std::vector<uint8_t> stream;
   stream.reserve(8 + seam_len);
@@ -618,7 +621,7 @@ bool ComputeWbDigest(semb_encoder_s* h, std::array<uint8_t, 32>* out_digest) {
   superslm::Sha256 hash;
   hash.Update(stream.data(), stream.size());
   hash.Final(out_digest->data());
-  return true;
+  return SEMB_OK;
 }
 
 // The encoder fingerprint's one derivation (plan sec 3.3): the five
@@ -879,12 +882,12 @@ static semb_status EncoderOpenBody(const semb_config* cfg, semb_encoder* out) {
     // observe a cookie -- because insert_guard erases the not-yet-ready
     // entry on every exit until Disarm() is reached below.
     std::array<uint8_t, 32> wb_digest{};
-    if (!ComputeWbDigest(h, &wb_digest)) {
-      return SEMB_ENGINE_REFUSED;
-    }
+    const semb_status wb_status = ComputeWbDigest(h, &wb_digest);
+    if (wb_status != SEMB_OK) return wb_status;
 
     std::array<uint8_t, 32> wq_digest{};
-    if (!semb_compute_wq_digest(h, &wq_digest)) return SEMB_ENGINE_REFUSED;
+    const semb_status wq_status = semb_compute_wq_digest(h, &wq_digest);
+    if (wq_status != SEMB_OK) return wq_status;
     // U2-9 Builds item 2 (D-SLM7773): the witness encodes above grew slot
     // buffers; open returns holding none, so it reserves nothing in
     // proportion to max_concurrency. No encode can be running: no caller

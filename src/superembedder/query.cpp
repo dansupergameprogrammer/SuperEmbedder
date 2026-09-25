@@ -96,17 +96,18 @@ void UpdateU64(superslm::Sha256* hash, uint64_t value) {
   hash->Update(bytes, sizeof(bytes));
 }
 
-bool HashWitnessPosition(semb_encoder_s* encoder, std::string_view raw_query,
-                         size_t max_content_ids, superslm::Sha256* hash) {
+semb_status HashWitnessPosition(semb_encoder_s* encoder, std::string_view raw_query,
+                                size_t max_content_ids, superslm::Sha256* hash) {
   const std::string composed = ComposeQuery(raw_query);
   std::vector<float> vector;
-  if (semb::EncodeQueryComposedForWitness(encoder, composed, max_content_ids, &vector) != SEMB_OK) {
-    return false;
-  }
+  const semb_status encoded =
+      semb::EncodeQueryComposedForWitness(encoder, composed, max_content_ids, &vector);
+  if (encoded == SEMB_ALLOCATION_FAILED) return SEMB_ALLOCATION_FAILED;
+  if (encoded != SEMB_OK) return SEMB_ENGINE_REFUSED;
   const size_t byte_count = vector.size() * sizeof(float);
   UpdateU64(hash, static_cast<uint64_t>(byte_count));
   hash->Update(reinterpret_cast<const uint8_t*>(vector.data()), byte_count);
-  return true;
+  return SEMB_OK;
 }
 
 std::mutex& RegistryMutex() {
@@ -149,19 +150,25 @@ class QueryLease {
 
 }  // namespace
 
-bool semb_compute_wq_digest(semb_encoder_s* encoder, std::array<uint8_t, 32>* out_digest) {
-  if (!encoder || !out_digest) return false;
+semb_status semb_compute_wq_digest(semb_encoder_s* encoder, std::array<uint8_t, 32>* out_digest) {
+  if (!encoder || !out_digest) return SEMB_ENGINE_REFUSED;
   std::vector<std::string_view> join_queries;
-  if (!ParseCommittedTexts(semb::kWqJoinJsonl, &join_queries) || join_queries.size() != 5) return false;
-  if (BuildTruncationQuery().empty()) return false;
+  if (!ParseCommittedTexts(semb::kWqJoinJsonl, &join_queries) || join_queries.size() != 5) {
+    return SEMB_ENGINE_REFUSED;
+  }
+  if (BuildTruncationQuery().empty()) return SEMB_ENGINE_REFUSED;
   superslm::Sha256 hash;
   UpdateU64(&hash, join_queries.size() + 1);
   for (std::string_view query : join_queries) {
-    if (!HashWitnessPosition(encoder, query, std::numeric_limits<size_t>::max(), &hash)) return false;
+    const semb_status st =
+        HashWitnessPosition(encoder, query, std::numeric_limits<size_t>::max(), &hash);
+    if (st != SEMB_OK) return st;
   }
-  if (!HashWitnessPosition(encoder, BuildTruncationQuery(), kWitnessQueryContentCap, &hash)) return false;
+  const semb_status st =
+      HashWitnessPosition(encoder, BuildTruncationQuery(), kWitnessQueryContentCap, &hash);
+  if (st != SEMB_OK) return st;
   hash.Final(out_digest->data());
-  return true;
+  return SEMB_OK;
 }
 
 static semb_status QueryOpenBody(semb_encoder enc, semb_bank bank, semb_query* out) {
