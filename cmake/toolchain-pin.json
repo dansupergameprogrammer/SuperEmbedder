@@ -1,8 +1,0 @@
-{
-  "_comment": "TE-165 (N-4, D-SLM6386; D-SLM6390 item 5); TE-184 (N-6, D-SLM6403) corrects what verified each pair. Read by cmake/ToolchainPin.cmake at configure time. Each entry is a certified {compiler id, version[, frontend]} pair -- never a floor or a range. 'id' is CMAKE_CXX_COMPILER_ID exactly; 'version' is CMAKE_CXX_COMPILER_VERSION exactly; 'frontend', when present, must equal CMAKE_CXX_COMPILER_FRONTEND_VARIANT (distinguishes clang-cl from plain clang at the identical reported version -- S-1/D-SLM6349's own finding was a bare clang-cl.exe line resolving to the wrong installed compiler at a DIFFERENT version, but the frontend field closes the adjacent case: the same version number under the wrong frontend is not the certified pair either). This repository's own CI workflow has never been run by GitHub Actions (.github/workflows/ci.yml's own header), so no pair here is verified by this project's own CI records: MSVC and Clang are verified by clean-room rebuilds on developer hosts (D-SLM6216, D-SLM6437); GNU is verified by a real hosted GitHub Actions run on the identical ubuntu-latest runner image, reported in this project's own decision log (D-SLM5941, D-SLM5977) though the run itself built a sibling project, not this repository.",
-  "certified": [
-    { "id": "MSVC", "version": "19.33.31631.0" },
-    { "id": "Clang", "version": "18.1.8", "frontend": "MSVC" },
-    { "id": "GNU", "version": "13.3.0" }
-  ]
-}

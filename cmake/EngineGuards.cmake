@@ -221,3 +221,54 @@ endif()
 
 message(STATUS "SuperSLM engine pin verified: ${superslm_VERSION} @ ${_semb_prov_commit} "
 	"(engine_tree_sha=${SEMB_LOCK_TREE})")
+
+# ---------------------------------------------------------------------------
+# 6. The engine-build record (plan U2-3 items 5 and 13; D-SLM7333). The pin
+#    tool writes `engine_build` into provenance.json: the compiler the engine
+#    was built with, the toolchain/stdlib/dispatch strings its kernel compile
+#    gives for the product's descriptor header, the digest of its compile-flag
+#    record (engineFlags), the installed library's SHA-256 and its build
+#    record. A prefix without it refuses; a product compiler other than the
+#    engine's refuses before anything compiles, so every build that reaches a
+#    verdict compiled both sides with one compiler.
+# ---------------------------------------------------------------------------
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${SEMB_ENGINE_PROVENANCE_FILE}")
+string(JSON _semb_engine_build ERROR_VARIABLE _semb_eb_err GET "${_semb_provenance_json}" "engine_build")
+if(_semb_eb_err)
+	message(FATAL_ERROR "SEMB_ENGINE_BUILD_UNRECORDED: ${SEMB_ENGINE_PROVENANCE_FILE} carries no engine_build "
+		"record. It was written by a pin tool that predates the record; pin the engine again with "
+		"tools/pin-superslm/pin_superslm.py.")
+endif()
+foreach(_semb_eb_key toolchain stdlib dispatch flagsSha librarySha256 buildRecord)
+	string(JSON _semb_eb_${_semb_eb_key} ERROR_VARIABLE _semb_eb_err GET "${_semb_engine_build}" "${_semb_eb_key}")
+	if(_semb_eb_err OR _semb_eb_${_semb_eb_key} STREQUAL "")
+		message(FATAL_ERROR "SEMB_ENGINE_BUILD_UNRECORDED: ${SEMB_ENGINE_PROVENANCE_FILE}'s engine_build carries "
+			"no ${_semb_eb_key}.")
+	endif()
+endforeach()
+foreach(_semb_eb_key id version frontend)
+	string(JSON _semb_eb_compiler_${_semb_eb_key} ERROR_VARIABLE _semb_eb_err
+		GET "${_semb_engine_build}" compiler "${_semb_eb_key}")
+	if(_semb_eb_err)
+		message(FATAL_ERROR "SEMB_ENGINE_BUILD_UNRECORDED: ${SEMB_ENGINE_PROVENANCE_FILE}'s engine_build carries "
+			"no compiler ${_semb_eb_key}.")
+	endif()
+endforeach()
+if(NOT _semb_eb_compiler_id STREQUAL CMAKE_CXX_COMPILER_ID
+		OR NOT _semb_eb_compiler_version STREQUAL CMAKE_CXX_COMPILER_VERSION
+		OR NOT _semb_eb_compiler_frontend STREQUAL "${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}")
+	message(FATAL_ERROR "SEMB_ENGINE_TOOLCHAIN_MISMATCH: this product is configured with "
+		"${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} (frontend '${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}'), "
+		"but the engine at ${SEMB_ENGINE_PREFIX} was built with ${_semb_eb_compiler_id} "
+		"${_semb_eb_compiler_version} (frontend '${_semb_eb_compiler_frontend}'). Pin the engine with the "
+		"product's compiler, in the product's environment.")
+endif()
+set(SEMB_ENGINE_TOOLCHAIN "${_semb_eb_toolchain}")
+set(SEMB_ENGINE_STDLIB "${_semb_eb_stdlib}")
+set(SEMB_ENGINE_DISPATCH "${_semb_eb_dispatch}")
+set(SEMB_ENGINE_FLAGS_SHA "${_semb_eb_flagsSha}")
+set(SEMB_ENGINE_LIBRARY_SHA256 "${_semb_eb_librarySha256}")
+set(SEMB_ENGINE_BUILD_RECORD "${_semb_eb_buildRecord}")
+file(SHA256 "${SEMB_ENGINE_PROVENANCE_FILE}" SEMB_ENGINE_PROVENANCE_SHA256)
+message(STATUS "SuperSLM engine build: ${SEMB_ENGINE_TOOLCHAIN}, ${SEMB_ENGINE_STDLIB}, dispatch "
+	"${SEMB_ENGINE_DISPATCH}, engineFlags ${SEMB_ENGINE_FLAGS_SHA}")
