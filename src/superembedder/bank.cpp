@@ -21,8 +21,8 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <unordered_map>
-#include <unordered_set>
+#include <map>
+#include <set>
 #include <vector>
 
 #include "json_lite.h"
@@ -251,7 +251,11 @@ std::mutex& RegistryMutex() {
   static auto* mutex = new std::mutex();
   return *mutex;
 }
-using HandleRegistry = std::unordered_map<semb_bank, std::unique_ptr<semb_bank_opaque>>;
+// R20 (U2-1): an ordered container. Its member functions do no floating-point
+// arithmetic, so no certified object carries a substitutable floating-point
+// instantiation for it; the registry is read only by find, emplace and erase,
+// never iterated, so its order changes nothing.
+using HandleRegistry = std::map<semb_bank, std::unique_ptr<semb_bank_opaque>>;
 HandleRegistry& Registry() {
   static auto* registry = new HandleRegistry();
   return *registry;
@@ -503,8 +507,9 @@ static semb_status BankOpenBody(const char* path, size_t path_len, semb_bank* ou
       return SEMB_BANK_IDS_COUNT_MISMATCH;
     }
     {
-      std::unordered_set<std::string_view> seen;
-      seen.reserve(ids_v->as_array.size());
+      // R20 (U2-1): an ordered set, for the reason the handle registry is one;
+      // it is read only by emplace and never iterated.
+      std::set<std::string_view> seen;
       for (const auto& id : ids_v->as_array) {
         if (!id.IsString()) return SEMB_BANK_IDS_COUNT_MISMATCH;
         if (!seen.emplace(std::string_view(id.as_string)).second) {

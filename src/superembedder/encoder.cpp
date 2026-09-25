@@ -37,14 +37,14 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <new>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -163,8 +163,11 @@ std::mutex& RegistryMutex() {
   return *mutex;
 }
 
-using HandleRegistry =
-    std::unordered_map<semb_encoder, std::unique_ptr<semb_encoder_s>>;
+// R20 (U2-1): an ordered container. Its member functions do no floating-point
+// arithmetic, so no certified object carries a substitutable floating-point
+// instantiation for it; the registry is read only by find, emplace and erase,
+// never iterated, so its order changes nothing.
+using HandleRegistry = std::map<semb_encoder, std::unique_ptr<semb_encoder_s>>;
 
 HandleRegistry& Registry() {
   static auto* registry = new HandleRegistry();
@@ -1419,8 +1422,9 @@ static semb_status EncodeBatchBody(semb_encoder enc, const semb_document* docs, 
     // normalization, no case folding) -> DOCUMENT_ID_DUPLICATE. Reached
     // only once every document has individually passed step 9.
     {
-      std::unordered_set<std::string_view> seen;
-      seen.reserve(n);
+      // R20 (U2-1): an ordered set, for the reason the handle registry is one;
+      // it is read only by emplace and never iterated.
+      std::set<std::string_view> seen;
       for (size_t i = 0; i < n; ++i) {
         if (!seen.emplace(std::string_view(docs[i].id, docs[i].id_len)).second) {
           return SEMB_DOCUMENT_ID_DUPLICATE;

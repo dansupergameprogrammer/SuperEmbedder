@@ -12,7 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <unordered_map>
+#include <map>
 #include <vector>
 
 #include "superslm/sha256.h"
@@ -115,7 +115,11 @@ std::mutex& RegistryMutex() {
   static auto* mutex = new std::mutex();
   return *mutex;
 }
-using RegistryType = std::unordered_map<semb_query, std::unique_ptr<semb_query_opaque>>;
+// R20 (U2-1): an ordered container. Its member functions do no floating-point
+// arithmetic, so no certified object carries a substitutable floating-point
+// instantiation for it; the registry is read only by find, emplace and erase,
+// never iterated, so its order changes nothing.
+using RegistryType = std::map<semb_query, std::unique_ptr<semb_query_opaque>>;
 RegistryType& Registry() {
   static auto* registry = new RegistryType();
   return *registry;
