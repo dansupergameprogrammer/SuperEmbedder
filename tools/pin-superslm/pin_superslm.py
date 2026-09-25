@@ -892,15 +892,23 @@ def identity_compile_command(entry: dict, family: str, windows: bool, work: Path
     argv = compile_flags.argv_of(entry, windows)
     msvc_style = family in ("msvc", "clangcl")
     source_name = Path(entry["file"]).name
-    out, k, had_fd, had_c = [argv[0]], 1, False, False
+    out, k, had_fd, had_c, had_dashdash = [argv[0]], 1, False, False, False
     while k < len(argv):
         a = argv[k]
         k += 1
-        if a in ("-o", "-MF", "-MT", "-MQ"):
-            k += 1
-            continue
-        if a in ("-MD", "-MMD", "-MP", "/showIncludes", "-showIncludes"):
-            continue
+        if msvc_style:
+            # On the MSVC frontend -MD/-MT/-MDd/-MTd select the C runtime: they are code options and stay.
+            if a in ("/showIncludes", "-showIncludes"):
+                continue
+            if a == "--":  # clang-cl: every later argument is an input file
+                had_dashdash = True
+                continue
+        else:
+            if a in ("-o", "-MF", "-MT", "-MQ"):
+                k += 1
+                continue
+            if a in ("-MD", "-MMD", "-MP"):
+                continue
         if compile_flags.OUTPUT_JOINED.match(a):
             had_fd = had_fd or a[1:3].lower() == "fd"
             continue
@@ -915,6 +923,8 @@ def identity_compile_command(entry: dict, family: str, windows: bool, work: Path
         out.append(f"/Fo{obj}")
         if had_fd:
             out.append(f"/Fd{work / 'sslm_build_identity.pdb'}")
+        if had_dashdash:
+            out.append("--")
     else:
         out += [f"-I{work}", "-o", str(obj)]
     out.append(str(IDENTITY_TEXT))
