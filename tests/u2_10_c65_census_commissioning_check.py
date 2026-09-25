@@ -2,9 +2,12 @@
 C65 "Commissioned before its verdicts count"). The builder builds the census
 tool (Builds item 5); the test author constructs, before the build:
 
-  must-accept  the pin-step archive (this tree's libsuperembedder.a) against a
-               table of its own 37 names (tools/c_boundary_table.json): the
-               census accepts.
+  must-accept  the archive (this tree's libsuperembedder.a) against a table of
+               its own names (tools/c_boundary_table.json): the census
+               accepts. At the pin step that was 37 names; each later
+               C-linkage function joins the table in the change that adds it
+               (U2-10 Builds item 6: U2-9's release verb, U2-7's three), so
+               the count is read from the table, never written here.
   must-reject  the same archive with one C-linkage definition added outside the
                table, compiled by the member's own build path (the build's own
                compile command for a product TU, with only the source and
@@ -114,7 +117,8 @@ def main(argv: list[str]) -> int:
     names = {r["name"] for r in table["rows"]}
     # Construction self-checks (this script's own ELF rule, not the tool's).
     base = elf_unmangled(archive)
-    verdict(base == names and len(names) == 37, "C65 construction: must-accept archive defines exactly the 37 rows",
+    verdict(base == names and len(names) == len(table["rows"]),
+            f"C65 construction: must-accept archive defines exactly the table's {len(table['rows'])} rows",
             f"archive {len(base)}, table {len(names)}, archive-only {sorted(base - names)}, "
             f"table-only {sorted(names - base)}")
     mutant, why = build_mutant_archive(build_dir, archive, work)
@@ -137,7 +141,7 @@ def main(argv: list[str]) -> int:
         print(f"TOTAL fail={fails}")
         return 1
     r = run_tool(archive, TABLE)
-    verdict(r.returncode == 0, "C65 must-accept: pin-step archive vs its own 37 names",
+    verdict(r.returncode == 0, f"C65 must-accept: the archive vs its own {len(names)} table names",
             f"exit {r.returncode}: {(r.stdout + r.stderr).strip()[-300:]}")
     if mutant is not None:
         r = run_tool(mutant, TABLE)
