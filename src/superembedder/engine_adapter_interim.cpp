@@ -230,7 +230,6 @@ static std::vector<uint64_t> gate_give_records;
   const uint64_t generation = gate_release_generation;
   state_changed.notify_all();
   state_changed.wait(lock, [generation] { return gate_release_generation != generation; });
-  --gate_parked;
 }
 [[maybe_unused]] static void OnGateGiveBack(uint64_t capacity) {
   std::lock_guard<std::mutex> lock(state_mutex);
@@ -1565,7 +1564,7 @@ extern "C" uint32_t semb_test_seam_gate_parked(void) {
 extern "C" void semb_test_seam_gate_release(void) {
   std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
   ++semb::test_seam::gate_release_generation;
-  semb::test_seam::gate_park_budget = 0;
+  semb::test_seam::gate_parked = 0;
   semb::test_seam::state_changed.notify_all();
 }
 

@@ -70,6 +70,8 @@ int32_t semb_test_seam_poison_disarm(void);
 int32_t semb_test_seam_gate_arm_park(uint32_t count);
 int32_t semb_test_seam_gate_wait_parked(uint32_t n, uint32_t timeout_ms);
 uint32_t semb_test_seam_gate_parked(void);
+/* Release every holder parked now; the parked count reads 0 on return. The
+ * remaining park budget stands, so the next holder parks (reset clears it). */
 void semb_test_seam_gate_release(void);
 uint32_t semb_test_seam_gate_holders(void);
 uint32_t semb_test_seam_gate_high_water(void);
