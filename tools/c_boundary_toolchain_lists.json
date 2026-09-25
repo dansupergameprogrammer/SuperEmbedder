@@ -1,0 +1,16 @@
+{
+  "schema": "semb_c_boundary_toolchain_lists_v1",
+  "note": "U2-10 C65 (te267 sec 5): per compiler family, the unmangled external definitions a certified archive may carry that are not product functions. A name joins a family's list only if a reference TU (the system headers the product's TUs include, no product header, taking the name's address) compiles with the member's flags and its object defines the name, read by C65's own symbol rule. Derived from the toolchain, never from the archive C65 grades; re-derived when a member's toolchain changes. A null list is not yet derived (it is derived at that family's first run).",
+  "families": {
+    "gcc13.3.0": {
+      "list": [],
+      "derived": "U2 cloud build: GCC 13.3.0 on Linux, the U2 base's libsuperembedder.a. nm --defined-only, T/W, no _Z prefix, reads exactly the 37 table names, so no name needs a reference TU and the list is empty."
+    },
+    "msvc19.33": {
+      "list": ["wmemcpy", "wmemset", "fprintf", "_vfprintf_l", "__local_stdio_printf_options", "snprintf", "vsnprintf"],
+      "derived": "The seven names the plan's executed MSVC 19.33 probe found; each reference TU compiles and defines its name, and semb_status_name's does not (C2065) (te267 U2-10 C65, 'Executed on MSVC 19.33'). Re-derived by C65's tool at its first dev-box run."
+    },
+    "msvc19.44": {"list": null, "derived": "owed: derived at the member's first dev-box run"},
+    "clang-cl18.1.8": {"list": null, "derived": "owed: derived at the member's first dev-box run"}
+  }
+}

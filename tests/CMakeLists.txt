@@ -1143,6 +1143,18 @@ if(DEFINED SEMB_LIBRARY_SOURCES)
   cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_u2_9_workspace_cells_tests)
 endif()
 
+# U2 cloud build -- U2-10's C65 commissioning constructions (must-accept,
+# must-reject SEMB_C_LINKAGE_UNLISTED, vitality SEMB_C_LINKAGE_STALE) over the
+# shipped archive, on ELF. Red until the census tool (Builds item 5) exists.
+if(NOT WIN32)
+	add_test(
+		NAME u2_10_c65_census_commissioning_check
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_10_c65_census_commissioning_check.py"
+			--build-dir "${CMAKE_BINARY_DIR}" --archive "$<TARGET_FILE:superembedder>"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+endif()
+
 add_executable(te222_c17_probe EXCLUDE_FROM_ALL te222_c17_probe.cpp)
 target_link_libraries(te222_c17_probe PRIVATE superembedder superslm::superslm)
 target_include_directories(te222_c17_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
