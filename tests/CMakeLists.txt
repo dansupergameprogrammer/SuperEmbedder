@@ -1240,6 +1240,29 @@ if(NOT WIN32)
 	)
 endif()
 
+# U2 cloud build -- U2-7's C52 (d) (the in-call rewrite, through a test-seam
+# park point in the memory open) and C55's general oracle (independent
+# ref_encode counts). Links the test seam mirror; link-red until U2-7 items
+# 1, 2, 6 and the seam land.
+function(semb_add_u2_7_c52d_c55_tests)
+  if(NOT TARGET superembedder_testseam)
+    return()
+  endif()
+  set(_semb_u2_7_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
+  add_executable(u2_7_c52d_c55_test EXCLUDE_FROM_ALL "${_semb_u2_7_dir}/u2_7_c52d_c55_test.cpp")
+  target_link_libraries(u2_7_c52d_c55_test PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
+  target_include_directories(u2_7_c52d_c55_test PRIVATE "${_semb_u2_7_dir}")
+  add_test(
+    NAME u2_7_c52d_c55_check
+    COMMAND "${Python3_EXECUTABLE}" "${_semb_u2_7_dir}/u2_7_c52d_c55_check.py"
+      --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+    WORKING_DIRECTORY "${_semb_u2_7_dir}/.."
+  )
+endfunction()
+if(DEFINED SEMB_LIBRARY_SOURCES)
+  cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_u2_7_c52d_c55_tests)
+endif()
+
 add_executable(te222_c17_probe EXCLUDE_FROM_ALL te222_c17_probe.cpp)
 target_link_libraries(te222_c17_probe PRIVATE superembedder superslm::superslm)
 target_include_directories(te222_c17_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
