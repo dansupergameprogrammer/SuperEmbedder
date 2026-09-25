@@ -1615,6 +1615,7 @@ set_property(GLOBAL PROPERTY SEMB_PYTHON_GATE_TESTS
 	te264_fingerprint_epoch_edit_check
 	te264_fingerprint_template_check
 	te264_fingerprint_untagged_check
+	te331_u2_consumer_check
 	u1_batch_contract_check
 	u1_raw_text_cells_check
 	u1_trailing_special_mutants_check
