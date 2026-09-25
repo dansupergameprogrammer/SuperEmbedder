@@ -1233,6 +1233,17 @@ add_test(
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
+# U2 cloud build -- the tokenizer manifest tool's recorded commands (the corpus
+# under $SUPEREMBEDDER_ROOT) and its two refusals by name
+# (SEMB_TOKENIZER_COMMAND_NOT_PORTABLE, SEMB_TOKENIZER_SNAPSHOT_LAYOUT), driven
+# in-process with the engine clone and the converter faked: no checkpoint, no
+# network, the committed manifest untouched.
+add_test(
+	NAME u2_0_tokenizer_manifest_command_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_0_tokenizer_manifest_command_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
 # U2 cloud build -- U2-1's C56, the Linux shared library's proof: install,
 # export set, NEEDED, and the .so against the static route (synthetic pair
 # here; the real leg with SEMB_C12B_MODEL and SEMB_U1_TOKENIZER set).
@@ -1646,6 +1657,7 @@ set_property(GLOBAL PROPERTY SEMB_PYTHON_GATE_TESTS
 	u1_trailing_special_mutants_check
 	u1_workspace_control_vitality_check
 	u1_workspace_source_properties_check
+	u2_0_tokenizer_manifest_command_check
 	u2_10_c64_class_sweep_check
 	u2_10_c66b_rlimit_sweep_check
 	u2_1_c56_so_check
