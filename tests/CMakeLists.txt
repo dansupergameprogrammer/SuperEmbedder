@@ -1222,6 +1222,24 @@ if(NOT WIN32 AND NOT APPLE)
 	endif()
 endif()
 
+# U2 cloud build -- U2-5's C16 (no assert( in src/ or include/) and C19 (the
+# 1.0 reader's pins: an unknown manifest member accepted, with its
+# unknown-key-rejecting mutant built in the cell; schemaVersion 2 refused).
+add_test(
+	NAME u2_5_c16_no_assert_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_5_c16_no_assert_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+if(NOT WIN32)
+	add_test(
+		NAME u2_5_c19_check
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_5_c19_check.py"
+			--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+			--archive "$<TARGET_FILE:superembedder>" --engine-lib "$<TARGET_FILE:superslm::superslm>"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+endif()
+
 add_executable(te222_c17_probe EXCLUDE_FROM_ALL te222_c17_probe.cpp)
 target_link_libraries(te222_c17_probe PRIVATE superembedder superslm::superslm)
 target_include_directories(te222_c17_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
