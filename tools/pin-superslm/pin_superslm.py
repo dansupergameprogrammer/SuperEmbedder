@@ -38,6 +38,16 @@ WHAT THIS TOOL DOES, IN ORDER
      `<prefix>/share/superslm-provenance/compiled/<path>` so a later `cmake`
      configure can recompute the whole digest from the prefix alone, without
      the clone still existing.
+  8b. (U2-3 item 13) Writes `engine_build` into provenance.json, outside
+     engine_tree_sha: the compiler CMake recorded, the `toolchain`, `stdlib`
+     and `dispatch` strings the product's descriptor header gives when
+     preprocessed with src/matmul.cpp's own compile command, the engine's
+     compile-flag record and its digest `flagsSha` (tools/compile_flags.py),
+     the installed library's SHA-256, and the build record
+     `sslm-build-record-v1:<sha256>` over {schema, tag, commit, clean,
+     compiler, flagsSha}. Refuses SEMB_PIN_AMBIENT_COMPILER_INPUT <variable>
+     when CL, _CL_ or CCC_OVERRIDE_OPTIONS is set, because they reach the
+     compiler without appearing on any compile line.
   9. Updates superslm.lock's `commit=` and `tree=` fields to match what was just
      computed (the `tag=` field is the only one a person edits; this tool
      derives the other two — D-SLM3893).
@@ -46,7 +56,13 @@ USAGE
   python tools/pin-superslm/pin_superslm.py \\
       --lock superslm.lock --prefix build/_engine_install [--source <path-or-url>] \\
       [--workdir build/_engine_src] [--cmake <path>] [--ninja <path>] [--generator Ninja] \\
-      [--keep-workdir] [--fresh-build]
+      [--keep-workdir] [--fresh-build] [--force-tier {sse2,avx2,avx512}]
+
+  --force-tier: (U2-3 item 5) configure the engine with SUPERSLM_FORCE_<TIER>_MATMUL,
+      delivered through CXXFLAGS so it reaches every `superslm` translation unit
+      and its compile-flag record; install it to its own --prefix. Only the
+      `superslm` target is built, never the engine's superslm_<tier>_forced test
+      seams.
 
   --fresh-build: authorize wiping a PRE-EXISTING --workdir/build this run did not
       create (TE-73 R-1 / TE-75 S-4). Without it, a non-empty leftover build
@@ -299,7 +315,7 @@ def _validate_reuse_clone(clone: Path, tag: str) -> None:
 
 
 def configure_engine(clone: Path, build: Path, cmake: str, ninja: str, generator: str,
-                      fresh_build: bool = False) -> None:
+                      fresh_build: bool = False, force_tier: str | None = None) -> None:
     # TE-73 R-1 (Critical): this used to be a bare `if build.exists():
     # rmtree(build)` -- no guard, no marker check, no depth check, the ONE
     # of the tool's three deletion sites its own N-11 comment enumerated
@@ -343,7 +359,20 @@ def configure_engine(clone: Path, build: Path, cmake: str, ninja: str, generator
         cmd.append("-DCMAKE_POSITION_INDEPENDENT_CODE=ON")
     if generator == "Ninja" and ninja:
         cmd.append(f"-DCMAKE_MAKE_PROGRAM={ninja}")
-    run(cmd)
+    # U2-3 item 5: --force-tier delivers SUPERSLM_FORCE_<T>_MATMUL through the
+    # engine build's CMAKE_CXX_FLAGS, the one channel that reaches every
+    # `superslm` translation unit without editing the engine. It is passed as
+    # CXXFLAGS for this configure, which CMake combines with the toolchain's
+    # own default flags to initialize CMAKE_CXX_FLAGS (a -DCMAKE_CXX_FLAGS on
+    # the command line would replace those defaults, e.g. MSVC's /EHsc). The
+    # macro therefore appears on every recorded compile line, where the
+    # engine's flag record reads it.
+    env = None
+    if force_tier:
+        env = dict(os.environ)
+        macro = f"-DSUPERSLM_FORCE_{force_tier.upper()}_MATMUL"
+        env["CXXFLAGS"] = (env.get("CXXFLAGS", "") + " " + macro).strip()
+    run(cmd, env=env)
 
 
 def build_engine_library(build: Path, cmake: str, target: str = "superslm") -> None:
@@ -660,6 +689,160 @@ def git_clean_check(clone: Path, tag: str, compile_closure: set[Path]) -> tuple[
     return (len(dirty) == 0, dirty, tag_content_sha256)
 
 
+# ---------------------------------------------------------------------------
+# U2-3 items 5 and 13: the engine-build record.
+# ---------------------------------------------------------------------------
+FORCE_TIERS = ("sse2", "avx2", "avx512")
+
+# Variables that change what the compiler does without appearing on any
+# compile line (plan sec 2.4), so no flag record can see them.
+AMBIENT_COMPILER_INPUTS = ("CL", "_CL_", "CCC_OVERRIDE_OPTIONS")
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "tools"))
+import compile_flags  # noqa: E402
+
+DESCRIPTOR_HEADER_DIR = REPO_ROOT / "src" / "superembedder"
+KERNEL_TU = "src/matmul.cpp"
+_PROBE_TEXT = (
+    '#include "semb_build_descriptor.h"\n'
+    "SEMB_PROBE_TOOLCHAIN SEMB_DESCRIPTOR_TOOLCHAIN\n"
+    "SEMB_PROBE_STDLIB SEMB_DESCRIPTOR_STDLIB\n"
+    "SEMB_PROBE_DISPATCH SEMB_DESCRIPTOR_ENGINE_DISPATCH\n"
+)
+
+
+def refuse_ambient_compiler_input() -> None:
+    for name in AMBIENT_COMPILER_INPUTS:
+        if name in os.environ:
+            raise SystemExit(
+                f"SEMB_PIN_AMBIENT_COMPILER_INPUT {name}: this variable reaches the compiler without appearing "
+                f"on any compile line, so the engine's flag record could not describe the code it built. "
+                f"Unset it and pin again."
+            )
+
+
+def compiler_of(build: Path) -> dict:
+    """CMAKE_CXX_COMPILER_ID, _VERSION and _FRONTEND_VARIANT as the engine build's own CMake recorded them."""
+    found = sorted(build.glob("CMakeFiles/*/CMakeCXXCompiler.cmake"))
+    if not found:
+        raise SystemExit(f"SEMB_PIN_COMPILER_UNREADABLE: no CMakeCXXCompiler.cmake under {build / 'CMakeFiles'}")
+    text = found[-1].read_text(encoding="utf-8")
+
+    def field(name: str) -> str:
+        m = re.search(rf'set\({name} "([^"]*)"\)', text)
+        return m.group(1) if m else ""
+
+    compiler = {"id": field("CMAKE_CXX_COMPILER_ID"), "version": field("CMAKE_CXX_COMPILER_VERSION"),
+                "frontend": field("CMAKE_CXX_COMPILER_FRONTEND_VARIANT")}
+    if not compiler["id"] or not compiler["version"]:
+        raise SystemExit(f"SEMB_PIN_COMPILER_UNREADABLE: {found[-1]} carries no compiler id/version")
+    return compiler
+
+
+def _compile_entries(build: Path) -> list[dict]:
+    path = build / "compile_commands.json"
+    if not path.is_file():
+        raise SystemExit(f"SEMB_PIN_COMPILE_COMMANDS_MISSING: {path} was not written by the engine's configure")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _literals(text: str) -> str:
+    """Concatenates the adjacent string literals the preprocessor left on one line."""
+    return "".join(bytes(m, "utf-8").decode("unicode_escape") for m in re.findall(r'"((?:[^"\\]|\\.)*)"', text))
+
+
+def probe_descriptor(clone: Path, build: Path, family: str, windows: bool) -> dict:
+    """toolchain, stdlib and dispatch as the engine's kernel TU is compiled: the product's descriptor header,
+    preprocessed with src/matmul.cpp's own recorded compile command, in this process's environment (the one
+    the engine was just built in)."""
+    kernel = (clone / KERNEL_TU).resolve()
+    entry = None
+    for e in _compile_entries(build):
+        if compile_flags._target_of(e) == "superslm" and Path(e["file"]).resolve() == kernel:
+            entry = e
+            break
+    if entry is None:
+        raise SystemExit(f"SEMB_PIN_KERNEL_COMMAND_MISSING: no compile command for {KERNEL_TU} in the engine build")
+    argv = compile_flags.argv_of(entry, windows)
+    probe = build / "semb_descriptor_probe.cpp"
+    probe.write_text(_PROBE_TEXT, encoding="utf-8", newline="\n")
+    msvc_style = family in ("msvc", "clangcl")
+    out, k = [argv[0]], 1
+    while k < len(argv):
+        a = argv[k]
+        if a in ("-o", "-MF", "-MT", "-MQ"):
+            k += 2
+            continue
+        k += 1
+        if a in ("-c", "/c", "-MD", "-MMD", "-MP", "/showIncludes", "-showIncludes") or \
+                compile_flags.OUTPUT_JOINED.match(a):
+            continue
+        if Path(a).name == Path(entry["file"]).name and a.replace("\\", "/").endswith(KERNEL_TU):
+            continue
+        out.append(a)
+    out += (["/E", f"/I{DESCRIPTOR_HEADER_DIR}"] if msvc_style else ["-E", f"-I{DESCRIPTOR_HEADER_DIR}"])
+    out.append(str(probe))
+    proc = subprocess.run(out, cwd=entry.get("directory") or str(build), capture_output=True, text=True,
+                          errors="replace")
+    if proc.returncode != 0:
+        raise SystemExit(f"SEMB_PIN_DESCRIPTOR_PROBE_FAILED: preprocessing the descriptor probe with {KERNEL_TU}'s "
+                         f"compile command exited {proc.returncode}:\n{proc.stderr[-2000:]}")
+    fields = {}
+    for key in ("TOOLCHAIN", "STDLIB", "DISPATCH"):
+        m = re.search(rf"^\s*SEMB_PROBE_{key}\s+(.*)$", proc.stdout, re.M)
+        if not m:
+            raise SystemExit(f"SEMB_PIN_DESCRIPTOR_PROBE_FAILED: the preprocessed probe carries no SEMB_PROBE_{key}")
+        fields[key.lower()] = _literals(m.group(1))
+    return fields
+
+
+def installed_library(build: Path, prefix: Path) -> Path:
+    for line in (build / "install_manifest.txt").read_text(encoding="utf-8").splitlines():
+        p = Path(line.strip())
+        if p.suffix.lower() in (".a", ".lib") and p.stem.lower() in ("superslm", "libsuperslm"):
+            return p
+    raise SystemExit(f"SEMB_PIN_LIBRARY_MISSING: the install manifest names no superslm library under {prefix}")
+
+
+def build_record(tag: str, commit: str, clean: bool, compiler: dict, flags_sha: str) -> str:
+    """sslm-build-record-v1: SHA-256 of the canonical JSON of {schema, tag, commit, clean, compiler, flagsSha}.
+    Every input is content, so one configuration gives one record from any directory (plan U2-3 item 14)."""
+    doc = {"schema": 1, "tag": tag, "commit": commit, "clean": clean,
+           "compiler": {"id": compiler["id"], "version": compiler["version"], "frontend": compiler["frontend"]},
+           "flagsSha": flags_sha}
+    canonical = json.dumps(doc, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sslm-build-record-v1:" + hashlib.sha256(canonical).hexdigest()
+
+
+def engine_build_record(clone: Path, build: Path, prefix: Path, tag: str, commit: str, clean: bool,
+                        library: Path) -> dict:
+    """provenance.json's engine_build object (plan U2-3 item 13). Outside engine_tree_sha, which stays a
+    digest of source."""
+    compiler = compiler_of(build)
+    family = compile_flags.family_of(compiler["id"], compiler["frontend"])
+    windows = os.name == "nt"
+    probe = probe_descriptor(clone, build, family, windows)
+    rec, residual = compile_flags.record(_compile_entries(build), family,
+                                         [(str(clone), "<src>"), (str(build), "<build>")],
+                                         ["superslm"], [], windows)
+    if not rec:
+        raise SystemExit("SEMB_PIN_FLAGS_UNRECORDED: the engine build's compile_commands.json names no superslm TU")
+    for r in residual:
+        log(f"SEMB_COMPILE_FLAGS_LOCATION {r}")
+    flags_sha = compile_flags.digest(rec)
+    return {
+        "compiler": compiler,
+        "toolchain": probe["toolchain"],
+        "stdlib": probe["stdlib"],
+        "dispatch": probe["dispatch"],
+        "flags": {"family": family, "record": rec, "residual": residual},
+        "flagsSha": flags_sha,
+        "librarySha256": hashlib.sha256(library.read_bytes()).hexdigest(),
+        "buildRecord": build_record(tag, commit, clean, compiler, flags_sha),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--lock", default="superslm.lock", type=Path)
@@ -682,11 +865,18 @@ def main() -> int:
                      help="skip the clone step and use this existing checkout directly (test-only: "
                           "used to build C33 leg (e) from a clone that already carries an uncommitted "
                           "edit inside the compile closure)")
+    ap.add_argument("--force-tier", choices=FORCE_TIERS, default=None,
+                     help="U2-3 item 5: configure the engine with SUPERSLM_FORCE_<TIER>_MATMUL, so its kernels "
+                          "run one tier on every host. Install it to its own --prefix; provenance records the "
+                          "tier its kernel compile reports (engine_build.dispatch), and an auto install "
+                          "records 'auto'.")
     ap.add_argument("--allow-dirty", action="store_true",
                      help="do not abort when the clone carries an uncommitted edit inside the compile "
                           "closure — still records clean=false in the provenance manifest so a "
                           "downstream configure refuses it (used to construct C33 leg (e) on purpose)")
     args = ap.parse_args()
+
+    refuse_ambient_compiler_input()
 
     lock = parse_lock(args.lock)
     tag = lock["tag"]
@@ -708,7 +898,8 @@ def main() -> int:
     log(f"resolved commit: {commit}")
 
     build = workdir / "build"
-    configure_engine(clone, build, args.cmake, args.ninja, args.generator, fresh_build=args.fresh_build)
+    configure_engine(clone, build, args.cmake, args.ninja, args.generator, fresh_build=args.fresh_build,
+                     force_tier=args.force_tier)
     build_engine_library(build, args.cmake)
 
     prefix = args.prefix.resolve()
@@ -776,8 +967,19 @@ def main() -> int:
     engine_tree_sha = digest_members(members)
     log(f"engine_tree_sha: {engine_tree_sha}")
 
+    engine_build = engine_build_record(clone, build, prefix, tag, commit, clean, installed_library(build, prefix))
+    log(f"engine_build: toolchain={engine_build['toolchain']!r} stdlib={engine_build['stdlib']!r} "
+        f"dispatch={engine_build['dispatch']} flagsSha={engine_build['flagsSha']}")
+    log(f"engine_build.buildRecord: {engine_build['buildRecord']}")
+    if args.force_tier and engine_build["dispatch"] != args.force_tier:
+        raise SystemExit(
+            f"SEMB_PIN_FORCED_TIER_NOT_REPORTED: --force-tier {args.force_tier} was requested, but the engine's "
+            f"kernel compile reports dispatch '{engine_build['dispatch']}'."
+        )
+
     provenance = {
         "schemaVersion": 1,
+        "engine_build": engine_build,
         "tag": tag,
         "commit": commit,
         "engine_tree_sha": engine_tree_sha,
