@@ -962,6 +962,23 @@
       }
     },
     {
+      "name": "semb_interim_release_workspaces",
+      "tu": "src/superembedder/engine_adapter_interim.cpp",
+      "return_type": "SembInterimStatus",
+      "disposition": "boundary",
+      "status_family": "SembInterimStatus",
+      "allocation_status": "kSembInterimAllocationFailed",
+      "catch_all_status": "kSembInterimEngineRefused",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": {
+        "short": {
+          "note": "no pre-build reading: the function is U2-9 item 2's end-of-open release verb, added by the U2 cloud build and joining the table in the change that adds it (U2-10 Builds item 6)"
+        }
+      }
+    },
+    {
       "name": "semb_encode_document_for_witness",
       "tu": "src/superembedder/engine_adapter_interim.cpp",
       "return_type": "SembEncodeStatus",
