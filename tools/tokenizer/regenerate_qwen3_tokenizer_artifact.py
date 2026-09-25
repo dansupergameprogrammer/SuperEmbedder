@@ -33,10 +33,14 @@ MODES
               given -- the two verification results. The recorded commands are
               path-free: the interpreter is `python`, the snapshot is named
               under `$HF_HUB_CACHE`, the artifact by its canonical filename and
-              the corpus by its path relative to this repository's root. The
-              commands run with the engine clone's `tools/` as the working
-              directory. --out must end in the canonical filename,
-              because the manifest's `artifact.name` is taken from it.
+              the corpus under `$SUPEREMBEDDER_ROOT` (this repository's root).
+              The commands run with the engine clone's `tools/` as the working
+              directory, with `HF_HUB_CACHE` and `SUPEREMBEDDER_ROOT` set to
+              the re-running machine's paths. An argument that is still an
+              absolute path after those rewrites is refused by name
+              (SEMB_TOKENIZER_COMMAND_NOT_PORTABLE), never recorded. --out must
+              end in the canonical filename, because the manifest's
+              `artifact.name` is taken from it.
 
 USAGE
   python tools/tokenizer/regenerate_qwen3_tokenizer_artifact.py \\
@@ -70,6 +74,7 @@ CANDIDATE_REPO = "Qwen/Qwen3-Embedding-0.6B"
 CANDIDATE_REVISION = "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3"
 EXPECTED_TRAILING_SPECIAL_ID = 151643
 CANONICAL_ARTIFACT_NAME = "qwen3-embedding-0.6b-tokenizer.sslm"
+SNAPSHOT_REPO_DIR = f"models--{CANDIDATE_REPO.replace('/', '--')}"
 
 
 def _rmtree_onerror(func, path, exc_info):
@@ -100,16 +105,33 @@ def read_lock(lock_path: Path) -> dict:
     return out
 
 
+class NotPortable(Exception):
+    pass
+
+
+def _looks_absolute(arg: str) -> bool:
+    # Either platform's form, whatever this host is: /x, \\x, C:\x, C:/x.
+    return (arg.startswith(("/", "\\")) or (len(arg) >= 3 and arg[0].isalpha()
+            and arg[1] == ":" and arg[2] in "/\\") or os.path.isabs(arg))
+
+
 def portable_command(cmd: list, snapshot: Path, out: Path) -> str:
     """The form of a converter command the manifest records: the same arguments with
-    every machine-specific path replaced, so it can be re-run from any checkout."""
+    every machine-specific path replaced by a named root, so it can be re-run from
+    any checkout (cwd = the engine clone's tools/, HF_HUB_CACHE and
+    SUPEREMBEDDER_ROOT set). Raises NotPortable naming any argument that still
+    looks like an absolute path -- one this function has no rewrite for."""
     names = {
         sys.executable: "python",
-        str(snapshot): f"$HF_HUB_CACHE/models--{CANDIDATE_REPO.replace('/', '--')}/snapshots/{CANDIDATE_REVISION}",
+        str(snapshot): f"$HF_HUB_CACHE/{SNAPSHOT_REPO_DIR}/snapshots/{CANDIDATE_REVISION}",
         str(out): out.name,
-        str(CORPUS): CORPUS.relative_to(REPO_ROOT).as_posix(),
+        str(CORPUS): "$SUPEREMBEDDER_ROOT/" + CORPUS.relative_to(REPO_ROOT).as_posix(),
     }
-    return " ".join(names.get(a, a) for a in cmd)
+    recorded = [names.get(a, a) for a in cmd]
+    leaked = [a for a in recorded if _looks_absolute(a)]
+    if leaked:
+        raise NotPortable(", ".join(repr(a) for a in leaked))
+    return " ".join(recorded)
 
 
 def clone_engine(tag: str, source: str, workdir: Path) -> Path:
@@ -145,6 +167,13 @@ def main(argv: list) -> int:
         print(f"SEMB_TOKENIZER_REVISION_MISMATCH: snapshot directory is {snapshot.name!r}, "
               f"the pinned revision is {CANDIDATE_REVISION}", file=sys.stderr)
         return 1
+    # The recorded command names the snapshot as $HF_HUB_CACHE/<repo dir>/snapshots/<rev>;
+    # hold the directory to that whole structure, not only its leaf.
+    parents = snapshot.absolute().parents
+    if len(parents) < 2 or parents[0].name != "snapshots" or parents[1].name != SNAPSHOT_REPO_DIR:
+        print(f"SEMB_TOKENIZER_SNAPSHOT_LAYOUT: {snapshot} is not "
+              f"<hub cache>/{SNAPSHOT_REPO_DIR}/snapshots/{CANDIDATE_REVISION}", file=sys.stderr)
+        return 1
     lock = read_lock(Path(args.lock))
     tag = lock.get("tag", "")
     if not tag:
@@ -173,6 +202,15 @@ def main(argv: list) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
 
     emit_cmd = [sys.executable, "convert_tokenizer.py", "--ckpt", str(snapshot), "--emit", str(out)]
+    ver_cmd = [sys.executable, "convert_tokenizer.py", "--ckpt", str(snapshot),
+               "--verify", str(CORPUS), "--verify-post-processor", str(CORPUS)]
+    try:
+        emit_recorded = portable_command(emit_cmd, snapshot, out)
+        ver_recorded = portable_command(ver_cmd, snapshot, out)
+    except NotPortable as ex:
+        print(f"SEMB_TOKENIZER_COMMAND_NOT_PORTABLE: would record absolute path(s) {ex}", file=sys.stderr)
+        rmtree(workdir)
+        return 1
     t0 = time.perf_counter()
     emit = subprocess.run(emit_cmd, cwd=tools, capture_output=True, text=True)
     emit_s = time.perf_counter() - t0
@@ -187,8 +225,6 @@ def main(argv: list) -> int:
 
     verify_result = None
     if args.verify:
-        ver_cmd = [sys.executable, "convert_tokenizer.py", "--ckpt", str(snapshot),
-                   "--verify", str(CORPUS), "--verify-post-processor", str(CORPUS)]
         ver = subprocess.run(ver_cmd, cwd=tools, capture_output=True, text=True)
         text = ver.stdout + ver.stderr
         print(text.strip())
@@ -196,7 +232,7 @@ def main(argv: list) -> int:
         pp_ok = ("post-processor-parity:" in text and " 0 mismatches" in text.split("post-processor-parity:")[-1]
                  and f"trailing_special_id={EXPECTED_TRAILING_SPECIAL_ID}" in text)
         verify_result = {
-            "command": portable_command(ver_cmd, snapshot, out),
+            "command": ver_recorded,
             "exit_code": ver.returncode,
             "bpe_parity": "PASS" if bpe_ok else "FAIL",
             "post_processor_parity": "PASS" if pp_ok else "FAIL",
@@ -226,7 +262,7 @@ def main(argv: list) -> int:
                 "engine_tag": tag,
                 "engine_commit": lock.get("commit", ""),
                 "clone_head": converter_commit,
-                "emit_command": portable_command(emit_cmd, snapshot, out),
+                "emit_command": emit_recorded,
             },
             "verification": verify_result,
             "corpus": {"path": "tests/fixtures/tokenizer/tokenizer_golden_corpus.jsonl",
