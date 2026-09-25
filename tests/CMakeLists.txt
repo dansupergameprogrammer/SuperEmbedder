@@ -1143,6 +1143,20 @@ if(DEFINED SEMB_LIBRARY_SOURCES)
   cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_u2_9_workspace_cells_tests)
 endif()
 
+# U2 cloud build -- U2-10's C64, the class sweep: links the SHIPPED static
+# target with the global operator new replaced (no test seam). The driver
+# script runs every table row and driver and prints the pre-build reading.
+add_executable(u2_10_c64_class_sweep_test EXCLUDE_FROM_ALL u2_10_c64_class_sweep_test.cpp)
+target_link_libraries(u2_10_c64_class_sweep_test PRIVATE superembedder superslm::superslm Threads::Threads)
+target_include_directories(u2_10_c64_class_sweep_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(
+	NAME u2_10_c64_class_sweep_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_10_c64_class_sweep_check.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+set_tests_properties(u2_10_c64_class_sweep_check PROPERTIES TIMEOUT 3600)
+
 # U2 cloud build -- U2-10's C65 commissioning constructions (must-accept,
 # must-reject SEMB_C_LINKAGE_UNLISTED, vitality SEMB_C_LINKAGE_STALE) over the
 # shipped archive, on ELF. Red until the census tool (Builds item 5) exists.
