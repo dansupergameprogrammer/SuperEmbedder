@@ -1203,6 +1203,25 @@ add_test(
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
+# U2 cloud build -- U2-1's C56, the Linux shared library's proof: install,
+# export set, NEEDED, and the .so against the static route (synthetic pair
+# here; the real leg with SEMB_C12B_MODEL and SEMB_U1_TOKENIZER set).
+if(NOT WIN32 AND NOT APPLE)
+	set(_semb_c56_args --build-dir "${CMAKE_BINARY_DIR}" --archive "$<TARGET_FILE:superembedder>"
+		--engine-lib "$<TARGET_FILE:superslm::superslm>")
+	if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+		list(APPEND _semb_c56_args --model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}")
+	endif()
+	add_test(
+		NAME u2_1_c56_so_check
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_1_c56_so_check.py" ${_semb_c56_args}
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+	if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+		set_tests_properties(u2_1_c56_so_check PROPERTIES LABELS "real_artifact")
+	endif()
+endif()
+
 add_executable(te222_c17_probe EXCLUDE_FROM_ALL te222_c17_probe.cpp)
 target_link_libraries(te222_c17_probe PRIVATE superembedder superslm::superslm)
 target_include_directories(te222_c17_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
