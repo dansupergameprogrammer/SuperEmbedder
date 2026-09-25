@@ -17,6 +17,14 @@ with comments and string/character literals removed first:
         tokenizer's own entry point, which the batch composition calls for it;
   S2-c  the body does not name `semb_interim_encode_ps_n`.
 
+The body under U2-10 (te267 sec 5 U2-10, "The rule"): `semb_encode` is a
+boundary, whose definition is a single expression -- a call to one of
+`semb::c_boundary`'s templates with a lambda that calls one C++-linkage
+function holding the verb's former body. When the definition has exactly that
+shape, the body read is the definition's text together with that function's
+body (so S2-b and S2-c hold on both, and S2-a is found in the body); any other
+definition is read as it stands. Only that one delegation step is followed.
+
 Scope, stated rather than implied: this reads the body of `semb_encode` only.
 A helper the body calls that itself tokenizes the caller's span or calls the
 single-document interim function is outside the text read here; the
@@ -100,6 +108,32 @@ def function_body(text: str, name: str) -> str | None:
     return None
 
 
+# `{ return semb::c_boundary::<Template>([&] { return <Body>(...); }); }`,
+# with an optional leading argument before the lambda (the interim family's
+# engine-status channel).
+BOUNDARY = re.compile(
+    r"^\{\s*return\s+(?:::)?semb::c_boundary::\w+\s*\(\s*(?:[^()\[\]{};]*,\s*)?"
+    r"\[&\]\s*(?:\(\s*\))?\s*\{\s*return\s+(\w+)\s*\([^;{}]*\)\s*;\s*\}\s*\)\s*;\s*\}$",
+    re.S)
+
+
+def verb_body(text: str, name: str) -> tuple[str | None, str]:
+    """The body the S2 cells read for `name`: its definition's body, plus, when
+    that definition is a U2-10 boundary, the body of the one function its lambda
+    calls.  Returns (body, how it was resolved)."""
+    body = function_body(text, name)
+    if body is None:
+        return None, "no definition"
+    m = BOUNDARY.match(body)
+    if not m:
+        return body, "the definition's own body"
+    callee = m.group(1)
+    inner = function_body(text, callee)
+    if inner is None:
+        return None, f"a boundary whose body function {callee} has no definition"
+    return body + "\n" + inner, f"the boundary's body function {callee}"
+
+
 def call_arguments(body: str, callee: str) -> list[list[str]]:
     """Every call to `callee` in `body`, as its top-level argument list."""
     calls = []
@@ -153,6 +187,20 @@ _BREAKS = {
 }
 
 
+# A boundary and its body function, as U2-10 writes them: the compliant pair,
+# and pairs whose body function breaks one cell (the delegation must not hide a
+# break), plus a boundary whose lambda does the work inline (not the shape, so
+# read as it stands: its ComposeBatch call is still found).
+_BOUNDARY_TU = """
+static semb_status EncodeBody(semb_encoder enc, const char* utf8, size_t utf8_len) BODY
+extern "C" semb_status semb_encode(semb_encoder enc, const char* utf8, size_t utf8_len) {
+  return semb::c_boundary::Status([&] {
+    return EncodeBody(enc, utf8, utf8_len);
+  });
+}
+"""
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--encoder-source", type=Path, default=ENCODER)
@@ -173,15 +221,34 @@ def main(argv: list[str]) -> int:
         report(only_this, f"vitality: a constructed body breaking {cell} alone is refused on {cell} alone",
                "; ".join(f"{k}={'ok' if v[0] else 'refused'}" for k, v in verdict.items()))
 
+    tu = strip_comments_and_literals(_BOUNDARY_TU.replace("BODY", _COMPLIANT))
+    body, how = verb_body(tu, "semb_encode")
+    ok = body is not None and all(v for v, _ in evaluate(body).values()) and "EncodeBody" in how
+    report(ok, "vitality: a constructed boundary over a compliant body is accepted through its body function", how)
+    for cell, text in _BREAKS.items():
+        body, how = verb_body(strip_comments_and_literals(_BOUNDARY_TU.replace("BODY", text)), "semb_encode")
+        verdict = evaluate(body or "")
+        only_this = not verdict[cell][0] and all(ok for k, (ok, _) in verdict.items() if k != cell)
+        report(only_this, f"vitality: a constructed boundary whose body function breaks {cell} is refused on {cell}",
+               "; ".join(f"{k}={'ok' if v[0] else 'refused'}" for k, v in verdict.items()))
+    body, how = verb_body(strip_comments_and_literals(
+        _BOUNDARY_TU.replace("BODY", _BREAKS["S2-a"]).replace("return EncodeBody(enc, utf8, utf8_len);",
+                                                               "EncodeBody(enc, utf8, utf8_len); return Other();")),
+        "semb_encode")
+    report(body is not None and "own body" in how and not evaluate(body)["S2-a"][0],
+           "vitality: a definition that is not the single-expression boundary is read as it stands (no delegation)",
+           how)
+
     try:
         source = args.encoder_source.read_text(encoding="utf-8")
     except OSError as exc:
         report(False, "S2 product source", f"cannot read {args.encoder_source}: {exc}")
         return 1
-    body = function_body(strip_comments_and_literals(source), "semb_encode")
+    body, how = verb_body(strip_comments_and_literals(source), "semb_encode")
     if body is None:
-        report(False, "S2 product source", f"no definition of semb_encode in {args.encoder_source}")
+        report(False, "S2 product source", f"semb_encode in {args.encoder_source}: {how}")
         return 1
+    print(f"S2 reads semb_encode through {how}")
     names = {
         "S2-a": "semb_encode calls ComposeBatch as a batch of one (D-SLM7197, D-SLM7205)",
         "S2-b": "semb_encode does not call the tokenizer's Encode on the caller's span",
