@@ -1287,3 +1287,70 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te264_c42_checker_check.py"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+
+# ---------------------------------------------------------------------------
+# TE-331 (U2-1/U2-3/U2-7 red suite, `Claude/Plans/te267-u2-release-plan.md`).
+# Links against symbols undefined at this branch's own base `fca421b`
+# (semb_encoder_open_memory, semb_encode_query, semb_interim_query_token_count,
+# semb_interim_certification_verdict), so it is EXCLUDE_FROM_ALL;
+# tests/te331_u2_surface_link_check.py builds it on demand and reports the
+# unresolved symbol(s) by name, the te163/te194 red-first shape.
+# ---------------------------------------------------------------------------
+add_executable(te331_u2_surface_link_test EXCLUDE_FROM_ALL te331_u2_surface_link_test.cpp)
+target_link_libraries(te331_u2_surface_link_test PRIVATE superembedder superslm::superslm)
+target_include_directories(te331_u2_surface_link_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+set(_semb_te331_surface_args --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}")
+if(NOT SEMB_C12B_MODEL STREQUAL "")
+	list(APPEND _semb_te331_surface_args --model "${SEMB_C12B_MODEL}")
+endif()
+if(NOT SEMB_U1_TOKENIZER STREQUAL "")
+	list(APPEND _semb_te331_surface_args --tokenizer "${SEMB_U1_TOKENIZER}")
+endif()
+add_test(
+	NAME te331_u2_surface_link_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_surface_link_check.py" ${_semb_te331_surface_args}
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# Item 14/M18: sslm_build_identity + SEMB_ENGINE_LINK_MISMATCH. Links against
+# a symbol the PINNED ENGINE (SuperSLM 1.5.0) does not define at all, so it
+# is EXCLUDE_FROM_ALL; tests/te331_u2_engine_identity_check.py builds it on
+# demand and reports the unresolved symbol by name.
+add_executable(te331_u2_engine_identity_test EXCLUDE_FROM_ALL te331_u2_engine_identity_test.cpp)
+target_link_libraries(te331_u2_engine_identity_test PRIVATE superembedder superslm::superslm)
+target_include_directories(te331_u2_engine_identity_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_test(
+	NAME te331_u2_engine_identity_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_engine_identity_check.py" ${_semb_te331_surface_args}
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# U2-1 (F4): the out-of-tree consumer, and R20/M19's post-build census, and
+# U2-3's C42 extended clauses (b'/e/f/g/h) and R9/R10's append/evidence
+# tools, and U2-7 item 3/C54's binary-mode CLI line reading, and U2-3 item
+# 5's --force-tier pin-tool option: standalone Python drivers, no CMake
+# target of their own (they build/configure their own scratch trees or
+# drive the CLI/tools directly).
+add_test(
+	NAME te331_u2_consumer_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_consumer_check.py"
+		--cmake-executable "${CMAKE_COMMAND}" --product-build "${CMAKE_BINARY_DIR}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+add_test(
+	NAME te331_u2_c42_r9_r10_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_c42_r9_r10_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+add_test(
+	NAME te331_u2_export_surface_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_export_surface_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+add_test(
+	NAME te331_u2_misc_absence_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_misc_absence_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
