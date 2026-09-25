@@ -15,11 +15,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(GNUInstallDirs)
 
+# U2-3 item 13: compileFlags is computed from the build's own
+# compile_commands.json, so the export is on before the first target is
+# declared -- every product target's lines are recorded, semb and
+# semb_witness included.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 include(EngineGuards)   # find_package(superslm), the two version guards, provenance (C33)
 include(BuildFlags)     # the precise-FP flag (directory-wide) + semb_assert_precise_fp() (C14)
 include(SourceProvenance)  # semb_source_sha (C34)
-include(ToolchainPin)   # the certified {compiler id, version} pairs (N-4, D-SLM6386)
-include(CertifiedBuilds)  # docs/certified-builds.json compiled in for certification_epoch (C42-derive)
+include(CertifiedBuilds)  # the certified-builds list and the certification identity, compiled in (U2-3)
 
 # C38's pin-bump-only construction needs to place one compile definition on
 # exactly one downstream target. The pinned SuperSLM tag is never modified:
@@ -117,7 +122,39 @@ set(SEMB_LIBRARY_SOURCES
 	src/superembedder/engine_adapter_interim.cpp
 	src/superembedder/json_lite.cpp
 	src/superembedder/bank.cpp
+	src/superembedder/certification.cpp
 )
+
+# U2-3 items 1 and 13: the step every build runs before any library
+# translation unit compiles (tools/semb_build_step.py): it refuses
+# SEMB_BUILD_AMBIENT_COMPILER_INPUT and SEMB_ENGINE_CHANGED_SINCE_CONFIGURE,
+# and writes the product's compile-flag record and the header that compiles
+# its digest in as the descriptor's compileFlags. The header exists before
+# the first build so configure's source-closure scan resolves it; its
+# content is build-directory state, outside semb_source_sha.
+set(_semb_compile_flags_header "${CMAKE_BINARY_DIR}/generated/semb_compile_flags.h")
+if(NOT EXISTS "${_semb_compile_flags_header}")
+	file(WRITE "${_semb_compile_flags_header}"
+		"// Placeholder written by configure; tools/semb_build_step.py rewrites it before any compile.
+"
+		"#pragma once
+#define SEMB_COMPILE_FLAGS_SHA \"unrecorded\"\n")
+endif()
+add_custom_target(semb_build_step
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/semb_build_step.py"
+		--build-dir "${CMAKE_BINARY_DIR}"
+		--source-dir "${CMAKE_SOURCE_DIR}"
+		--engine-prefix "${SEMB_ENGINE_PREFIX}"
+		--provenance-sha256 "${SEMB_ENGINE_PROVENANCE_SHA256}"
+		--library "$<TARGET_FILE:superslm::superslm>"
+		--library-sha256 "${SEMB_ENGINE_LIBRARY_SHA256}"
+		--compiler-id "${CMAKE_CXX_COMPILER_ID}"
+		--frontend "${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}"
+		--target superembedder --target semb --target semb_witness
+		--header "${_semb_compile_flags_header}"
+	BYPRODUCTS "${_semb_compile_flags_header}" "${CMAKE_BINARY_DIR}/generated/compile-flags.json"
+	COMMENT "compile-flag record, ambient compiler inputs, engine unchanged since configure"
+	VERBATIM)
 
 # W-Q's committed population is data, not a second set of literals in the
 # query TU.  Configure verifies the fixture bytes against their manifest and
@@ -176,6 +213,13 @@ target_include_directories(superembedder
 		"${CMAKE_BINARY_DIR}/generated"
 )
 target_link_libraries(superembedder PRIVATE superslm::superslm)
+add_dependencies(superembedder semb_build_step)
+# U2-3 item 1: the descriptor's configuration and buildSystem. A build that
+# defines neither (a build of the vendored sources by another build system)
+# matches no member.
+target_compile_definitions(superembedder PRIVATE
+	"SEMB_BUILD_CONFIGURATION=\"$<CONFIG>\""
+	"SEMB_BUILD_SYSTEM=\"cmake\"")
 if(SEMB_C38_DEFINE_TARGET STREQUAL "library")
 	target_compile_definitions(superembedder PRIVATE SUPERSLM_C38_INLINE_PERTURBATION=1)
 endif()

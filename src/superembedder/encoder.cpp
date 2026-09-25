@@ -14,6 +14,7 @@
 #include "superembedder/manifest_labels_abi.h"
 #include "superembedder/version.h"
 #include "encoder_open_internal.h"
+#include "certification.h"
 #include "query_internal.h"
 #include "wb_corpus.h"
 #include "json_lite.h"
@@ -24,9 +25,6 @@
 // source-closure scan -- safe to include here, unlike generated/semb_provenance.h
 // (see semb_bake_to_path's own provenance-block comment for why THAT one is not).
 #include "semb_engine_pin.h"
-// Generated at configure time the same way (cmake/CertifiedBuilds.cmake ->
-// semb_certified_builds.h.in): docs/certified-builds.json's exact bytes.
-#include "semb_certified_builds.h"
 
 #include <array>
 #include <atomic>
@@ -132,10 +130,9 @@ constexpr char kObjectCodeShaUncomputedLabel[] = "SEMB-OBJECT-CODE-SHA-NOT-COMPU
 constexpr char kEngineObjectCodeShaUncomputedLabel[] =
     "SEMB-ENGINE-OBJECT-CODE-SHA-NOT-COMPUTED-IN-1.0";
 constexpr char kSourceShaUncomputedLabel[] = "SEMB-SOURCE-SHA-NOT-COMPUTED-IN-1.0";
-// No CPU-tier accessor is exposed by this library or by SuperSLM's public
-// surface (the engine's own CPUID+XGETBV dispatch, matmul.h/matmul.cpp,
-// is internal to SuperSLM and not reachable from here).
-constexpr char kCpuTierUncomputedLabel[] = "SEMB-CPU-TIER-NOT-COMPUTED-IN-1.0";
+// U2-3 item 8 (D-SLM7279, overriding D-SLM7212 for this one field): the
+// manifest's machine_tier and provenance.witness.cpu_tier carry the tier
+// this process dispatched to (certification::DispatchedTier), not a label.
 
 // C34 legs (e)/(h) (sec 3.4's label-check table): the value THIS primitive
 // is about to write into label:engine_path_id / label:ps_version,
@@ -351,14 +348,14 @@ std::array<uint8_t, 32> ComputeTemplateDigest() {
   return out;
 }
 
-// certification_epoch (plan sec 3.3, sec 4.1a): SHA-256 of the certification
-// document's exact bytes as this build compiled them in
-// (cmake/CertifiedBuilds.cmake). Never read from a file at run time, so a
-// document edited after the build cannot change what this build reports.
+// certification_epoch (plan U2-3 items 1 and 9): the cell verdict's epoch --
+// SHA-256 of the certification identity file's exact bytes as this build
+// compiled them in when this build, at the tier this process dispatched to,
+// is a proven cell of the compiled-in list; otherwise SHA-256 of
+// "SEMB-UNCERTIFIED\0" followed by those bytes. Decided once per process at
+// the first open, never read from a file at run time.
 std::array<uint8_t, 32> ComputeCertificationEpoch() {
-  std::array<uint8_t, 32> out{};
-  Hash(semb::kCertifiedBuildsDocument, semb::kCertifiedBuildsDocumentSize, out.data());
-  return out;
+  return semb::certification::ProcessVerdict().epoch;
 }
 
 // The exact byte sequence ComposeBatch tokenizes for one document: the
@@ -1647,11 +1644,28 @@ static semb_status BakeToPathBody(semb_encoder enc, const semb_document* docs, s
     // agreed only while kDocumentFrame was empty (D-SLM4726), so a future
     // PS-1 frame would have silently under-reported every row here. A
     // second, read-only tokenize pass for metadata, not a second forward.
+    //
+    // U2-3 item 12: the same loop accumulates token_id_digest, C23's rule
+    // (tests/c23_token_id_determinism_test.cpp) over the ids the bake
+    // tokenized before the end token: per row the u64 LE count, then each id
+    // as u32 LE. Provenance, never an identity input.
     std::vector<int64_t> per_row_token_counts(n);
-    for (size_t i = 0; i < n; ++i) {
-      per_row_token_counts[i] = static_cast<int64_t>(
-          h->tokenizer.Encode(ComposeDocumentInput(std::string_view(docs[i].utf8, docs[i].utf8_len)))
-              .size());
+    std::array<uint8_t, 32> token_id_digest{};
+    {
+      superslm::Sha256 token_hash;
+      for (size_t i = 0; i < n; ++i) {
+        const std::vector<int32_t> ids =
+            h->tokenizer.Encode(ComposeDocumentInput(std::string_view(docs[i].utf8, docs[i].utf8_len)));
+        per_row_token_counts[i] = static_cast<int64_t>(ids.size());
+        UpdateU64(&token_hash, static_cast<uint64_t>(ids.size()));
+        for (const int32_t id : ids) {
+          const uint32_t v = static_cast<uint32_t>(id);
+          const uint8_t le[4] = {static_cast<uint8_t>(v), static_cast<uint8_t>(v >> 8), static_cast<uint8_t>(v >> 16),
+                                 static_cast<uint8_t>(v >> 24)};
+          token_hash.Update(le, sizeof(le));
+        }
+      }
+      token_hash.Final(token_id_digest.data());
     }
 
     // Row digest: SHA-256 over the .wvbank.bin payload bytes just written.
@@ -1731,7 +1745,7 @@ static semb_status BakeToPathBody(semb_encoder enc, const semb_document* docs, s
     witness.Set("corpus_digest", js::Value::MakeString(Hex(corpus_digest.data(), 32)));
     witness.Set("wa_digest", js::Value::MakeString(Hex(wa_sha, 32)));
     witness.Set("wb_digest", js::Value::MakeString(Hex(h->wb_digest.data(), 32)));
-    witness.Set("cpu_tier", js::Value::MakeString(kCpuTierUncomputedLabel));
+    witness.Set("cpu_tier", js::Value::MakeString(semb::certification::DispatchedTier()));
 
     js::Value provenance = js::Value::MakeObject();
     provenance.Set("object_code_sha", js::Value::MakeString(kObjectCodeShaUncomputedLabel));
@@ -1750,7 +1764,28 @@ static semb_status BakeToPathBody(semb_encoder enc, const semb_document* docs, s
     manifest.Set("template_sha256", js::Value::MakeString(Hex(h->manifest_template_sha256.data(), 32)));
     manifest.Set("witness_sha", js::Value::MakeString(Hex(h->manifest_witness_sha.data(), 32)));
     manifest.Set("certification_epoch", js::Value::MakeString(Hex(h->manifest_certification_epoch.data(), 32)));
+    manifest.Set("certification_identity_path", js::Value::MakeString("docs/certification-identity.json"));
     manifest.Set("certified_builds_path", js::Value::MakeString("docs/certified-builds.json"));
+    // U2-3 items 1 and 12: which list the build compiled in and which cell it
+    // resolved to on this host, and the descriptor the verdict matched --
+    // provenance, never fingerprint inputs.
+    manifest.Set("certified_builds_sha256",
+                 js::Value::MakeString(Hex(semb::certification::CompiledListSha256().data(), 32)));
+    manifest.Set("certified_cell", js::Value::MakeString(semb::certification::ProcessVerdict().cell));
+    {
+      const semb::certification::Descriptor& d = semb::certification::ThisBuild();
+      js::Value descriptor = js::Value::MakeObject();
+      descriptor.Set("os", js::Value::MakeString(d.os));
+      descriptor.Set("isa", js::Value::MakeString(d.isa));
+      descriptor.Set("toolchain", js::Value::MakeString(d.toolchain));
+      descriptor.Set("stdlib", js::Value::MakeString(d.stdlib));
+      descriptor.Set("configuration", js::Value::MakeString(d.configuration));
+      descriptor.Set("buildSystem", js::Value::MakeString(d.build_system));
+      descriptor.Set("dispatch", js::Value::MakeString(d.dispatch));
+      descriptor.Set("compileFlags", js::Value::MakeString(d.compile_flags));
+      descriptor.Set("engineFlags", js::Value::MakeString(d.engine_flags));
+      manifest.Set("build_descriptor", std::move(descriptor));
+    }
     manifest.Set("provenance", std::move(provenance));
     manifest.Set("label:ps_version", js::Value::MakeString(kPsVersionLabel));
     manifest.Set("label:engine_path_id", js::Value::MakeString(kEngineAdapterIdLabel));
@@ -1768,7 +1803,8 @@ static semb_status BakeToPathBody(semb_encoder enc, const semb_document* docs, s
     manifest.Set("dtype", js::Value::MakeString("float32"));
     manifest.Set("row_digest", js::Value::MakeString(Hex(row_digest.data(), 32)));
     manifest.Set("corpus_digest", js::Value::MakeString(Hex(corpus_digest.data(), 32)));
-    manifest.Set("machine_tier", js::Value::MakeString(kCpuTierUncomputedLabel));
+    manifest.Set("machine_tier", js::Value::MakeString(semb::certification::DispatchedTier()));
+    manifest.Set("token_id_digest", js::Value::MakeString(Hex(token_id_digest.data(), 32)));
     js::Value token_counts = js::Value::MakeArray();
     for (size_t i = 0; i < n; ++i) token_counts.as_array.push_back(js::Value::MakeInt(per_row_token_counts[i]));
     manifest.Set("per_row_token_counts", std::move(token_counts));
