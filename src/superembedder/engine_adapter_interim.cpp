@@ -16,9 +16,10 @@
 // same TU:
 //
 //   * the interim handle surface (include/superembedder/encoder_interim_abi.h): the artifact
-//     read ONCE into owned memory at open, every layer AND the final norm
-//     marshaled once, the K/V workspace sized once from the artifact's own
-//     geometry, and many documents encoded against that one handle -- the
+//     read ONCE at open (the engine's loader copies it into the model view's
+//     own backing, and this adapter's copy is then released), every layer AND
+//     the final norm marshaled once, each encode's K/V workspace slot sized to
+//     its own document (U2-9), and many documents encoded against that one handle -- the
 //     shape a bake over 239 documents needs and the one-shot witness verb
 //     below (which re-opens the 633 MB artifact per call) cannot supply;
 //   * `q_width` threaded EXPLICITLY to both forward entry points
@@ -48,38 +49,20 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
-#include <fstream>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <vector>
 
-// TE-356 (C-2): platform memory query for FinishEncoderOpen's adaptive
-// workspace cap, below. Each branch reads THIS machine's own free memory at
-// open time; none of them is a promise (StandardsDocument.md 5.4's
-// resolution-floor rule -- a reading converts "definitely will not fit" into
-// a refusal reliably, never "reads as fitting" into a guarantee against a
-// concurrent allocator elsewhere in the process).
-#if defined(_WIN32)
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#elif defined(__APPLE__)
-#include <mach/mach.h>
-#include <mach/mach_host.h>
-#else
-#include <unistd.h>
-#endif
+#include "c_boundary.h"
 
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
 #include "support/semb_workspace_seam.h"
@@ -114,7 +97,7 @@ static void OnAcquired() {
 // SECOND, independent park point at per-DOCUMENT granularity, distinct
 // from OnAcquired's once-per-ACQUISITION park above. The batch verb
 // (semb_interim_encode_batch_ps_n, below) acquires at most T workspace
-// slots for the whole call (TE-350: T <= min(doc_count, pool size, hardware
+// slots for the whole call (TE-350: T <= min(doc_count, max_concurrency, hardware
 // concurrency) -- an upper bound, not an equality; contention with another
 // in-flight call can leave fewer free (TE-356) -- one worker thread per
 // acquired slot) and each worker holds
@@ -419,8 +402,39 @@ const char* SetEngineStatus(const std::string& s) {
   return t_last_engine_status.c_str();
 }
 
+// One K/V workspace slot record (U2-9 items 2-5). Records are created on
+// acquisition, up to the handle's `max_concurrency`, and never removed; their
+// addresses are stable (each is its own allocation). The buffer is sized to
+// the document an encode runs: default-initialized storage, never filled, so
+// only the rows a forward writes become resident. `capacity` is the buffer's
+// size in bytes; it and `buffer` change only under the handle's
+// workspace_mutex, and only the slot's holder (or, with no holder, the
+// end-of-open release) changes them.
+struct WorkspaceSlot {
+  std::unique_ptr<uint8_t[]> buffer;
+  size_t capacity = 0;
+  bool in_use = false;
+};
+
+// U2-9 item 6: at most one encode of a document longer than
+// kLongDocumentPositions runs on a handle at a time. A holder count of 0 or 1.
+struct LongDocumentGate {
+  std::mutex mutex;
+  std::condition_variable released;
+  uint32_t holders = 0;
+};
+
+// The slot sizing rule (U2-9 item 3): C = min(max(64, the next power of two
+// >= n), context_cap). A slot whose C exceeds kLongDocumentPositions takes the
+// long-document gate and is released after its encode (items 5 and 6).
+constexpr size_t kMinSlotPositions = 64;
+constexpr size_t kLongDocumentPositions = 4096;
+
 struct EncoderModel {
-  // SslmModelView borrows section storage from these exact bytes.
+  // The artifact's bytes, held only until SslmModel::Load returns: the
+  // engine's loader copies them into the view's own backing, so
+  // FinishEncoderOpen releases this copy before any marshal step (U2-9
+  // item 1).
   std::vector<uint8_t> model_bytes;
   SslmModelView view;
   std::vector<LayerBacking> backings;
@@ -429,12 +443,14 @@ struct EncoderModel {
   CarriedScale embed_site_constant{};
   std::vector<int32_t> final_norm_gain;
   CarriedScale final_norm_site_constant{};
-  struct WorkspaceSlot {
-    std::vector<uint8_t> bytes;
-    bool in_use = false;
-  };
   std::mutex workspace_mutex;
-  std::vector<WorkspaceSlot> workspaces;
+  std::vector<std::unique_ptr<WorkspaceSlot>> workspaces;
+  // The bound on slot records (and so on encodes running at once).
+  uint32_t max_concurrency = 1;
+  // P: num_hidden_layers * num_key_value_heads * head_dim * 2, the K/V bytes
+  // one position needs; a slot of C positions needs P * C bytes.
+  size_t kv_bytes_per_position = 0;
+  LongDocumentGate long_document_gate;
   size_t hidden_size = 0;
   uint32_t num_layers = 0;
   size_t q_width = 0;
@@ -443,84 +459,9 @@ struct EncoderModel {
   int32_t appended_token_id = -1;
 };
 
-// TE-356 (C-2): a best-effort reading of physical memory actually free on
-// THIS machine, right now -- never a figure carried over from any other
-// box (main.cpp's retired kBakeMaxConcurrency comment named this project's
-// own development box explicitly; that is the defect this closes). Returns
-// false when no reading could be taken, which FinishEncoderOpen (below)
-// treats as "unknown" rather than "unlimited" -- this term of the policy
-// simply does not apply on that platform, named explicitly in the build
-// record per StandardsDocument.md sec 5.4.
-#if defined(_WIN32)
-bool TryQueryAvailableMemoryBytes(size_t* out_bytes) {
-  MEMORYSTATUSEX status;
-  status.dwLength = sizeof(status);
-  if (!GlobalMemoryStatusEx(&status)) return false;
-  *out_bytes = static_cast<size_t>(status.ullAvailPhys);
-  return true;
-}
-#elif defined(__APPLE__)
-bool TryQueryAvailableMemoryBytes(size_t* out_bytes) {
-  const mach_port_t host = mach_host_self();
-  vm_size_t page_size = 0;
-  if (host_page_size(host, &page_size) != KERN_SUCCESS) return false;
-  vm_statistics64_data_t vm_stat{};
-  mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
-  if (host_statistics64(host, HOST_VM_INFO64, reinterpret_cast<host_info64_t>(&vm_stat), &count) !=
-      KERN_SUCCESS) {
-    return false;
-  }
-  // free + inactive + speculative: pages the kernel will hand out without
-  // first paging anything to disk -- the same "available, not merely
-  // unallocated" reading /proc/meminfo's MemAvailable targets on Linux
-  // (below). wired and active pages are excluded because they are in use.
-  const uint64_t free_pages = static_cast<uint64_t>(vm_stat.free_count) +
-                              static_cast<uint64_t>(vm_stat.inactive_count) +
-                              static_cast<uint64_t>(vm_stat.speculative_count);
-  *out_bytes = static_cast<size_t>(free_pages) * static_cast<size_t>(page_size);
-  return true;
-}
-#else
-bool TryQueryAvailableMemoryBytes(size_t* out_bytes) {
-  // Linux: /proc/meminfo's own MemAvailable estimate (present since kernel
-  // 3.14) accounts for reclaimable cache the way a raw free-page count does
-  // not, so it is read first; sysconf is the fallback for a kernel or a
-  // non-Linux POSIX system without that file.
-  std::ifstream meminfo("/proc/meminfo");
-  if (meminfo) {
-    std::string line;
-    const std::string_view key = "MemAvailable:";
-    while (std::getline(meminfo, line)) {
-      if (line.compare(0, key.size(), key) != 0) continue;
-      const char* digits = line.c_str() + key.size();
-      char* end = nullptr;
-      const unsigned long long kib = std::strtoull(digits, &end, 10);
-      if (end == digits) break;
-      *out_bytes = static_cast<size_t>(kib) * size_t{1024};
-      return true;
-    }
-  }
-#if defined(_SC_AVPHYS_PAGES) && defined(_SC_PAGESIZE)
-  const long pages = sysconf(_SC_AVPHYS_PAGES);
-  const long page_size = sysconf(_SC_PAGESIZE);
-  if (pages > 0 && page_size > 0) {
-    *out_bytes = static_cast<size_t>(pages) * static_cast<size_t>(page_size);
-    return true;
-  }
-#endif
-  return false;
-}
-#endif
-
-// TE-356 (C-2): a policy choice, not a derived or measured figure --
-// headroom left unrequested at open so the workspace pool alone never
-// claims every free byte a memory reading reports, leaving room for the
-// OS and whatever else shares the box. Named explicitly as reasoned, not
-// measured, per StandardsDocument.md sec 5.4.
-constexpr size_t kOpenMemoryReserveBytes = size_t{1} << 30;  // 1 GiB
-
 // Finishes an open after the artifact's exactly-once read has transferred its
-// backing into `m`. The model view borrows from that backing for its lifetime.
+// backing into `m`. The engine's loader copies those bytes into the model
+// view's own backing, so `m`'s copy is released as soon as the load succeeds.
 EncoderModel* FinishEncoderOpen(std::unique_ptr<EncoderModel> m, uint32_t max_concurrency,
                                 const char** engine_status_name,
                                 uint32_t tokenizer_vocab_size = 0,
@@ -535,6 +476,9 @@ EncoderModel* FinishEncoderOpen(std::unique_ptr<EncoderModel> m, uint32_t max_co
     }
     return nullptr;
   }
+  // U2-9 item 1: the marshal borrows weights from the engine's copy, never
+  // from this one.
+  std::vector<uint8_t>().swap(m->model_bytes);
   const uint32_t num_heads = m->view.config.num_attention_heads;
   const uint32_t num_kv_heads = m->view.config.num_key_value_heads;
   m->num_layers = m->view.config.num_hidden_layers;
@@ -576,69 +520,35 @@ EncoderModel* FinishEncoderOpen(std::unique_ptr<EncoderModel> m, uint32_t max_co
     if (engine_status_name) *engine_status_name = SetEngineStatus("MissingFinalNormSiteConstant");
     return nullptr;
   }
-  // The raw-text join follows all engine validation, but precedes the pool.
-  // Interim token-id callers have no tokenizer vocabulary to join.
+  // The raw-text join follows all engine validation. Interim token-id
+  // callers have no tokenizer vocabulary to join.
   if (tokenizer_vocab_size > m->view.config.vocab_size) {
     if (vocab_mismatch) *vocab_mismatch = true;
     return nullptr;
   }
-  // The forward's own workspace requirement (forward_sites.h), identical for
-  // both entry points: num_hidden_layers * context_cap * num_kv_heads *
-  // head_dim * 2. Compute it without a wrapping intermediate before any
-  // allocation, then allocate every concurrency slot at open as the frozen
-  // public handle contract requires.
-  size_t workspace_bytes = static_cast<size_t>(m->num_layers);
-  const size_t factors[] = {static_cast<size_t>(m->context_cap),
-                            static_cast<size_t>(num_kv_heads),
+  // P, the forward's own workspace requirement per position (forward_sites.h),
+  // identical for both entry points: num_hidden_layers * num_kv_heads *
+  // head_dim * 2. P * context_cap is checked here without a wrapping
+  // intermediate, so P * C cannot wrap for any C <= context_cap (U2-9 item 3).
+  // Open reserves nothing per unit of max_concurrency (U2-9 item 2): slot
+  // records are created on acquisition, and each buffer on its first encode.
+  size_t per_position = static_cast<size_t>(m->num_layers);
+  const size_t factors[] = {static_cast<size_t>(num_kv_heads),
                             static_cast<size_t>(m->view.config.head_dim), size_t{2}};
   for (const size_t factor : factors) {
-    if (factor != 0 && workspace_bytes > std::numeric_limits<size_t>::max() / factor) {
+    if (factor != 0 && per_position > std::numeric_limits<size_t>::max() / factor) {
       if (engine_status_name) *engine_status_name = SetEngineStatus("WorkspaceSizeOverflow");
       return nullptr;
     }
-    workspace_bytes *= factor;
+    per_position *= factor;
   }
-
-  // TE-356 (C-2): `max_concurrency` is the caller's request -- already
-  // capped by document count and by hardware concurrency where the caller
-  // knows both (main.cpp's Bake()/Verify() compute
-  // min(requested, doc_count, hardware_concurrency) before this call; a raw
-  // library caller that wants every requested slot regardless of thread
-  // count, e.g. one slot per independent concurrent caller rather than one
-  // per worker inside a single batch call, is unaffected -- hardware
-  // concurrency is deliberately NOT re-applied here, only by the one
-  // caller that means it as a WORKER-COUNT bound). What every caller gets,
-  // uniformly, is the one term no caller can compute for itself: this open
-  // never allocates more slots than a reading of memory actually free on
-  // this machine, right now, can afford, at kOpenMemoryReserveBytes of
-  // headroom -- replacing the retired kBakeMaxConcurrency=8 comment's own
-  // one-development-box figure with a number sized from the box that is
-  // actually opening the handle. Where the reading is unavailable on this
-  // toolchain (returns false), this term does not apply -- named
-  // explicitly here and in the build record, per StandardsDocument.md sec
-  // 5.4, as what this policy does NOT cover on that platform; the caller's
-  // own document-count and hardware-concurrency terms still do.
-  size_t effective_concurrency = static_cast<size_t>(max_concurrency);
-  size_t available_bytes = 0;
-  if (TryQueryAvailableMemoryBytes(&available_bytes)) {
-    const size_t reserve = std::min(available_bytes, kOpenMemoryReserveBytes);
-    const size_t budget = available_bytes - reserve;
-    const size_t affordable = (workspace_bytes == 0) ? effective_concurrency : budget / workspace_bytes;
-    effective_concurrency = std::min(effective_concurrency, affordable);
+  const size_t cap = static_cast<size_t>(m->context_cap);
+  if (cap != 0 && per_position > std::numeric_limits<size_t>::max() / cap) {
+    if (engine_status_name) *engine_status_name = SetEngineStatus("WorkspaceSizeOverflow");
+    return nullptr;
   }
-  if (effective_concurrency == 0) {
-    // Genuinely cannot afford even one workspace slot on this machine.
-    // Refuse the same way an allocation failure inside open already does
-    // (K-17a's own contract) rather than attempt the allocation and let
-    // overcommit -- or a crash -- decide silently. This throw is caught by
-    // semb_encoder_open's own catch(std::bad_alloc), which is the ONLY
-    // status this path needs; `m` (owned by value in this frame) unwinds
-    // cleanly, freeing the artifact bytes and every layer already
-    // marshaled above.
-    throw std::bad_alloc();
-  }
-  m->workspaces.resize(effective_concurrency);
-  for (auto& slot : m->workspaces) slot.bytes.assign(workspace_bytes, 0);
+  m->kv_bytes_per_position = per_position;
+  m->max_concurrency = max_concurrency;
   return m.release();
 }
 
@@ -683,12 +593,101 @@ EncoderModel* EncoderOpen(const std::string& model_path, const char** engine_sta
 
 void EncoderClose(EncoderModel* m) { delete m; }
 
+// Releases a slot's buffer to capacity 0 (U2-9 items 2, 3 and 5). The old
+// storage is freed after the mutex is dropped.
+void ReleaseSlotBuffer(EncoderModel* m, WorkspaceSlot* slot) {
+  std::unique_ptr<uint8_t[]> old;
+  std::lock_guard<std::mutex> lock(m->workspace_mutex);
+  old.swap(slot->buffer);
+  slot->capacity = 0;
+}
+
+// Grows a slot to `bytes` for a document of `c` positions (U2-9 item 3). The
+// old buffer is released FIRST, then the new one is allocated, with no copy
+// and no fill, so a growth never holds two buffers. A failed allocation
+// (std::bad_alloc) leaves the slot empty and propagates (U2-9 item 7).
+void GrowSlot(EncoderModel* m, WorkspaceSlot* slot, size_t c, size_t bytes) {
+  ReleaseSlotBuffer(m, slot);
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+  test_seam::BeforeSlotGrowth(c, slot->capacity);
+#else
+  (void)c;
+#endif
+  std::unique_ptr<uint8_t[]> fresh(new uint8_t[bytes]);  // default-initialized
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+  test_seam::AfterSlotGrowth(fresh.get(), bytes);
+#endif
+  std::lock_guard<std::mutex> lock(m->workspace_mutex);
+  slot->buffer.swap(fresh);
+  slot->capacity = bytes;
+}
+
+// U2-9 items 5 and 6, by RAII: for a document whose C exceeds
+// kLongDocumentPositions, takes the handle's long-document gate before the
+// slot grows, and on every exit releases the slot's buffer to capacity 0 and
+// then gives the gate back. Never held across documents.
+class LongDocumentScope {
+ public:
+  LongDocumentScope(EncoderModel* m, WorkspaceSlot* slot, bool long_document)
+      : model_(m), slot_(slot), held_(long_document) {
+    if (!held_) return;
+    LongDocumentGate& gate = model_->long_document_gate;
+    std::unique_lock<std::mutex> lock(gate.mutex);
+    if (gate.holders != 0) {
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+      test_seam::OnGateWaitBegin();
+#endif
+      gate.released.wait(lock, [&gate] { return gate.holders == 0; });
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+      test_seam::OnGateWaitEnd();
+#endif
+    }
+    gate.holders = 1;
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+    test_seam::OnGateTaken(slot_->capacity);
+#endif
+  }
+  ~LongDocumentScope() {
+    if (!held_) return;
+    ReleaseSlotBuffer(model_, slot_);
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+    test_seam::OnGateGiveBack(slot_->capacity);
+#endif
+    LongDocumentGate& gate = model_->long_document_gate;
+    {
+      std::lock_guard<std::mutex> lock(gate.mutex);
+      gate.holders = 0;
+    }
+    gate.released.notify_one();
+  }
+  LongDocumentScope(const LongDocumentScope&) = delete;
+  LongDocumentScope& operator=(const LongDocumentScope&) = delete;
+  bool held() const { return held_; }
+
+ private:
+  EncoderModel* model_;
+  WorkspaceSlot* slot_;
+  bool held_;
+};
+
+// The slot's C for a document of `n` positions (U2-9 item 3).
+size_t SlotPositions(size_t n, size_t context_cap) {
+  size_t c = kMinSlotPositions;
+  while (c < n && c <= std::numeric_limits<size_t>::max() / 2) c <<= 1;
+  if (c < n) c = n;
+  return std::min(c, context_cap);
+}
+
 // The seam: embed every token, then run the forward down `leg`. On the
 // chunk-batched leg `chunk_budget` (0 or >= n resolves to one whole-document
 // call) bounds each call's span; on the per-token leg every position runs
 // through the engine's single-token loop in order against the same K/V
-// store, exactly as the engine's own decode path drives it.
-SslmForwardStatus Encode(EncoderModel* m, std::vector<uint8_t>& workspace,
+// store, exactly as the engine's own decode path drives it. The slot is
+// sized to this document (U2-9 item 3): the forward receives
+// context_cap = C and workspace_size = P * C exactly, whatever larger buffer
+// the slot retains, and no byte of it is filled first (U2-9 item 4): the
+// forward reads only rows 0..position, each written earlier by this document.
+SslmForwardStatus Encode(EncoderModel* m, WorkspaceSlot* slot,
                          const int32_t* tokens, size_t n, size_t chunk_budget,
                          SembForwardLeg leg, int8_t* codes_out, CarriedScale* scales_out) {
   if (n == 0) return SslmForwardStatus::InvalidLayerBudget;
@@ -704,20 +703,37 @@ SslmForwardStatus Encode(EncoderModel* m, std::vector<uint8_t>& workspace,
     scales_out[p] = es;
   }
 
-  std::memset(workspace.data(), 0, workspace.size());
+  const size_t cap = static_cast<size_t>(m->context_cap);
+  size_t c = SlotPositions(n, cap);
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+  // The forced-reference arm: the rule before U2-9, C = context_cap with a
+  // zeroed buffer, as the byte-identity reference.
+  const bool forced_reference = test_seam::ForcedReferenceArmed();
+  if (forced_reference) c = cap;
+#endif
+  const size_t workspace_bytes = m->kv_bytes_per_position * c;
+  const int64_t context_cap = static_cast<int64_t>(c);
+  LongDocumentScope long_document(m, slot, c > kLongDocumentPositions);
+  if (slot->capacity < workspace_bytes) GrowSlot(m, slot, c, workspace_bytes);
+  uint8_t* const workspace = slot->buffer.get();
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+  if (forced_reference && workspace_bytes != 0) std::memset(workspace, 0, workspace_bytes);
+  if (long_document.held()) test_seam::OnGateHolding();
+#endif
+
   uint64_t kv_sat = 0;
   if (leg == kSembForwardLegChunkBatched) {
     for (size_t off = 0; off < n; off += chunk_budget) {
       const size_t span = (off + chunk_budget <= n) ? chunk_budget : (n - off);
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
-      test_seam::PoisonAt(off, workspace.data(), m->num_layers, m->context_cap,
+      test_seam::PoisonAt(off, workspace, m->num_layers, context_cap,
                           m->view.config.num_key_value_heads, m->view.config.head_dim);
 #endif
       const SslmForwardStatus st = RunLayerLoopChunkBatched(
           codes_out + off * hidden, scales_out + off, span, m->layers.data(), m->num_layers, hidden,
           m->view.config.head_dim, m->view.config.num_key_value_heads,
-          m->view.config.intermediate_size, m->context_cap, static_cast<int64_t>(off),
-          m->view.rope_tables, workspace.data(), workspace.size(), m->option_g_fused, &kv_sat,
+          m->view.config.intermediate_size, context_cap, static_cast<int64_t>(off),
+          m->view.rope_tables, workspace, workspace_bytes, m->option_g_fused, &kv_sat,
           /*site_prefix=*/{}, /*trace_hook_state=*/nullptr, /*q_width=*/m->q_width);
       if (st != SslmForwardStatus::Ok) return st;
     }
@@ -732,7 +748,7 @@ SslmForwardStatus Encode(EncoderModel* m, std::vector<uint8_t>& workspace,
   seq.context_length = 0;
   for (size_t p = 0; p < n; ++p) {
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
-    test_seam::PoisonAt(p, workspace.data(), m->num_layers, m->context_cap,
+    test_seam::PoisonAt(p, workspace, m->num_layers, context_cap,
                         m->view.config.num_key_value_heads, m->view.config.head_dim);
 #endif
     seq.hidden_codes = codes_out + p * hidden;
@@ -743,15 +759,15 @@ SslmForwardStatus Encode(EncoderModel* m, std::vector<uint8_t>& workspace,
     if (m->option_g_fused) {
       st = RunLayerLoop(seq, m->layers.data(), m->num_layers, m->num_layers, hidden,
                         m->view.config.head_dim, m->view.config.num_key_value_heads,
-                        m->view.config.intermediate_size, m->context_cap, m->view.rope_tables,
-                        workspace.data(), workspace.size(), OptionGKLandingMode::kFused,
+                        m->view.config.intermediate_size, context_cap, m->view.rope_tables,
+                        workspace, workspace_bytes, OptionGKLandingMode::kFused,
                         /*site_prefix=*/{}, /*token_index=*/0, /*trace_hook_state=*/nullptr,
                         /*q_width=*/m->q_width);
     } else {
       st = RunLayerLoop(seq, m->layers.data(), m->num_layers, m->num_layers, hidden,
                         m->view.config.head_dim, m->view.config.num_key_value_heads,
-                        m->view.config.intermediate_size, m->context_cap, m->view.rope_tables,
-                        workspace.data(), workspace.size(), /*site_prefix=*/{},
+                        m->view.config.intermediate_size, context_cap, m->view.rope_tables,
+                        workspace, workspace_bytes, /*site_prefix=*/{},
                         /*token_index=*/0, /*trace_hook_state=*/nullptr, /*q_width=*/m->q_width);
     }
     if (st != SslmForwardStatus::Ok) return st;
@@ -760,27 +776,34 @@ SslmForwardStatus Encode(EncoderModel* m, std::vector<uint8_t>& workspace,
   return SslmForwardStatus::Ok;
 }
 
-bool TryAcquireWorkspace(EncoderModel* m, size_t* out_index) {
+// U2-9 item 2: hands the caller the LOWEST-indexed free slot record, or
+// appends a new one while fewer than max_concurrency exist; nullptr when
+// max_concurrency records are all in use. The caller receives the record
+// itself, never an index into a list that may grow.
+WorkspaceSlot* TryAcquireWorkspace(EncoderModel* m) {
   std::lock_guard<std::mutex> lock(m->workspace_mutex);
-  for (size_t i = 0; i < m->workspaces.size(); ++i) {
-    if (!m->workspaces[i].in_use) {
-      m->workspaces[i].in_use = true;
-      *out_index = i;
-      return true;
+  for (const std::unique_ptr<WorkspaceSlot>& record : m->workspaces) {
+    if (!record->in_use) {
+      record->in_use = true;
+      return record.get();
     }
   }
-  return false;
+  if (m->workspaces.size() >= static_cast<size_t>(m->max_concurrency)) return nullptr;
+  auto record = std::make_unique<WorkspaceSlot>();
+  record->in_use = true;
+  m->workspaces.push_back(std::move(record));
+  return m->workspaces.back().get();
 }
 
-void ReleaseWorkspace(EncoderModel* m, size_t index) {
+void ReleaseWorkspace(EncoderModel* m, WorkspaceSlot* slot) {
   std::lock_guard<std::mutex> lock(m->workspace_mutex);
-  m->workspaces[index].in_use = false;
+  slot->in_use = false;
 }
 
 struct WorkspaceLease {
   EncoderModel* model;
-  size_t index;
-  ~WorkspaceLease() { ReleaseWorkspace(model, index); }
+  WorkspaceSlot* slot;
+  ~WorkspaceLease() { ReleaseWorkspace(model, slot); }
 };
 
 // TE-350: acquires at most `want` workspace slots up front (fewer if the
@@ -796,30 +819,30 @@ struct WorkspaceLease {
 class WorkspacePool {
  public:
   WorkspacePool(EncoderModel* model, size_t want) : model_(model) {
-    indices_.reserve(want);
+    slots_.reserve(want);
     for (size_t i = 0; i < want; ++i) {
-      size_t idx = 0;
-      if (!TryAcquireWorkspace(model_, &idx)) break;
-      indices_.push_back(idx);
+      WorkspaceSlot* slot = TryAcquireWorkspace(model_);
+      if (!slot) break;
+      slots_.push_back(slot);
     }
   }
   WorkspacePool(const WorkspacePool&) = delete;
   WorkspacePool& operator=(const WorkspacePool&) = delete;
   ~WorkspacePool() {
-    for (size_t index : indices_) ReleaseWorkspace(model_, index);
+    for (WorkspaceSlot* slot : slots_) ReleaseWorkspace(model_, slot);
   }
-  size_t count() const { return indices_.size(); }
-  size_t index(size_t worker) const { return indices_[worker]; }
+  size_t count() const { return slots_.size(); }
+  WorkspaceSlot* slot(size_t worker) const { return slots_[worker]; }
 
  private:
   EncoderModel* model_;
-  std::vector<size_t> indices_;
+  std::vector<WorkspaceSlot*> slots_;
 };
 
-// TE-350: T = min(documents, workspaces in the pool, hardware concurrency).
+// TE-350: T = min(documents, max_concurrency, hardware concurrency).
 // Bounding by hardware concurrency avoids oversubscribing the machine when
-// the pool is sized larger than the box's own thread count; bounding by the
-// pool size is the workspace contract itself; bounding by document count
+// max_concurrency is larger than the box's own thread count; bounding by
+// max_concurrency is the workspace contract itself; bounding by document count
 // means a small batch never spins up idle workers with nothing to do.
 // std::thread::hardware_concurrency() is permitted to return 0 when it
 // cannot determine an answer, in which case this falls back to 1 rather
@@ -835,14 +858,18 @@ size_t HardwareConcurrencyOrOne() {
 
 // ---------------------------------------------------------------------------
 // The U0 witness verb, unchanged in shape (one-shot: opens, encodes, closes).
+// The body is C++-linkage and the C-linkage definition is its boundary
+// (U2-10): the model is held by a guard, so every exit, an exception
+// included, closes it (U2-10 Builds item 2b).
 // ---------------------------------------------------------------------------
-extern "C" SembEncodeStatus semb_encode_document_for_witness(const char* model_path,
-                                                               const int32_t* token_ids, size_t n,
-                                                               size_t chunk_budget,
-                                                               int8_t* codes_out, int64_t* m_out,
-                                                               int64_t* e_out,
-                                                               size_t* hidden_out) {
-  semb::EncoderModel* model = semb::EncoderOpen(model_path, nullptr);
+namespace semb {
+namespace {
+
+SembEncodeStatus EncodeDocumentForWitnessBody(const char* model_path, const int32_t* token_ids,
+                                              size_t n, size_t chunk_budget, int8_t* codes_out,
+                                              int64_t* m_out, int64_t* e_out, size_t* hidden_out) {
+  std::unique_ptr<EncoderModel, void (*)(EncoderModel*)> model(EncoderOpen(model_path, nullptr),
+                                                               EncoderClose);
   if (!model) return kSembEncodeEngineRefused;
 
   const size_t hidden = model->hidden_size;
@@ -852,34 +879,39 @@ extern "C" SembEncodeStatus semb_encode_document_for_witness(const char* model_p
   // writing n*hidden bytes into a codes_out buffer no caller could have
   // sized correctly (this verb takes no capacity parameter; see
   // seam_abi.h's own kSembWitnessMaxHidden comment for why).
-  if (hidden > kSembWitnessMaxHidden) {
-    semb::EncoderClose(model);
-    return kSembEncodeHiddenTooLarge;
-  }
+  if (hidden > kSembWitnessMaxHidden) return kSembEncodeHiddenTooLarge;
   if (hidden_out) *hidden_out = hidden;
 
   std::vector<superslm::CarriedScale> scales(n);
-  size_t workspace_index = 0;
-  if (!semb::TryAcquireWorkspace(model, &workspace_index)) {
-    semb::EncoderClose(model);
-    return kSembEncodeEngineRefused;
-  }
+  WorkspaceSlot* slot = TryAcquireWorkspace(model.get());
+  if (!slot) return kSembEncodeEngineRefused;
   superslm::SslmForwardStatus st;
   {
-    semb::WorkspaceLease lease{model, workspace_index};
-    st = semb::Encode(model, model->workspaces[workspace_index].bytes, token_ids, n,
-                      chunk_budget, kSembForwardLegChunkBatched, codes_out, scales.data());
+    WorkspaceLease lease{model.get(), slot};
+    st = Encode(model.get(), slot, token_ids, n, chunk_budget, kSembForwardLegChunkBatched,
+                codes_out, scales.data());
   }
-  if (st != superslm::SslmForwardStatus::Ok) {
-    semb::EncoderClose(model);
-    return kSembEncodeEngineRefused;
-  }
+  if (st != superslm::SslmForwardStatus::Ok) return kSembEncodeEngineRefused;
   for (size_t p = 0; p < n; ++p) {
     m_out[p] = scales[p].m;
     e_out[p] = scales[p].e;
   }
-  semb::EncoderClose(model);
   return kSembEncodeOk;
+}
+
+}  // namespace
+}  // namespace semb
+
+extern "C" SembEncodeStatus semb_encode_document_for_witness(const char* model_path,
+                                                               const int32_t* token_ids, size_t n,
+                                                               size_t chunk_budget,
+                                                               int8_t* codes_out, int64_t* m_out,
+                                                               int64_t* e_out,
+                                                               size_t* hidden_out) {
+  return semb::c_boundary::Encode([&] {
+    return semb::EncodeDocumentForWitnessBody(model_path, token_ids, n, chunk_budget, codes_out,
+                                              m_out, e_out, hidden_out);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -895,10 +927,10 @@ const char* OkName() { return "Ok"; }
 
 }  // namespace
 
-extern "C" SembInterimStatus semb_interim_encoder_open(const char* model_path,
-                                                        int32_t appended_token_id,
-                                                        SembInterimEncoder** out_encoder,
-                                                        const char** out_engine_status_name) {
+static SembInterimStatus EncoderOpenBody(const char* model_path,
+                                         int32_t appended_token_id,
+                                         SembInterimEncoder** out_encoder,
+                                         const char** out_engine_status_name) {
   if (out_engine_status_name) *out_engine_status_name = OkName();
   if (!model_path || !out_encoder) return kSembInterimNullArgument;
   *out_encoder = nullptr;
@@ -917,7 +949,16 @@ extern "C" SembInterimStatus semb_interim_encoder_open(const char* model_path,
   return kSembInterimOk;
 }
 
-extern "C" SembInterimStatus semb_interim_encoder_open_from_memory(
+extern "C" SembInterimStatus semb_interim_encoder_open(const char* model_path,
+                                                        int32_t appended_token_id,
+                                                        SembInterimEncoder** out_encoder,
+                                                        const char** out_engine_status_name) {
+  return semb::c_boundary::Interim(out_engine_status_name, [&] {
+    return EncoderOpenBody(model_path, appended_token_id, out_encoder, out_engine_status_name);
+  });
+}
+
+static SembInterimStatus EncoderOpenFromMemoryBody(
     const uint8_t* model_bytes, size_t model_size, int32_t appended_token_id,
     uint32_t max_concurrency, SembInterimEncoder** out_encoder,
     const char** out_engine_status_name) {
@@ -940,6 +981,16 @@ extern "C" SembInterimStatus semb_interim_encoder_open_from_memory(
   enc->model = model_guard.release();
   *out_encoder = enc.release();
   return kSembInterimOk;
+}
+
+extern "C" SembInterimStatus semb_interim_encoder_open_from_memory(
+    const uint8_t* model_bytes, size_t model_size, int32_t appended_token_id,
+    uint32_t max_concurrency, SembInterimEncoder** out_encoder,
+    const char** out_engine_status_name) {
+  return semb::c_boundary::Interim(out_engine_status_name, [&] {
+    return EncoderOpenFromMemoryBody(model_bytes, model_size, appended_token_id, max_concurrency,
+                                     out_encoder, out_engine_status_name);
+  });
 }
 
 SembInterimStatus semb_interim_encoder_open_owned(
@@ -986,8 +1037,8 @@ extern "C" void semb_interim_encoder_close(SembInterimEncoder* encoder) {
   delete encoder;
 }
 
-extern "C" SembInterimStatus semb_interim_encoder_geometry(const SembInterimEncoder* encoder,
-                                                            SembInterimGeometry* out_geometry) {
+static SembInterimStatus EncoderGeometryBody(const SembInterimEncoder* encoder,
+                                             SembInterimGeometry* out_geometry) {
   if (!encoder || !out_geometry) return kSembInterimNullArgument;
   if (out_geometry->struct_size != sizeof(SembInterimGeometry)) return kSembInterimStructSizeMismatch;
   const semb::EncoderModel* m = encoder->model;
@@ -1002,7 +1053,14 @@ extern "C" SembInterimStatus semb_interim_encoder_geometry(const SembInterimEnco
   return kSembInterimOk;
 }
 
-extern "C" SembInterimStatus semb_interim_encode_seam(
+extern "C" SembInterimStatus semb_interim_encoder_geometry(const SembInterimEncoder* encoder,
+                                                            SembInterimGeometry* out_geometry) {
+  return semb::c_boundary::Interim(nullptr, [&] {
+    return EncoderGeometryBody(encoder, out_geometry);
+  });
+}
+
+static SembInterimStatus EncodeSeamBody(
     SembInterimEncoder* encoder, const int32_t* content_ids, size_t n_content, size_t chunk_budget,
     SembForwardLeg leg, int8_t* codes_out, size_t codes_capacity, int64_t* m_out, int64_t* e_out,
     size_t scales_capacity, size_t* out_positions, const char** out_engine_status_name) {
@@ -1031,17 +1089,14 @@ extern "C" SembInterimStatus semb_interim_encode_seam(
   tokens[n_content] = m->appended_token_id;
 
   std::vector<superslm::CarriedScale> scales(n);
-  size_t workspace_index = 0;
-  if (!semb::TryAcquireWorkspace(m, &workspace_index)) {
-    return kSembInterimConcurrencyExceeded;
-  }
-  semb::WorkspaceLease lease{m, workspace_index};
+  semb::WorkspaceSlot* const slot = semb::TryAcquireWorkspace(m);
+  if (!slot) return kSembInterimConcurrencyExceeded;
+  semb::WorkspaceLease lease{m, slot};
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
   semb::test_seam::OnAcquired();
 #endif
-  const superslm::SslmForwardStatus st = semb::Encode(
-      m, m->workspaces[workspace_index].bytes, tokens.data(), n, chunk_budget, leg,
-      codes_out, scales.data());
+  const superslm::SslmForwardStatus st = semb::Encode(m, slot, tokens.data(), n, chunk_budget, leg,
+                                                      codes_out, scales.data());
   if (st != superslm::SslmForwardStatus::Ok) {
     if (out_engine_status_name) {
       *out_engine_status_name = semb::SetEngineStatus(superslm::SslmForwardStatusName(st));
@@ -1055,12 +1110,23 @@ extern "C" SembInterimStatus semb_interim_encode_seam(
   return kSembInterimOk;
 }
 
-extern "C" SembInterimStatus semb_interim_ps_n_select(const SembInterimEncoder* encoder,
-                                                       const int8_t* codes, const int64_t* m,
-                                                       const int64_t* e, size_t n, size_t position,
-                                                       int8_t* out_codes, int64_t* out_m,
-                                                       int64_t* out_e,
-                                                       const char** out_engine_status_name) {
+extern "C" SembInterimStatus semb_interim_encode_seam(
+    SembInterimEncoder* encoder, const int32_t* content_ids, size_t n_content, size_t chunk_budget,
+    SembForwardLeg leg, int8_t* codes_out, size_t codes_capacity, int64_t* m_out, int64_t* e_out,
+    size_t scales_capacity, size_t* out_positions, const char** out_engine_status_name) {
+  return semb::c_boundary::Interim(out_engine_status_name, [&] {
+    return EncodeSeamBody(encoder, content_ids, n_content, chunk_budget, leg, codes_out,
+                          codes_capacity, m_out, e_out, scales_capacity, out_positions,
+                          out_engine_status_name);
+  });
+}
+
+static SembInterimStatus PsNSelectBody(const SembInterimEncoder* encoder,
+                                       const int8_t* codes, const int64_t* m,
+                                       const int64_t* e, size_t n, size_t position,
+                                       int8_t* out_codes, int64_t* out_m,
+                                       int64_t* out_e,
+                                       const char** out_engine_status_name) {
   if (out_engine_status_name) *out_engine_status_name = OkName();
   if (!encoder || !codes || !m || !e || !out_codes || !out_m || !out_e) {
     return kSembInterimNullArgument;
@@ -1088,7 +1154,19 @@ extern "C" SembInterimStatus semb_interim_ps_n_select(const SembInterimEncoder* 
   return kSembInterimOk;
 }
 
-extern "C" SembInterimStatus semb_interim_encode_ps_n(
+extern "C" SembInterimStatus semb_interim_ps_n_select(const SembInterimEncoder* encoder,
+                                                       const int8_t* codes, const int64_t* m,
+                                                       const int64_t* e, size_t n, size_t position,
+                                                       int8_t* out_codes, int64_t* out_m,
+                                                       int64_t* out_e,
+                                                       const char** out_engine_status_name) {
+  return semb::c_boundary::Interim(out_engine_status_name, [&] {
+    return PsNSelectBody(encoder, codes, m, e, n, position, out_codes, out_m, out_e,
+                         out_engine_status_name);
+  });
+}
+
+static SembInterimStatus EncodePsNBody(
     SembInterimEncoder* encoder, const int32_t* content_ids, size_t n_content, size_t chunk_budget,
     float* out_vector, size_t out_capacity_bytes, size_t* out_required_bytes,
     SembWaPoolStatus* out_dequantize_status, const char** out_engine_status_name) {
@@ -1121,13 +1199,26 @@ extern "C" SembInterimStatus semb_interim_encode_ps_n(
 
   const SembWaPoolStatus dq = semb_ps_n_dequantize(sel.data(), sel_m, sel_e, hidden, out_vector);
   if (out_dequantize_status) *out_dequantize_status = dq;
+  // U2-10 Builds item 3: a callee's allocation status becomes this verb's own.
+  if (dq == kSembWaPoolAllocationFailed) return kSembInterimAllocationFailed;
   if (dq != kSembOk) return kSembInterimDequantizeRefused;
   return kSembInterimOk;
 }
 
+extern "C" SembInterimStatus semb_interim_encode_ps_n(
+    SembInterimEncoder* encoder, const int32_t* content_ids, size_t n_content, size_t chunk_budget,
+    float* out_vector, size_t out_capacity_bytes, size_t* out_required_bytes,
+    SembWaPoolStatus* out_dequantize_status, const char** out_engine_status_name) {
+  return semb::c_boundary::Interim(out_engine_status_name, [&] {
+    return EncodePsNBody(encoder, content_ids, n_content, chunk_budget, out_vector,
+                         out_capacity_bytes, out_required_bytes, out_dequantize_status,
+                         out_engine_status_name);
+  });
+}
+
 // TE-147 (U1 slice 2 build), re-stated TE-350 for cross-document
 // parallelism: the batch composed path, AT MOST T workspace acquisitions
-// for the whole call (T <= min(doc_count, pool size, hardware concurrency),
+// for the whole call (T <= min(doc_count, max_concurrency, hardware concurrency),
 // see encoder_interim_abi.h's own doc comment for the full contract). Every
 // document's own per-document seam+select+dequantize steps are unchanged
 // (select and dequantize touch no workspace, so they are called exactly as
@@ -1140,7 +1231,7 @@ extern "C" SembInterimStatus semb_interim_encode_ps_n(
 // offsets (row stride, seam-stream offset) are sizes known before any
 // forward runs, precomputed once, never accumulated as a running total
 // inside the per-document work.
-extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
+static SembInterimStatus EncodeBatchPsNBody(
     SembInterimEncoder* encoder, const int32_t* const* docs_content_ids,
     const size_t* docs_n_content, size_t doc_count, size_t chunk_budget, float* out_vectors,
     size_t out_capacity_bytes, size_t* out_required_bytes, size_t* out_failed_index,
@@ -1198,10 +1289,10 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
     if (out_seam_stream_capacity < seam_required) return kSembInterimBufferTooSmall;
   }
 
-  // T = min(documents, workspaces in the pool, hardware concurrency). See
+  // T = min(documents, max_concurrency, hardware concurrency). See
   // WorkspacePool's and HardwareConcurrencyOrOne's own comments above.
-  const size_t t_target =
-      std::min({doc_count, m->workspaces.size(), semb::HardwareConcurrencyOrOne()});
+  const size_t t_target = std::min(
+      {doc_count, static_cast<size_t>(m->max_concurrency), semb::HardwareConcurrencyOrOne()});
   semb::WorkspacePool pool(m, t_target);
   const size_t worker_count = pool.count();
   if (worker_count == 0) {
@@ -1259,7 +1350,7 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
   // claimed by exactly one worker, exactly once.
   std::atomic<size_t> next_doc{0};
 
-  auto ProcessOneDocument = [&](size_t doc, std::vector<uint8_t>& workspace_bytes) {
+  auto ProcessOneDocument = [&](size_t doc, semb::WorkspaceSlot* slot) {
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
     // TE-184 (D-SLM6434 item 2): the per-document park point, fired once
     // per document while that document's OWN worker workspace slot is
@@ -1279,8 +1370,8 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
     std::vector<int8_t> codes(n * hidden);
     std::vector<superslm::CarriedScale> scales(n);
     const superslm::SslmForwardStatus st =
-        semb::Encode(m, workspace_bytes, tokens.data(), n, chunk_budget,
-                    kSembForwardLegChunkBatched, codes.data(), scales.data());
+        semb::Encode(m, slot, tokens.data(), n, chunk_budget, kSembForwardLegChunkBatched,
+                     codes.data(), scales.data());
     if (st != superslm::SslmForwardStatus::Ok) {
       RecordFailure(doc, kSembInterimEngineRefused, /*has_status=*/true,
                     superslm::SslmForwardStatusName(st), kSembOk);
@@ -1358,13 +1449,18 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
       const SembWaPoolStatus dq =
           semb_ps_n_dequantize(sel.data(), sel_m, sel_e, hidden, out_vectors + doc * hidden);
       if (dq != kSembOk) {
-        RecordFailure(doc, kSembInterimDequantizeRefused, /*has_status=*/false, std::string(), dq);
+        // U2-10 Builds item 3: a callee's allocation status becomes this
+        // verb's own.
+        RecordFailure(doc,
+                      dq == kSembWaPoolAllocationFailed ? kSembInterimAllocationFailed
+                                                        : kSembInterimDequantizeRefused,
+                      /*has_status=*/false, std::string(), dq);
         return;
       }
     }
   };
 
-  auto Worker = [&](size_t worker_workspace_index) {
+  auto Worker = [&](semb::WorkspaceSlot* slot) {
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
     // Fired on THIS worker's own thread, as the first thing it does after
     // being handed its slot -- not in a loop on the calling thread before
@@ -1378,7 +1474,6 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
     // ran on (Worker 0 below runs inline, no std::thread spawned).
     semb::test_seam::OnAcquired();
 #endif
-    std::vector<uint8_t>& workspace_bytes = m->workspaces[worker_workspace_index].bytes;
     // TE-356 (C-1): this try/catch is what makes Worker's own frame return
     // normally on every path -- including a std::bad_alloc from any of
     // ProcessOneDocument's five per-document allocations -- so a spawned
@@ -1394,7 +1489,7 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
       for (;;) {
         const size_t doc = next_doc.fetch_add(1, std::memory_order_relaxed);
         if (doc >= doc_count) break;
-        ProcessOneDocument(doc, workspace_bytes);
+        ProcessOneDocument(doc, slot);
       }
     } catch (...) {
       std::lock_guard<std::mutex> lock(failure_mutex);
@@ -1435,18 +1530,34 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
   } joiner{threads};
   threads.reserve(worker_count - 1);
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
-  // C66's spawn fail arm (U2-10 Builds item 2c), at today's spawn statement:
-  // fires in place of the thread's construction. Item 2c moves it into
-  // StartWorker.
   const uint64_t seam_batch_call = semb::test_seam::NextBatchCallToken();
 #endif
-  for (size_t w = 1; w < worker_count; ++w) {
+  // U2-10 Builds item 2c: every worker thread starts through StartWorker. A
+  // thread that cannot start because the system is out of a resource
+  // (std::errc::resource_unavailable_try_again: on Linux a thread-count
+  // limit as well as memory) is not a failure of the call: the spawn loop
+  // ends, and the batch runs on the workers already started plus worker 0
+  // inline. Its output does not depend on how many workers ran (every row
+  // and seam slice is at an offset fixed above, each document is claimed
+  // once, and the failure record keeps the lowest index). The slots taken
+  // above stay held until return. Every other exception from the start
+  // propagates unchanged to this verb's boundary.
+  auto StartWorker = [&](semb::WorkspaceSlot* slot) {
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+    // C66's spawn fail arm: fires in place of the thread's construction.
     semb::test_seam::OnWorkerStart(seam_batch_call);
 #endif
-    threads.emplace_back(Worker, pool.index(w));
+    threads.emplace_back(Worker, slot);
+  };
+  for (size_t w = 1; w < worker_count; ++w) {
+    try {
+      StartWorker(pool.slot(w));
+    } catch (const std::system_error& e) {
+      if (e.code() != std::errc::resource_unavailable_try_again) throw;
+      break;
+    }
   }
-  Worker(pool.index(0));
+  Worker(pool.slot(0));
   for (std::thread& t : threads) {
     if (t.joinable()) t.join();
   }
@@ -1473,6 +1584,38 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
   return kSembInterimOk;
 }
 
+extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
+    SembInterimEncoder* encoder, const int32_t* const* docs_content_ids,
+    const size_t* docs_n_content, size_t doc_count, size_t chunk_budget, float* out_vectors,
+    size_t out_capacity_bytes, size_t* out_required_bytes, size_t* out_failed_index,
+    SembWaPoolStatus* out_dequantize_status, const char** out_engine_status_name,
+    uint8_t* out_seam_stream, size_t out_seam_stream_capacity, size_t* out_seam_stream_len) {
+  return semb::c_boundary::Interim(out_engine_status_name, [&] {
+    return EncodeBatchPsNBody(encoder, docs_content_ids, docs_n_content, doc_count, chunk_budget,
+                              out_vectors, out_capacity_bytes, out_required_bytes, out_failed_index,
+                              out_dequantize_status, out_engine_status_name, out_seam_stream,
+                              out_seam_stream_capacity, out_seam_stream_len);
+  });
+}
+
+
+// U2-9 Builds item 2: the end-of-open release. No encode runs on the handle
+// then (no caller holds it yet), so every record's buffer is released; the
+// records themselves stay. A boundary by U2-10 Builds item 6.
+static SembInterimStatus ReleaseWorkspacesBody(SembInterimEncoder* encoder) {
+  if (!encoder || !encoder->model) return kSembInterimNullArgument;
+  semb::EncoderModel* const m = encoder->model;
+  std::lock_guard<std::mutex> lock(m->workspace_mutex);
+  for (const std::unique_ptr<semb::WorkspaceSlot>& record : m->workspaces) {
+    record->buffer.reset();
+    record->capacity = 0;
+  }
+  return kSembInterimOk;
+}
+
+extern "C" SembInterimStatus semb_interim_release_workspaces(SembInterimEncoder* encoder) {
+  return semb::c_boundary::Interim(nullptr, [&] { return ReleaseWorkspacesBody(encoder); });
+}
 
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
 // ---------------------------------------------------------------------------
@@ -1491,7 +1634,7 @@ extern "C" int32_t semb_test_seam_slot_capacity(const SembInterimEncoder* enc, u
   if (!enc || !enc->model || !out_capacity_bytes) return 0;
   std::lock_guard<std::mutex> lock(enc->model->workspace_mutex);
   if (index >= enc->model->workspaces.size()) return 0;
-  *out_capacity_bytes = enc->model->workspaces[index].bytes.capacity();
+  *out_capacity_bytes = enc->model->workspaces[index]->capacity;
   return 1;
 }
 

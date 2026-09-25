@@ -53,7 +53,7 @@ enum SembInterimStatus : int32_t {
   // which corner); no vector was written.
   kSembInterimDequantizeRefused = 7,
   kSembInterimStructSizeMismatch = 8,  // an IN struct's `struct_size` is not this build's
-  kSembInterimConcurrencyExceeded = 9,  // every preallocated workspace is in use
+  kSembInterimConcurrencyExceeded = 9,  // max_concurrency workspace slots are in use
   // Memory could not be allocated (U2-10 Builds item 3). Returned by every
   // interim verb's C-linkage boundary for std::bad_alloc and
   // std::length_error, and by a body that receives a callee's allocation
@@ -95,18 +95,22 @@ struct SembInterimGeometry {
 
 extern "C" {
 
-// Reads the artifact ONCE into owned memory, validates it through the
-// engine's own loader, marshals every layer and the final norm, and sizes
-// the K/V workspace from the artifact's own geometry. `appended_token_id`
-// is the id appended to every document (see kSembPsNAppendedTokenId).
+// Reads the artifact ONCE, validates it through the engine's own loader
+// (which copies the bytes into the model view's own backing, so the
+// adapter's copy is released once the load returns), and marshals every
+// layer and the final norm. Open reserves no workspace: each encode's K/V
+// workspace slot is created on first use and sized to its document.
+// `appended_token_id` is the id appended to every document (see
+// kSembPsNAppendedTokenId).
 SembInterimStatus semb_interim_encoder_open(const char* model_path, int32_t appended_token_id,
                                              SembInterimEncoder** out_encoder,
                                              const char** out_engine_status_name);
 
-// Product-layer entry: loads from bytes the caller already read exactly once
-// and preallocates one independent K/V workspace per permitted concurrent call.
-// The adapter copies the span into encoder-owned backing because SuperSLM's
-// model view borrows it; the caller may release its span after this returns.
+// Product-layer entry: loads from bytes the caller already read exactly once.
+// `max_concurrency` bounds the encodes that may run at once; open reserves
+// nothing in proportion to it. The engine's loader copies the model into
+// the view's own backing, so neither the caller's span nor the adapter's
+// transient copy is retained after this returns.
 SembInterimStatus semb_interim_encoder_open_from_memory(
     const uint8_t* model_bytes, size_t model_size, int32_t appended_token_id,
     uint32_t max_concurrency, SembInterimEncoder** out_encoder,
@@ -176,7 +180,7 @@ SembInterimStatus semb_interim_encode_ps_n(SembInterimEncoder* encoder, const in
 // cross-document parallelism): the SAME seam -> select -> dequantize
 // composition as semb_interim_encode_ps_n, run for `doc_count` independent
 // documents against AT MOST T workspaces acquired ONCE EACH for the WHOLE
-// call, T <= min(doc_count, the pool's own size, hardware concurrency) --
+// call, T <= min(doc_count, max_concurrency, hardware concurrency) --
 // an UPPER BOUND, not an equality: WorkspacePool's own constructor acquires
 // whatever is free in one non-blocking pass and stops there (TE-356), so a
 // concurrent call already holding some of the pool's slots can leave the
@@ -204,7 +208,10 @@ SembInterimStatus semb_interim_encode_ps_n(SembInterimEncoder* encoder, const in
 // workspace acquired is released before return, on every path including
 // every failure path, by RAII; no two workers ever hold the same workspace
 // at once (TryAcquireWorkspace's own mutex-guarded `in_use` flag, unchanged
-// by this contract's restatement).
+// by this contract's restatement). A worker thread that the system cannot
+// start (std::errc::resource_unavailable_try_again) is not a failure of the
+// call: the documents run on the workers already started, the calling
+// thread among them, and the output is the same (U2-10 Builds item 2c).
 //
 // out_vectors == nullptr: the row-output half of the composition (select +
 // dequantize) is SKIPPED entirely for every document -- a caller that wants
@@ -255,11 +262,19 @@ SembInterimStatus semb_interim_encode_batch_ps_n(
     SembWaPoolStatus* out_dequantize_status, const char** out_engine_status_name,
     uint8_t* out_seam_stream, size_t out_seam_stream_capacity, size_t* out_seam_stream_len);
 
+// Releases every workspace slot's buffer to capacity 0, under the slot
+// mutex (U2-9 Builds item 2). semb_encoder_open calls it after its open-time
+// witness and before the handle is published, so open returns holding no
+// workspace buffer. The slot records stay. Returns kSembInterimNullArgument
+// for a null encoder.
+SembInterimStatus semb_interim_release_workspaces(SembInterimEncoder* encoder);
+
 }  // extern "C"
 
 // C++ product-layer entry: transfers the exactly-once file read into the
-// adapter, avoiding a second 633 MB allocation while preserving the borrowed
-// model view's lifetime. Not part of the frozen public C ABI.
+// adapter, avoiding a second 633 MB allocation; the adapter releases it once
+// the engine's loader has copied the model into its own backing. Not part of
+// the frozen public C ABI.
 SembInterimStatus semb_interim_encoder_open_owned(
     std::vector<uint8_t>&& model_bytes, int32_t appended_token_id,
     uint32_t max_concurrency, SembInterimEncoder** out_encoder,

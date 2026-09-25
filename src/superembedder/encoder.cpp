@@ -17,6 +17,7 @@
 #include "query_internal.h"
 #include "wb_corpus.h"
 #include "json_lite.h"
+#include "c_boundary.h"
 
 // Generated at configure time (cmake/EngineGuards.cmake -> semb_engine_pin.h.in),
 // a plain configure_file() template with no dependency on this target's own
@@ -296,9 +297,14 @@ semb_status MapInterimStatus(SembInterimStatus status, SembWaPoolStatus dequanti
     case kSembInterimInputEmpty: return SEMB_INPUT_EMPTY;
     case kSembInterimBufferTooSmall: return SEMB_BUFFER_TOO_SMALL;
     case kSembInterimConcurrencyExceeded: return SEMB_CONCURRENCY_EXCEEDED;
+    // U2-10 Builds item 3: the interim family's allocation status, and a
+    // dequantize refusal carrying the pool family's, are this verb's own
+    // allocation status; the pool's internal failure is never a corner status.
+    case kSembInterimAllocationFailed: return SEMB_ALLOCATION_FAILED;
     case kSembInterimDequantizeRefused:
       if (dequantize == kSembPooledSubnormal) return SEMB_POOLED_SUBNORMAL;
       if (dequantize == kSembPooledOverflow) return SEMB_POOLED_OVERFLOW;
+      if (dequantize == kSembWaPoolAllocationFailed) return SEMB_ALLOCATION_FAILED;
       return SEMB_ENGINE_REFUSED;
     case kSembInterimEngineRefused:
     case kSembInterimInvalidLeg:
@@ -643,16 +649,20 @@ struct ManifestFingerprintComponents {
   std::array<uint8_t, 32> fingerprint;
 };
 
-ManifestFingerprintComponents ComputeManifestFingerprintComponents(
+// Returns W-A's status (U2-10: semb_wa_digest reports) with `*out` unwritten
+// on any status but SEMB_OK.
+semb_status ComputeManifestFingerprintComponents(
     const uint8_t model_sha[32], const uint8_t tokenizer_sha[32],
-    const std::array<uint8_t, 32>& wb_digest, const std::array<uint8_t, 32>& wq_digest) {
+    const std::array<uint8_t, 32>& wb_digest, const std::array<uint8_t, 32>& wq_digest,
+    ManifestFingerprintComponents* out) {
   ManifestFingerprintComponents c{};
   std::memcpy(c.model_sha.data(), model_sha, 32);
   std::memcpy(c.tokenizer_sha.data(), tokenizer_sha, 32);
   c.template_sha256 = ComputeTemplateDigest();
 
   uint8_t wa_sha[32], wq_sha[32];
-  semb_wa_digest(wa_sha);
+  const semb_status wa_status = semb_wa_digest(wa_sha);
+  if (wa_status != SEMB_OK) return wa_status;
   std::memcpy(wq_sha, wq_digest.data(), 32);
   {
     superslm::Sha256 hash;
@@ -670,7 +680,8 @@ ManifestFingerprintComponents ComputeManifestFingerprintComponents(
   UpdateField(&fp_hash, c.witness_sha.data());
   UpdateField(&fp_hash, c.certification_epoch.data());
   fp_hash.Final(c.fingerprint.data());
-  return c;
+  *out = c;
+  return SEMB_OK;
 }
 
 bool ValidUtf8(const char* data, size_t size) {
@@ -726,7 +737,7 @@ extern "C" const char* semb_status_name(semb_status status) {
   return "SEMB_UNKNOWN";
 }
 
-extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* out) {
+static semb_status EncoderOpenBody(const semb_config* cfg, semb_encoder* out) {
   if (out) *out = nullptr;
   if (!cfg || !out) return SEMB_NULL_ARGUMENT;
   if (cfg->struct_size != sizeof(semb_config)) return SEMB_STRUCT_SIZE_MISMATCH;
@@ -874,6 +885,12 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
 
     std::array<uint8_t, 32> wq_digest{};
     if (!semb_compute_wq_digest(h, &wq_digest)) return SEMB_ENGINE_REFUSED;
+    // U2-9 Builds item 2 (D-SLM7773): the witness encodes above grew slot
+    // buffers; open returns holding none, so it reserves nothing in
+    // proportion to max_concurrency. No encode can be running: no caller
+    // holds this handle yet. The slot records stay.
+    const SembInterimStatus release_status = semb_interim_release_workspaces(h->interim);
+    if (release_status != kSembInterimOk) return MapInterimStatus(release_status, kSembOk);
     h->wb_digest = wb_digest;
     h->wq_digest = wq_digest;
     // The five components and the fingerprint, derived from the SAME
@@ -881,8 +898,10 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
     // digests just computed above -- never a second read, never a second
     // forward.
     {
-      const ManifestFingerprintComponents mc =
-          ComputeManifestFingerprintComponents(model_sha, tokenizer_sha, wb_digest, wq_digest);
+      ManifestFingerprintComponents mc{};
+      const semb_status fingerprint_status =
+          ComputeManifestFingerprintComponents(model_sha, tokenizer_sha, wb_digest, wq_digest, &mc);
+      if (fingerprint_status != SEMB_OK) return fingerprint_status;
       h->manifest_model_sha = mc.model_sha;
       h->manifest_tokenizer_sha = mc.tokenizer_sha;
       h->manifest_template_sha256 = mc.template_sha256;
@@ -911,6 +930,12 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
   }
 }
 
+extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* out) {
+  return semb::c_boundary::Status([&] {
+    return EncoderOpenBody(cfg, out);
+  });
+}
+
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
 // U2 cloud build, the seam commit (tests/support/semb_u2_memory_seam.h): the
 // public handle's interim encoder, so the slot-record readers apply to it.
@@ -925,7 +950,7 @@ extern "C" SembInterimEncoder* semb_test_seam_interim_of(const void* enc) {
 }
 #endif
 
-extern "C" semb_status semb_encoder_close(semb_encoder enc) {
+static semb_status EncoderCloseBody(semb_encoder enc) {
   if (!enc) return SEMB_NULL_ARGUMENT;
   std::unique_ptr<semb_encoder_s> closing;
   {
@@ -948,7 +973,13 @@ extern "C" semb_status semb_encoder_close(semb_encoder enc) {
   return SEMB_OK;
 }
 
-extern "C" semb_status semb_encoder_dims(semb_encoder enc, uint32_t* out_dims) {
+extern "C" semb_status semb_encoder_close(semb_encoder enc) {
+  return semb::c_boundary::Status([&] {
+    return EncoderCloseBody(enc);
+  });
+}
+
+static semb_status EncoderDimsBody(semb_encoder enc, uint32_t* out_dims) {
   if (!enc || !out_dims) return SEMB_NULL_ARGUMENT;
   HandleLease lease(enc);
   if (!lease.get()) return SEMB_INVALID_HANDLE;
@@ -956,10 +987,16 @@ extern "C" semb_status semb_encoder_dims(semb_encoder enc, uint32_t* out_dims) {
   return SEMB_OK;
 }
 
-extern "C" semb_status semb_encode(semb_encoder enc, const char* utf8, size_t utf8_len,
-                                    float* out_vector, size_t out_capacity_bytes,
-                                    size_t* out_required_bytes,
-                                    semb_fingerprint* out_fingerprint) {
+extern "C" semb_status semb_encoder_dims(semb_encoder enc, uint32_t* out_dims) {
+  return semb::c_boundary::Status([&] {
+    return EncoderDimsBody(enc, out_dims);
+  });
+}
+
+static semb_status EncodeBody(semb_encoder enc, const char* utf8, size_t utf8_len,
+                              float* out_vector, size_t out_capacity_bytes,
+                              size_t* out_required_bytes,
+                              semb_fingerprint* out_fingerprint) {
   if (!enc || !out_required_bytes || !out_fingerprint) return SEMB_NULL_ARGUMENT;
   try {
     HandleLease lease(enc);
@@ -1011,6 +1048,16 @@ extern "C" semb_status semb_encode(semb_encoder enc, const char* utf8, size_t ut
   }
 }
 
+extern "C" semb_status semb_encode(semb_encoder enc, const char* utf8, size_t utf8_len,
+                                    float* out_vector, size_t out_capacity_bytes,
+                                    size_t* out_required_bytes,
+                                    semb_fingerprint* out_fingerprint) {
+  return semb::c_boundary::Status([&] {
+    return EncodeBody(enc, utf8, utf8_len, out_vector, out_capacity_bytes, out_required_bytes,
+                      out_fingerprint);
+  });
+}
+
 // TE-147 (U1 slice 2 build): W-B's own diagnostic accessor
 // (`include/superembedder/witness_abi.h`; the contract of record is
 // `tests/semb_wb_witness_abi_contract.h`, AMENDED TE-151 to this
@@ -1019,7 +1066,7 @@ extern "C" semb_status semb_encode(semb_encoder enc, const char* utf8, size_t ut
 // FINGERPRINT derivation (no re-read of a file another field was derived
 // from), not how many times this accessor is called against an
 // already-open handle.
-extern "C" semb_status semb_wb_digest(semb_encoder enc, uint8_t out_digest[32]) {
+static semb_status WbDigestBody(semb_encoder enc, uint8_t out_digest[32]) {
   if (!enc) return SEMB_NULL_ARGUMENT;
   HandleLease lease(enc);
   if (!lease.get()) return SEMB_INVALID_HANDLE;
@@ -1028,13 +1075,25 @@ extern "C" semb_status semb_wb_digest(semb_encoder enc, uint8_t out_digest[32]) 
   return SEMB_OK;
 }
 
-extern "C" semb_status semb_wq_digest(semb_encoder enc, uint8_t out_digest[32]) {
+extern "C" semb_status semb_wb_digest(semb_encoder enc, uint8_t out_digest[32]) {
+  return semb::c_boundary::Status([&] {
+    return WbDigestBody(enc, out_digest);
+  });
+}
+
+static semb_status WqDigestBody(semb_encoder enc, uint8_t out_digest[32]) {
   if (!enc) return SEMB_NULL_ARGUMENT;
   HandleLease lease(enc);
   if (!lease.get()) return SEMB_INVALID_HANDLE;
   if (!out_digest) return SEMB_NULL_ARGUMENT;
   std::memcpy(out_digest, lease.get()->wq_digest.data(), lease.get()->wq_digest.size());
   return SEMB_OK;
+}
+
+extern "C" semb_status semb_wq_digest(semb_encoder enc, uint8_t out_digest[32]) {
+  return semb::c_boundary::Status([&] {
+    return WqDigestBody(enc, out_digest);
+  });
 }
 
 namespace semb {
@@ -1103,9 +1162,9 @@ semb_status EncodeQueryComposed(semb_encoder enc, std::string_view composed,
 // content-before-work, completed before any forward; nothing is written to
 // `out_rows` on any non-SEMB_OK return; `*out_required_bytes` is written on
 // exactly SEMB_OK and SEMB_BUFFER_TOO_SMALL.
-extern "C" semb_status semb_encode_batch(semb_encoder enc, const semb_document* docs, size_t n,
-                                          float* out_rows, size_t out_capacity_bytes,
-                                          size_t* out_required_bytes) {
+static semb_status EncodeBatchBody(semb_encoder enc, const semb_document* docs, size_t n,
+                                   float* out_rows, size_t out_capacity_bytes,
+                                   size_t* out_required_bytes) {
   // Step 1: enc==NULL, out_required_bytes==NULL, or docs==NULL && n>0 (P-8's
   // span rule on the array) -> SEMB_NULL_ARGUMENT. Checked before the
   // handle needs to be live, matching the table's own step ordering.
@@ -1223,6 +1282,14 @@ extern "C" semb_status semb_encode_batch(semb_encoder enc, const semb_document* 
   }
 }
 
+extern "C" semb_status semb_encode_batch(semb_encoder enc, const semb_document* docs, size_t n,
+                                          float* out_rows, size_t out_capacity_bytes,
+                                          size_t* out_required_bytes) {
+  return semb::c_boundary::Status([&] {
+    return EncodeBatchBody(enc, docs, n, out_rows, out_capacity_bytes, out_required_bytes);
+  });
+}
+
 namespace {
 
 // A 16-byte-aligned float buffer with slack, the same over-allocate-and-
@@ -1315,8 +1382,8 @@ class AtomicTripleWriter {
 // same call" per the contract header's own grading note): every refusal
 // semb_encode_batch can produce propagates unchanged, and nothing is
 // written on any non-SEMB_OK return.
-extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* docs, size_t n,
-                                          const char* path_stem, size_t path_stem_len) {
+static semb_status BakeToPathBody(semb_encoder enc, const semb_document* docs, size_t n,
+                                  const char* path_stem, size_t path_stem_len) {
   // sec 3.1 property 7's own span rule, applied to a path exactly as
   // semb_config's own path members and semb_bank_open's own `path`
   // argument already are: (NULL, n>0) is SEMB_NULL_ARGUMENT; an empty
@@ -1459,7 +1526,8 @@ extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* 
     const std::string bin_bytes(reinterpret_cast<const char*>(aligned_rows), required);
 
     uint8_t wa_sha[32];
-    semb_wa_digest(wa_sha);
+    const semb_status wa_status = semb_wa_digest(wa_sha);
+    if (wa_status != SEMB_OK) return wa_status;
 
     js::Value witness = js::Value::MakeObject();
     // This bake's own act of encoding `docs` is, for this manifest's own
@@ -1554,4 +1622,11 @@ extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* 
     // function's own logic did not anticipate.
     return SEMB_ENGINE_REFUSED;
   }
+}
+
+extern "C" semb_status semb_bake_to_path(semb_encoder enc, const semb_document* docs, size_t n,
+                                          const char* path_stem, size_t path_stem_len) {
+  return semb::c_boundary::Status([&] {
+    return BakeToPathBody(enc, docs, n, path_stem, path_stem_len);
+  });
 }
