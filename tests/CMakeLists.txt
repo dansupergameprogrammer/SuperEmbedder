@@ -125,10 +125,18 @@ semb_add_cxx_test(seam_hidden_capacity_test seam_hidden_capacity_test.cpp)
 # reports SEMB_ARTIFACT_UNREADABLE at open, named in this test's own
 # failure message, rather than a silent skip; running the full suite (or
 # u1_raw_text_cells_check once) mints the pair first.
+#
+# U2 cloud build: registered on WIN32 only. The test includes <windows.h>
+# unconditionally (its cleared-mask and environment legs are Win32 calls), so
+# on Linux it cannot compile and a GCC build of the tree never completed. The
+# test is unchanged; the WSL/Linux members simply do not build it, as they
+# could not before.
 find_package(Threads REQUIRED)
-semb_add_cxx_test(c41_environment_invariance_test c41_environment_invariance_test.cpp)
-target_include_directories(c41_environment_invariance_test PRIVATE "${CMAKE_BINARY_DIR}/generated")
-target_link_libraries(c41_environment_invariance_test PRIVATE Threads::Threads)
+if(WIN32)
+	semb_add_cxx_test(c41_environment_invariance_test c41_environment_invariance_test.cpp)
+	target_include_directories(c41_environment_invariance_test PRIVATE "${CMAKE_BINARY_DIR}/generated")
+	target_link_libraries(c41_environment_invariance_test PRIVATE Threads::Threads)
+endif()
 
 # TE-182 (U1 slice 2's fourth test-author round, D-SLM6434 item 1): the
 # interim ABI's own two bare cells over semb_interim_encode_batch_ps_n's
