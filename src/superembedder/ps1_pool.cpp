@@ -30,6 +30,7 @@
 
 #include "big_uint.h"
 #include "binary32_construct.h"
+#include "c_boundary.h"
 #include "superembedder/manifest_labels_abi.h"
 
 namespace semb {
@@ -91,9 +92,10 @@ bool ComputeSpread(const int64_t* e, size_t n, int64_t* out_e_min, uint64_t* out
 }  // namespace
 }  // namespace semb
 
-extern "C" SembWaPoolStatus semb_wa_pool_run(const int8_t* codes, const int64_t* m,
-                                              const int64_t* e, size_t n, size_t hidden,
-                                              float* out) {
+// semb_wa_pool_run's body (U2-10: the C-linkage function below is its
+// boundary).
+static SembWaPoolStatus WaPoolRunBody(const int8_t* codes, const int64_t* m, const int64_t* e,
+                                      size_t n, size_t hidden, float* out) {
   using semb::AddSignedTerm;
   using semb::BigUInt;
   using semb::ComputeSpread;
@@ -169,6 +171,12 @@ extern "C" SembWaPoolStatus semb_wa_pool_run(const int8_t* codes, const int64_t*
 
   for (size_t i = 0; i < hidden; ++i) std::memcpy(&out[i], &bits[i], sizeof(float));
   return kSembOk;
+}
+
+extern "C" SembWaPoolStatus semb_wa_pool_run(const int8_t* codes, const int64_t* m,
+                                              const int64_t* e, size_t n, size_t hidden,
+                                              float* out) {
+  return semb::c_boundary::WaPool([&] { return WaPoolRunBody(codes, m, e, n, hidden, out); });
 }
 
 extern "C" SembWaPoolStatus semb_wa_pooled_spread(const int64_t* e, size_t n,

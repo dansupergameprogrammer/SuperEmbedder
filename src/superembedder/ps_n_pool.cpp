@@ -28,11 +28,14 @@
 
 #include "big_uint.h"
 #include "binary32_construct.h"
+#include "c_boundary.h"
 #include "superembedder/encoder_interim_abi.h"
 #include "superembedder/manifest_labels_abi.h"
 
-extern "C" SembWaPoolStatus semb_ps_n_dequantize(const int8_t* codes, int64_t m, int64_t e,
-                                                  size_t hidden, float* out) {
+// semb_ps_n_dequantize's body (U2-10: the C-linkage function below is its
+// boundary).
+static SembWaPoolStatus PsNDequantizeBody(const int8_t* codes, int64_t m, int64_t e, size_t hidden,
+                                          float* out) {
   using semb::BigUInt;
   using semb::detail::RoundPositiveRationalToBinary32;
   using semb::detail::RoundResult;
@@ -76,6 +79,11 @@ extern "C" SembWaPoolStatus semb_ps_n_dequantize(const int8_t* codes, int64_t m,
   }
   for (size_t i = 0; i < hidden; ++i) std::memcpy(&out[i], &bits[i], sizeof(float));
   return kSembOk;
+}
+
+extern "C" SembWaPoolStatus semb_ps_n_dequantize(const int8_t* codes, int64_t m, int64_t e,
+                                                  size_t hidden, float* out) {
+  return semb::c_boundary::WaPool([&] { return PsNDequantizeBody(codes, m, e, hidden, out); });
 }
 
 // TE-166 (U1 slice 4, C34 leg (h)): this TU's own compiled-in

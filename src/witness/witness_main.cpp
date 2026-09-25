@@ -61,6 +61,7 @@
 #include <string>
 #include <vector>
 
+#include "superembedder/semb.h"  // semb_status, for witness_abi.h
 #include "superembedder/seam_abi.h"
 #include "superslm/sha256.h"
 
@@ -225,7 +226,11 @@ int main(int argc, char** argv) {
   // W-A's own digest: the library's own driver over sec 4.4's population
   // (wa_digest.cpp) -- compiled into the library, not this TU, per C38.
   uint8_t wa_digest[32];
-  semb_wa_digest(wa_digest);
+  const semb_status wa_status = semb_wa_digest(wa_digest);
+  if (wa_status != SEMB_OK) {
+    std::fprintf(stderr, "witness: W-A digest refused (%s)\n", semb_status_name(wa_status));
+    return 1;
+  }
 
   // W-Q's own slot: not yet buildable at U0 -- a fixed, documented
   // placeholder (see the header comment and D-SLM6073).

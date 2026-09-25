@@ -12,6 +12,7 @@
 // only new product code among the four items sec 4.4d specifies for this
 // slice; everything else reuses an existing mechanism (C31(i)) or is a
 // test-only change.
+#include "superembedder/semb.h"  // semb_status, for witness_abi.h
 #include "superembedder/witness_abi.h"
 
 #include <cstring>

@@ -29,13 +29,20 @@
 
 #include <cstdint>
 
+// `semb_status` is NOT declared here: an includer declares it first, from
+// superembedder/semb.h (every product TU) or from the test suite's own
+// contract header, which mirrors it and cannot be included beside semb.h.
+
 extern "C" {
 
 // Writes the 32-byte SHA-256 digest of W-A's own population run to
 // out_digest[0..31]. Deterministic: the population, the seed (splitmix64,
 // 0x0F01D11, sec 4.4's own named discipline) and the driver are all fixed
-// by this function's own source.
-void semb_wa_digest(uint8_t out_digest[32]);
+// by this function's own source. Returns SEMB_OK with the digest written;
+// SEMB_ALLOCATION_FAILED when memory cannot be allocated, and
+// SEMB_ENGINE_REFUSED on any other internal failure, with out_digest
+// unspecified (U2-10: a C-linkage boundary reports, it never throws).
+semb_status semb_wa_digest(uint8_t out_digest[32]);
 
 // sec 8 C31(ii) (SEMB_WITNESS_DETACHED_LINK, sec 4.4d item 2): writes this
 // LIBRARY's own compiled-in copy of the per-configure build-generation

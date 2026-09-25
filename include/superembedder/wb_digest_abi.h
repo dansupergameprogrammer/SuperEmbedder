@@ -1,7 +1,7 @@
 // include/superembedder/wb_digest_abi.h -- TE-147 (U1 slice 2 build): the
 // product-side declaration of W-B's own diagnostic accessor, in the same
 // PURPOSE `include/superembedder/witness_abi.h` serves for W-A
-// (`void semb_wa_digest(uint8_t out_digest[32]);`) -- but declared in a
+// (`semb_status semb_wa_digest(uint8_t out_digest[32]);`) -- but declared in a
 // SEPARATE header rather than added to witness_abi.h, because witness_abi.h
 // is included by translation units that ALSO include the test suite's own
 // contract headers (`tests/semb_public_abi_contract.h`), which declare

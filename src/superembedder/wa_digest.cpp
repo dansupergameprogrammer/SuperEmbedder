@@ -40,6 +40,7 @@
 // refusals); its POPULATION CONSTRUCTION is not, and this file drives the
 // SAME population through THIS project's own corrected epilogue
 // (semb_wa_pool_run, which does carry both corner refusals).
+#include "superembedder/semb.h"
 #include "superembedder/witness_abi.h"
 //
 // TE-79 F-9 (Significant, TE-76 review) -- QUARANTINE NOTICE
@@ -60,6 +61,7 @@
 #include <cstring>
 #include <vector>
 
+#include "c_boundary.h"
 #include "superembedder/pool_abi.h"
 #include "superslm/sha256.h"
 
@@ -94,6 +96,8 @@ const char* StatusName(SembWaPoolStatus s) {
     case kSembAccumulatorOverflow: return "SEMB_ACCUMULATOR_OVERFLOW";
     case kSembPooledSubnormal: return "SEMB_POOLED_SUBNORMAL";
     case kSembPooledOverflow: return "SEMB_POOLED_OVERFLOW";
+    case kSembWaPoolAllocationFailed:
+    case kSembWaPoolInternalFailure: break;
   }
   return "SEMB_UNKNOWN";
 }
@@ -122,22 +126,8 @@ struct Digest {
   }
 };
 
-}  // namespace
-}  // namespace semb
-
-extern "C" void semb_wa_digest(uint8_t out_digest[32]) {
-  using semb::Digest;
-  using semb::kCodeEdges;
-  using semb::kEBases;
-  using semb::kHiddens;
-  using semb::kMEdges;
-  using semb::kNs;
-  using semb::kNumCodeEdges;
-  using semb::kNumMEdges;
-  using semb::kSpreads;
-  using semb::SplitMix64;
-  using semb::StatusName;
-
+// The verb's body (U2-10: the C-linkage function below is its boundary).
+semb_status WaDigestBody(uint8_t out_digest[32]) {
   Digest d;
   d.Str("SEMB-W-A-1");  // a domain-separation tag, so this digest's own
                         // namespace never collides with W-B's or W-Q's.
@@ -167,6 +157,11 @@ extern "C" void semb_wa_digest(uint8_t out_digest[32]) {
             std::vector<float> out(hidden, 0.0f);
             const SembWaPoolStatus status =
                 semb_wa_pool_run(codes.data(), m.data(), e.data(), n, hidden, out.data());
+            // A callee's allocation status is this verb's own; its internal
+            // failure is this verb's catch-all. Neither is a digested
+            // refusal of the population.
+            if (status == kSembWaPoolAllocationFailed) return SEMB_ALLOCATION_FAILED;
+            if (status == kSembWaPoolInternalFailure) return SEMB_ENGINE_REFUSED;
 
             d.U64(hidden);
             d.U64(n);
@@ -184,4 +179,12 @@ extern "C" void semb_wa_digest(uint8_t out_digest[32]) {
   }
 
   d.h.Final(out_digest);
+  return SEMB_OK;
+}
+
+}  // namespace
+}  // namespace semb
+
+extern "C" semb_status semb_wa_digest(uint8_t out_digest[32]) {
+  return semb::c_boundary::Status([&] { return semb::WaDigestBody(out_digest); });
 }
