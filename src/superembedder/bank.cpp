@@ -27,6 +27,7 @@
 
 #include "json_lite.h"
 #include "c_boundary.h"
+#include "engine_link_check.h"
 #include "superslm/sha256.h"
 
 #include "superembedder/bank_internal_abi.h"
@@ -349,6 +350,11 @@ static semb_status BankOpenBody(const char* path, size_t path_len, semb_bank* ou
   if (out) *out = nullptr;
   if ((!path && path_len > 0) || !out) return SEMB_NULL_ARGUMENT;
   if (!path || path_len == 0) return SEMB_ARTIFACT_UNREADABLE;
+
+  // U2-3 item 14: bank open runs engine code (Sha256) with no encoder handle, so it reads the linked engine's
+  // identity first too, before any bank file is read.
+  const semb::engine_link::Verdict link = semb::engine_link::CheckLinkedEngine();
+  if (link.status != SEMB_OK) return link.status;
 
   try {
     const std::string stem(path, path_len);

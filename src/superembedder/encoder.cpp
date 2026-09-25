@@ -25,6 +25,7 @@
 // source-closure scan -- safe to include here, unlike generated/semb_provenance.h
 // (see semb_bake_to_path's own provenance-block comment for why THAT one is not).
 #include "semb_engine_pin.h"
+#include "engine_link_check.h"
 
 #include <array>
 #include <atomic>
@@ -825,6 +826,11 @@ semb_status CopySpan(const uint8_t* bytes, size_t len, std::vector<uint8_t>* out
 // runs on the encoder's own copies.
 static semb_status OpenEncoder(const ArtifactSource& source, uint32_t requested_max_concurrency,
                                semb_encoder* out) {
+  // U2-3 item 14: the linked engine's identity, before `source` reads or copies any artifact byte and before
+  // any engine code runs. Both public open verbs reach it here, by construction.
+  const semb::engine_link::Verdict link = semb::engine_link::CheckLinkedEngine();
+  if (link.status != SEMB_OK) return link.status;
+
   try {
     std::vector<uint8_t> model_bytes;
     std::vector<uint8_t> tokenizer_bytes;
@@ -1786,6 +1792,9 @@ static semb_status BakeToPathBody(semb_encoder enc, const semb_document* docs, s
       descriptor.Set("engineFlags", js::Value::MakeString(d.engine_flags));
       manifest.Set("build_descriptor", std::move(descriptor));
     }
+    // U2-3 items 13 and 14: the engine named by content -- the build record the linked engine reports, which
+    // the open that produced this handle checked against the record configure verified.
+    manifest.Set("engine_build_record", js::Value::MakeString(semb::engine_link::LinkedBuildRecord()));
     manifest.Set("provenance", std::move(provenance));
     manifest.Set("label:ps_version", js::Value::MakeString(kPsVersionLabel));
     manifest.Set("label:engine_path_id", js::Value::MakeString(kEngineAdapterIdLabel));

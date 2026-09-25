@@ -123,6 +123,7 @@ set(SEMB_LIBRARY_SOURCES
 	src/superembedder/json_lite.cpp
 	src/superembedder/bank.cpp
 	src/superembedder/certification.cpp
+	src/superembedder/engine_link_check.cpp
 )
 
 # U2-3 items 1 and 13: the step every build runs before any library

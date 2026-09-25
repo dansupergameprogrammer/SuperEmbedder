@@ -2,6 +2,7 @@
 // (plan U2-3 items 1, 8, 9, 11). See certification.h.
 #include "certification.h"
 
+#include "engine_link_check.h"
 #include "json_lite.h"
 #include "semb_build_descriptor.h"
 
@@ -144,9 +145,9 @@ const Descriptor& ThisBuild() {
       SEMB_DESCRIPTOR_STDLIB,
       SEMB_BUILD_CONFIGURATION,
       SEMB_BUILD_SYSTEM,
-      // The engine's dispatch as the engine-build record configure verified reports it. Item 14 moves this
-      // read to the linked engine's own sslm_build_identity() report once an engine carries that verb.
-      SEMB_ENGINE_DISPATCH,
+      // The engine's dispatch as the LINKED engine reports it (sslm_build_identity's forced_tier, item 14).
+      // An open that reaches this has passed the link check, so it equals the record configure verified.
+      semb::engine_link::LinkedDispatch(),
       SEMB_COMPILE_FLAGS_SHA,
       SEMB_ENGINE_FLAGS_SHA,
   };
@@ -155,7 +156,7 @@ const Descriptor& ThisBuild() {
 
 const std::string& DispatchedTier() {
   static const std::string tier = [] {
-    const std::string forced = SEMB_ENGINE_DISPATCH;
+    const std::string forced = semb::engine_link::LinkedDispatch();
     if (forced != "auto") return forced;
 #if SUPERSLM_MATMUL_HAVE_SIMD_X64
     switch (superslm::DetectBestDotRowTierForCpu()) {
