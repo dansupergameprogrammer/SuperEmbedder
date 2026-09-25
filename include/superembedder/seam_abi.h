@@ -24,6 +24,8 @@ enum SembEncodeStatus : int32_t {
   // BEFORE codes_out is written. See semb_encode_document_for_witness's
   // own doc comment.
   kSembEncodeHiddenTooLarge = 2,
+  // U2-10 Builds item 3: memory could not be allocated.
+  kSembEncodeAllocationFailed = 3,
 };
 
 // TE-79 F-7: semb_encode_document_for_witness cannot take a real

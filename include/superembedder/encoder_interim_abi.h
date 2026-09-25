@@ -54,6 +54,11 @@ enum SembInterimStatus : int32_t {
   kSembInterimDequantizeRefused = 7,
   kSembInterimStructSizeMismatch = 8,  // an IN struct's `struct_size` is not this build's
   kSembInterimConcurrencyExceeded = 9,  // every preallocated workspace is in use
+  // Memory could not be allocated (U2-10 Builds item 3). Returned by every
+  // interim verb's C-linkage boundary for std::bad_alloc and
+  // std::length_error, and by a body that receives a callee's allocation
+  // status; the handle stays usable.
+  kSembInterimAllocationFailed = 10,
 };
 
 // Which of the two installed forward entry points runs the document. Both

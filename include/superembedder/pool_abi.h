@@ -31,6 +31,11 @@ enum SembWaPoolStatus : int32_t {
   // in a width that cannot overflow -- see kSembWaPoolMaxAbsEMin below and
   // semb_wa_pool_run's own doc comment.
   kSembEMinDomainExceeded = 5,
+  // U2-10 Builds item 3: the C-linkage boundary's two statuses for this
+  // family -- memory could not be allocated, and any other internal failure
+  // (an exception of any other type). Neither is a corner refusal.
+  kSembWaPoolAllocationFailed = 6,
+  kSembWaPoolInternalFailure = 7,
 };
 
 // The largest |e_min| (the minimum carried exponent over the POOLED
