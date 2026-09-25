@@ -83,7 +83,10 @@
 
 #ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
 #include "support/semb_workspace_seam.h"
+#include "support/semb_u2_memory_seam.h"
 #include <atomic>
+#include <system_error>
+#include "superslm/forward_sites.h"
 #include <chrono>
 #include <condition_variable>
 
@@ -149,6 +152,155 @@ static void OnRowAcquired() {
   state_changed.notify_all();
   state_changed.wait(lock, [generation] { return row_release_generation != generation; });
   --row_parked;
+}
+
+// ---------------------------------------------------------------------------
+// U2 cloud build, the seam commit (te267 sec 6.1 step 1): U2-9 Builds item 9's
+// readers and arms, and U2-10 Builds item 2c's spawn fail arm (C66). Test-only,
+// under this guard, so none of it reaches the shipped library. The C surface is
+// tests/support/semb_u2_memory_seam.h; the C++ hooks below are what the builder
+// calls from the U2-9/U2-10 build (that header's comment lists each one). On
+// today's pool nothing calls the growth, fill, forced-reference or gate hooks.
+// ---------------------------------------------------------------------------
+static std::atomic<uint64_t> slot_growths{0};
+static std::atomic<int32_t> fill_byte{-1};
+static std::atomic<int32_t> forced_reference{0};
+
+static std::mutex growth_fail_mutex;
+static uint64_t growth_fail_min_c = 0;
+static bool growth_fail_fired = false;
+static uint64_t growth_fail_capacity_at_fire = 0;
+
+// The builder's growth site calls this inside the new buffer's allocation
+// step, before the allocation: `c` is the new C, `current_capacity` the slot
+// buffer's capacity at that moment. Throws std::bad_alloc when the fail arm
+// is armed and c >= its value (one shot), recording the capacity.
+[[maybe_unused]] static void BeforeSlotGrowth(uint64_t c, uint64_t current_capacity) {
+  std::lock_guard<std::mutex> lock(growth_fail_mutex);
+  if (growth_fail_min_c != 0 && c >= growth_fail_min_c) {
+    growth_fail_min_c = 0;
+    growth_fail_fired = true;
+    growth_fail_capacity_at_fire = current_capacity;
+    throw std::bad_alloc();
+  }
+}
+
+// After a successful growth: counts it, and applies the fill arm.
+[[maybe_unused]] static void AfterSlotGrowth(uint8_t* data, size_t bytes) {
+  slot_growths.fetch_add(1);
+  const int32_t fb = fill_byte.load();
+  if (fb >= 0 && data && bytes) std::memset(data, fb, bytes);
+}
+
+[[maybe_unused]] static bool ForcedReferenceArmed() { return forced_reference.load() != 0; }
+
+// The long-document gate's hooks (U2-9 item 6).
+static uint32_t gate_park_budget = 0;
+static uint32_t gate_parked = 0;
+static uint64_t gate_release_generation = 0;
+static uint32_t gate_holders = 0;
+static uint32_t gate_high_water = 0;
+static uint32_t gate_waiters = 0;
+static std::vector<uint64_t> gate_take_records;
+static std::vector<uint64_t> gate_give_records;
+
+[[maybe_unused]] static void OnGateWaitBegin() {
+  std::lock_guard<std::mutex> lock(state_mutex);
+  ++gate_waiters;
+  state_changed.notify_all();
+}
+[[maybe_unused]] static void OnGateWaitEnd() {
+  std::lock_guard<std::mutex> lock(state_mutex);
+  if (gate_waiters) --gate_waiters;
+  state_changed.notify_all();
+}
+[[maybe_unused]] static void OnGateTaken(uint64_t capacity) {
+  std::lock_guard<std::mutex> lock(state_mutex);
+  gate_take_records.push_back(capacity);
+  ++gate_holders;
+  if (gate_holders > gate_high_water) gate_high_water = gate_holders;
+  state_changed.notify_all();
+}
+// The park point: after the holder's buffer has grown, before its forward.
+[[maybe_unused]] static void OnGateHolding() {
+  std::unique_lock<std::mutex> lock(state_mutex);
+  if (gate_park_budget == 0) return;
+  --gate_park_budget;
+  ++gate_parked;
+  const uint64_t generation = gate_release_generation;
+  state_changed.notify_all();
+  state_changed.wait(lock, [generation] { return gate_release_generation != generation; });
+  --gate_parked;
+}
+[[maybe_unused]] static void OnGateGiveBack(uint64_t capacity) {
+  std::lock_guard<std::mutex> lock(state_mutex);
+  gate_give_records.push_back(capacity);
+  if (gate_holders) --gate_holders;
+  state_changed.notify_all();
+}
+
+// The poison arm (C60's must-reject and must-accept).
+static std::mutex poison_mutex;
+static bool poison_armed = false;
+static bool poison_fired = false;
+static uint64_t poison_split = 0;
+static uint64_t poison_begin = 0;
+static uint64_t poison_end = 0;
+static uint8_t poison_byte = 0;
+
+// Called by semb::Encode at the start of each chunk-batched call (at = its
+// offset) and before each per-token position (at = the position).
+// `context_cap` must be the cap the forward itself receives.
+[[maybe_unused]] static void PoisonAt(uint64_t at, uint8_t* workspace, uint32_t num_layers,
+                                      int64_t context_cap, size_t num_kv_heads, size_t head_dim) {
+  std::lock_guard<std::mutex> lock(poison_mutex);
+  if (!poison_armed || at != poison_split) return;
+  poison_armed = false;
+  poison_fired = true;
+  const uint64_t end = std::min<uint64_t>(poison_end, static_cast<uint64_t>(context_cap));
+  for (uint32_t layer = 0; layer < num_layers; ++layer) {
+    for (size_t kvh = 0; kvh < num_kv_heads; ++kvh) {
+      for (uint64_t pos = poison_begin; pos < end; ++pos) {
+        int8_t* row = superslm::MutableKeyRow(workspace, layer, context_cap, num_kv_heads, head_dim,
+                                              kvh, static_cast<int64_t>(pos));
+        std::memset(row, poison_byte, head_dim);
+      }
+    }
+  }
+}
+
+// C66's spawn fail arm (U2-10 Builds item 2c): called in place of each
+// worker thread's construction with a token unique to the batch call
+// (NextBatchCallToken(), taken once per batch call).
+static std::atomic<uint64_t> batch_call_tokens{0};
+[[maybe_unused]] static uint64_t NextBatchCallToken() { return ++batch_call_tokens; }
+static std::mutex spawn_mutex;
+static uint32_t spawn_fail_k = 0;
+static uint32_t spawn_seen = 0;
+static bool spawn_fired = false;
+static uint64_t spawn_fired_call = 0;
+static uint32_t spawn_starts_after = 0;
+static uint64_t spawn_current_call = 0;
+
+[[maybe_unused]] static void OnWorkerStart(uint64_t call_token) {
+  std::lock_guard<std::mutex> lock(spawn_mutex);
+  if (spawn_fired) {
+    if (call_token == spawn_fired_call) ++spawn_starts_after;
+    return;
+  }
+  if (spawn_fail_k == 0) return;
+  if (call_token != spawn_current_call) {
+    spawn_current_call = call_token;
+    spawn_seen = 0;
+  }
+  ++spawn_seen;
+  if (spawn_seen == spawn_fail_k) {
+    spawn_fail_k = 0;
+    spawn_fired = true;
+    spawn_fired_call = call_token;
+    spawn_starts_after = 0;
+    throw std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again));
+  }
 }
 }  // namespace semb::test_seam
 
@@ -558,6 +710,10 @@ SslmForwardStatus Encode(EncoderModel* m, std::vector<uint8_t>& workspace,
   if (leg == kSembForwardLegChunkBatched) {
     for (size_t off = 0; off < n; off += chunk_budget) {
       const size_t span = (off + chunk_budget <= n) ? chunk_budget : (n - off);
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+      test_seam::PoisonAt(off, workspace.data(), m->num_layers, m->context_cap,
+                          m->view.config.num_key_value_heads, m->view.config.head_dim);
+#endif
       const SslmForwardStatus st = RunLayerLoopChunkBatched(
           codes_out + off * hidden, scales_out + off, span, m->layers.data(), m->num_layers, hidden,
           m->view.config.head_dim, m->view.config.num_key_value_heads,
@@ -576,6 +732,10 @@ SslmForwardStatus Encode(EncoderModel* m, std::vector<uint8_t>& workspace,
   seq.kv_saturation_count = 0;
   seq.context_length = 0;
   for (size_t p = 0; p < n; ++p) {
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+    test_seam::PoisonAt(p, workspace.data(), m->num_layers, m->context_cap,
+                        m->view.config.num_key_value_heads, m->view.config.head_dim);
+#endif
     seq.hidden_codes = codes_out + p * hidden;
     seq.hidden_scale = scales_out[p];
     seq.layer_index = 0;
@@ -1275,7 +1435,16 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
     }
   } joiner{threads};
   threads.reserve(worker_count - 1);
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+  // C66's spawn fail arm (U2-10 Builds item 2c), at today's spawn statement:
+  // fires in place of the thread's construction. Item 2c moves it into
+  // StartWorker.
+  const uint64_t seam_batch_call = semb::test_seam::NextBatchCallToken();
+#endif
   for (size_t w = 1; w < worker_count; ++w) {
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+    semb::test_seam::OnWorkerStart(seam_batch_call);
+#endif
     threads.emplace_back(Worker, pool.index(w));
   }
   Worker(pool.index(0));
@@ -1304,6 +1473,160 @@ extern "C" SembInterimStatus semb_interim_encode_batch_ps_n(
   if (out_seam_stream && out_seam_stream_len) *out_seam_stream_len = seam_required;
   return kSembInterimOk;
 }
+
+
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+// ---------------------------------------------------------------------------
+// U2 cloud build, the seam commit: the C surface of
+// tests/support/semb_u2_memory_seam.h (see the hook block near the top of this
+// file). Readers read today's state on today's pool.
+// ---------------------------------------------------------------------------
+extern "C" uint64_t semb_test_seam_slot_record_count(const SembInterimEncoder* enc) {
+  if (!enc || !enc->model) return 0;
+  std::lock_guard<std::mutex> lock(enc->model->workspace_mutex);
+  return enc->model->workspaces.size();
+}
+
+extern "C" int32_t semb_test_seam_slot_capacity(const SembInterimEncoder* enc, uint64_t index,
+                                                uint64_t* out_capacity_bytes) {
+  if (!enc || !enc->model || !out_capacity_bytes) return 0;
+  std::lock_guard<std::mutex> lock(enc->model->workspace_mutex);
+  if (index >= enc->model->workspaces.size()) return 0;
+  *out_capacity_bytes = enc->model->workspaces[index].bytes.capacity();
+  return 1;
+}
+
+extern "C" uint64_t semb_test_seam_model_buffer_capacity(const SembInterimEncoder* enc) {
+  if (!enc || !enc->model) return 0;
+  return enc->model->model_bytes.capacity();
+}
+
+extern "C" uint64_t semb_test_seam_slot_growths(void) { return semb::test_seam::slot_growths.load(); }
+
+extern "C" void semb_test_seam_arm_fill(int32_t byte) {
+  semb::test_seam::fill_byte.store(byte < 0 ? -1 : (byte & 0xFF));
+}
+
+extern "C" void semb_test_seam_arm_forced_reference(int32_t on) {
+  semb::test_seam::forced_reference.store(on ? 1 : 0);
+}
+
+extern "C" void semb_test_seam_arm_growth_fail(uint64_t min_c) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::growth_fail_mutex);
+  semb::test_seam::growth_fail_min_c = min_c;
+  semb::test_seam::growth_fail_fired = false;
+  semb::test_seam::growth_fail_capacity_at_fire = 0;
+}
+
+extern "C" int32_t semb_test_seam_growth_fail_fired(uint64_t* out_capacity_at_fire) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::growth_fail_mutex);
+  if (out_capacity_at_fire) *out_capacity_at_fire = semb::test_seam::growth_fail_capacity_at_fire;
+  return semb::test_seam::growth_fail_fired ? 1 : 0;
+}
+
+extern "C" void semb_test_seam_arm_poison(uint64_t split, uint64_t pos_begin, uint64_t pos_end,
+                                          uint8_t byte) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::poison_mutex);
+  semb::test_seam::poison_armed = true;
+  semb::test_seam::poison_fired = false;
+  semb::test_seam::poison_split = split;
+  semb::test_seam::poison_begin = pos_begin;
+  semb::test_seam::poison_end = pos_end;
+  semb::test_seam::poison_byte = byte;
+}
+
+extern "C" int32_t semb_test_seam_poison_disarm(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::poison_mutex);
+  semb::test_seam::poison_armed = false;
+  const bool fired = semb::test_seam::poison_fired;
+  semb::test_seam::poison_fired = false;
+  return fired ? 1 : 0;
+}
+
+extern "C" int32_t semb_test_seam_gate_arm_park(uint32_t count) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  if (semb::test_seam::gate_parked != 0) return 0;
+  semb::test_seam::gate_park_budget = count;
+  return 1;
+}
+
+extern "C" int32_t semb_test_seam_gate_wait_parked(uint32_t n, uint32_t timeout_ms) {
+  std::unique_lock<std::mutex> lock(semb::test_seam::state_mutex);
+  return semb::test_seam::state_changed.wait_for(
+      lock, std::chrono::milliseconds(timeout_ms),
+      [n] { return semb::test_seam::gate_parked >= n; }) ? 1 : 0;
+}
+
+extern "C" uint32_t semb_test_seam_gate_parked(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  return semb::test_seam::gate_parked;
+}
+
+extern "C" void semb_test_seam_gate_release(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  ++semb::test_seam::gate_release_generation;
+  semb::test_seam::gate_park_budget = 0;
+  semb::test_seam::state_changed.notify_all();
+}
+
+extern "C" uint32_t semb_test_seam_gate_holders(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  return semb::test_seam::gate_holders;
+}
+
+extern "C" uint32_t semb_test_seam_gate_high_water(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  return semb::test_seam::gate_high_water;
+}
+
+extern "C" uint32_t semb_test_seam_gate_waiters(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  return semb::test_seam::gate_waiters;
+}
+
+extern "C" uint64_t semb_test_seam_gate_take_records(uint64_t* out, uint64_t cap) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  const auto& r = semb::test_seam::gate_take_records;
+  for (uint64_t i = 0; out && i < cap && i < r.size(); ++i) out[i] = r[i];
+  return r.size();
+}
+
+extern "C" uint64_t semb_test_seam_gate_give_records(uint64_t* out, uint64_t cap) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  const auto& r = semb::test_seam::gate_give_records;
+  for (uint64_t i = 0; out && i < cap && i < r.size(); ++i) out[i] = r[i];
+  return r.size();
+}
+
+extern "C" int32_t semb_test_seam_gate_reset(void) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::state_mutex);
+  if (semb::test_seam::gate_parked != 0) return 0;
+  semb::test_seam::gate_park_budget = 0;
+  semb::test_seam::gate_holders = 0;
+  semb::test_seam::gate_high_water = 0;
+  semb::test_seam::gate_waiters = 0;
+  semb::test_seam::gate_take_records.clear();
+  semb::test_seam::gate_give_records.clear();
+  ++semb::test_seam::gate_release_generation;
+  return 1;
+}
+
+extern "C" void semb_test_seam_arm_spawn_fail(uint32_t k) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::spawn_mutex);
+  semb::test_seam::spawn_fail_k = k;
+  semb::test_seam::spawn_seen = 0;
+  semb::test_seam::spawn_current_call = 0;
+  semb::test_seam::spawn_fired = false;
+  semb::test_seam::spawn_fired_call = 0;
+  semb::test_seam::spawn_starts_after = 0;
+}
+
+extern "C" int32_t semb_test_seam_spawn_fail_fired(uint32_t* out_starts_after) {
+  std::lock_guard<std::mutex> lock(semb::test_seam::spawn_mutex);
+  if (out_starts_after) *out_starts_after = semb::test_seam::spawn_starts_after;
+  return semb::test_seam::spawn_fired ? 1 : 0;
+}
+#endif
 
 // TE-166 (U1 slice 4, C34 leg (e)): this TU's own compiled-in adapter
 // identity (`Claude/Plans/SuperEmbedder_Plan.md` sec 3.4's label-check

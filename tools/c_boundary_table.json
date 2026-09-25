@@ -1,0 +1,510 @@
+{
+  "schema": "semb_c_boundary_table_v1",
+  "note": "U2-10 Builds item 2 (te267 sec 5): every C-linkage function the shipped superembedder target defines, with its disposition (boundary or leaf), status family, the allocation and catch-all statuses item 3 assigns that family, the C64 drivers that reach it, and the pre-build C64 reading. Landed in the seam commit (sec 6.1 step 1). C64 takes its expected statuses from item 3 in its own source, never from this file, and refuses a row whose recorded statuses differ from its family. Test-seam C functions (semb_test_seam_*, semb_bank_test_seam_*) are outside the rule and outside this table.",
+  "rows": [
+    {
+      "name": "semb_status_name",
+      "tu": "src/superembedder/encoder.cpp",
+      "return_type": "const char*",
+      "disposition": "leaf",
+      "status_family": null,
+      "allocation_status": null,
+      "catch_all_status": null,
+      "c64_drivers": [
+        "call"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_adapter_self_id",
+      "tu": "src/superembedder/engine_adapter_interim.cpp",
+      "return_type": "const char*",
+      "disposition": "leaf",
+      "status_family": null,
+      "allocation_status": null,
+      "catch_all_status": null,
+      "c64_drivers": [
+        "call"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_ps1_version_label",
+      "tu": "src/superembedder/ps1_pool.cpp",
+      "return_type": "const char*",
+      "disposition": "leaf",
+      "status_family": null,
+      "allocation_status": null,
+      "catch_all_status": null,
+      "c64_drivers": [
+        "call"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_ps_n_version_label",
+      "tu": "src/superembedder/ps_n_pool.cpp",
+      "return_type": "const char*",
+      "disposition": "leaf",
+      "status_family": null,
+      "allocation_status": null,
+      "catch_all_status": null,
+      "c64_drivers": [
+        "call"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_library_build_generation",
+      "tu": "src/superembedder/witness_build_generation.cpp",
+      "return_type": "void",
+      "disposition": "leaf",
+      "status_family": null,
+      "allocation_status": null,
+      "catch_all_status": null,
+      "c64_drivers": [
+        "call"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_seam_serialize_document",
+      "tu": "src/superembedder/seam_serialize.cpp",
+      "return_type": "SembSerializeStatus",
+      "disposition": "leaf",
+      "status_family": null,
+      "allocation_status": null,
+      "catch_all_status": null,
+      "c64_drivers": [
+        "call"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_wa_pooled_spread",
+      "tu": "src/superembedder/ps1_pool.cpp",
+      "return_type": "SembWaPoolStatus",
+      "disposition": "leaf",
+      "status_family": null,
+      "allocation_status": null,
+      "catch_all_status": null,
+      "c64_drivers": [
+        "call"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_interim_encoder_close",
+      "tu": "src/superembedder/engine_adapter_interim.cpp",
+      "return_type": "void",
+      "disposition": "leaf",
+      "status_family": null,
+      "allocation_status": null,
+      "catch_all_status": null,
+      "c64_drivers": [
+        "call"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_encoder_open",
+      "tu": "src/superembedder/encoder.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_encoder_close",
+      "tu": "src/superembedder/encoder.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_encoder_dims",
+      "tu": "src/superembedder/encoder.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_encode",
+      "tu": "src/superembedder/encoder.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short",
+        "growth",
+        "long"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_encode_batch",
+      "tu": "src/superembedder/encoder.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short",
+        "batch_mc2",
+        "growth",
+        "long"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_bank_open",
+      "tu": "src/superembedder/bank.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ARTIFACT_UNREADABLE",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_bank_close",
+      "tu": "src/superembedder/bank.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_query_open",
+      "tu": "src/superembedder/query.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_query_encode",
+      "tu": "src/superembedder/query.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short",
+        "truncated_query",
+        "growth",
+        "long"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_query_close",
+      "tu": "src/superembedder/query.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_fingerprint_of",
+      "tu": "src/superembedder/query.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_bake_to_path",
+      "tu": "src/superembedder/encoder.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short",
+        "batch_mc2",
+        "growth",
+        "long"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_wb_digest",
+      "tu": "src/superembedder/encoder.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_wq_digest",
+      "tu": "src/superembedder/encoder.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_bank_acquire_query",
+      "tu": "src/superembedder/bank.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_bank_release_query",
+      "tu": "src/superembedder/bank.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_bank_debug_state",
+      "tu": "src/superembedder/bank.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_bank_ranked_state",
+      "tu": "src/superembedder/bank.cpp",
+      "return_type": "semb_status",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_interim_encoder_open",
+      "tu": "src/superembedder/engine_adapter_interim.cpp",
+      "return_type": "SembInterimStatus",
+      "disposition": "boundary",
+      "status_family": "SembInterimStatus",
+      "allocation_status": "kSembInterimAllocationFailed",
+      "catch_all_status": "kSembInterimEngineRefused",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_interim_encoder_open_from_memory",
+      "tu": "src/superembedder/engine_adapter_interim.cpp",
+      "return_type": "SembInterimStatus",
+      "disposition": "boundary",
+      "status_family": "SembInterimStatus",
+      "allocation_status": "kSembInterimAllocationFailed",
+      "catch_all_status": "kSembInterimEngineRefused",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_interim_encoder_geometry",
+      "tu": "src/superembedder/engine_adapter_interim.cpp",
+      "return_type": "SembInterimStatus",
+      "disposition": "boundary",
+      "status_family": "SembInterimStatus",
+      "allocation_status": "kSembInterimAllocationFailed",
+      "catch_all_status": "kSembInterimEngineRefused",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_interim_encode_seam",
+      "tu": "src/superembedder/engine_adapter_interim.cpp",
+      "return_type": "SembInterimStatus",
+      "disposition": "boundary",
+      "status_family": "SembInterimStatus",
+      "allocation_status": "kSembInterimAllocationFailed",
+      "catch_all_status": "kSembInterimEngineRefused",
+      "c64_drivers": [
+        "short",
+        "per_token",
+        "two_chunk",
+        "growth",
+        "long"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_interim_ps_n_select",
+      "tu": "src/superembedder/engine_adapter_interim.cpp",
+      "return_type": "SembInterimStatus",
+      "disposition": "boundary",
+      "status_family": "SembInterimStatus",
+      "allocation_status": "kSembInterimAllocationFailed",
+      "catch_all_status": "kSembInterimEngineRefused",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_interim_encode_ps_n",
+      "tu": "src/superembedder/engine_adapter_interim.cpp",
+      "return_type": "SembInterimStatus",
+      "disposition": "boundary",
+      "status_family": "SembInterimStatus",
+      "allocation_status": "kSembInterimAllocationFailed",
+      "catch_all_status": "kSembInterimEngineRefused",
+      "c64_drivers": [
+        "short",
+        "growth"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_interim_encode_batch_ps_n",
+      "tu": "src/superembedder/engine_adapter_interim.cpp",
+      "return_type": "SembInterimStatus",
+      "disposition": "boundary",
+      "status_family": "SembInterimStatus",
+      "allocation_status": "kSembInterimAllocationFailed",
+      "catch_all_status": "kSembInterimEngineRefused",
+      "c64_drivers": [
+        "short",
+        "batch_mc2",
+        "growth",
+        "long"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_encode_document_for_witness",
+      "tu": "src/superembedder/engine_adapter_interim.cpp",
+      "return_type": "SembEncodeStatus",
+      "disposition": "boundary",
+      "status_family": "SembEncodeStatus",
+      "allocation_status": "kSembEncodeAllocationFailed",
+      "catch_all_status": "kSembEncodeEngineRefused",
+      "c64_drivers": [
+        "short",
+        "two_chunk",
+        "growth",
+        "long"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_wa_pool_run",
+      "tu": "src/superembedder/ps1_pool.cpp",
+      "return_type": "SembWaPoolStatus",
+      "disposition": "boundary",
+      "status_family": "SembWaPoolStatus",
+      "allocation_status": "kSembWaPoolAllocationFailed",
+      "catch_all_status": "kSembWaPoolInternalFailure",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_ps_n_dequantize",
+      "tu": "src/superembedder/ps_n_pool.cpp",
+      "return_type": "SembWaPoolStatus",
+      "disposition": "boundary",
+      "status_family": "SembWaPoolStatus",
+      "allocation_status": "kSembWaPoolAllocationFailed",
+      "catch_all_status": "kSembWaPoolInternalFailure",
+      "c64_drivers": [
+        "short"
+      ],
+      "c64_pre_build": null
+    },
+    {
+      "name": "semb_wa_digest",
+      "tu": "src/superembedder/wa_digest.cpp",
+      "return_type": "void",
+      "disposition": "boundary",
+      "status_family": "semb_status",
+      "allocation_status": "SEMB_ALLOCATION_FAILED",
+      "catch_all_status": "SEMB_ENGINE_REFUSED",
+      "c64_drivers": [
+        "short"
+      ],
+      "return_type_after_build": "semb_status",
+      "c64_pre_build": null
+    }
+  ]
+}
