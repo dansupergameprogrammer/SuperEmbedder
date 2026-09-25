@@ -22,17 +22,22 @@ name: ci
 # authored and locally-verified on one OS, not executed on Linux/macOS, and
 # lands when this is pushed.
 
+# Hosted runs are manual: hosted minutes are spent on release-shaped tips only.
+# The U2 certified-set slice restores all three legs here -- windows-2022 (the
+# runner image that still carries Visual Studio 2022), macos-latest and
+# ubuntu-latest -- with no toolchain override on any of them: configure refuses
+# no compiler, and a toolchain outside docs/certified-builds.json builds and
+# runs in the uncertified epoch. Their first hosted reading is the release
+# candidate's run.
 on:
-  push:
-    branches: [main, develop]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        os: [windows-2022, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       # TE-164 (U1 slice 3 build): fetch-depth: 0 (full history), not the
@@ -105,46 +110,21 @@ jobs:
         # untested configuration relative to this project's own C33/C35
         # cross-optimisation-level legs and, on a suite this size, several
         # times slower per job -- and hosted Actions minutes are scarce.
-        # TE-166 item 6: TE-165 (N-4, D-SLM6386, D-SLM6390 item 5) pinned
-        # the certified toolchain set as a CMake structure
-        # (cmake/ToolchainPin.cmake, cmake/toolchain-pin.json) -- MSVC
-        # 19.33.31631.0, clang-cl 18.1.8 (frontend=MSVC), GNU 13.3.0 (TE-184,
-        # N-6, D-SLM6403: the runner's own real version) -- so a
-        # configure that resolves an uncertified compiler refuses by name
-        # (SEMB_TOOLCHAIN_PIN_MISMATCH). windows-latest is left PINNED
-        # (no override): ilammy/msvc-dev-cmd@v1 installs an MSVC this
-        # project has not independently certified, so a real hosted run
-        # either agrees with the certified pair or refuses loudly and
-        # names what it resolved instead -- both are informative, and
-        # neither is this file's to suppress. ubuntu-latest's system GCC
-        # and macos-latest's AppleClang ARE unconditionally uncertified
-        # today (AppleClang is not a certified id at all; no GCC version
-        # is pinned), so only those two legs pass the explicit override,
-        # per this item's own instruction; the resolved identity every leg
-        # actually configured against is printed into the job log next
-        # (below) so a future session pins a real value from a run rather
-        # than guessing one into this file.
+        # No toolchain override: the certified set is decided at encoder open
+        # from the build's compiled-in descriptor, never at configure. The
+        # resolved identity each leg configured against is printed next.
         run: |
-          SEMB_TOOLCHAIN_OVERRIDE_ARGS=()
-          if [ "${{ runner.os }}" != "Windows" ]; then
-            SEMB_TOOLCHAIN_OVERRIDE_ARGS+=("-DSEMB_TOOLCHAIN_UNPINNED=ON")
-          fi
           cmake -G Ninja -S . -B build/semb \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="$(pwd)/build/_engine_install" \
-            "${SEMB_TOOLCHAIN_OVERRIDE_ARGS[@]}"
+            -DCMAKE_PREFIX_PATH="$(pwd)/build/_engine_install"
 
-      - name: Report the resolved compiler identity (TE-166 item 6)
+      - name: Report the resolved compiler identity
         shell: bash
         # Prints CMAKE_CXX_COMPILER_ID/_VERSION into the job log from
         # CMake's own per-configure generated file (these are ordinary
         # variables, not cache entries, so they do not appear in
-        # CMakeCache.txt) -- independent of this workflow's own prose
-        # claims about what each runner resolves, and independent of
-        # cmake/ToolchainPin.cmake's own configure-time message(STATUS)
-        # line, so a future session pins cmake/toolchain-pin.json's
-        # ubuntu-latest/macos-latest entries from a real run rather than
-        # a guess.
+        # CMakeCache.txt), so whether a hosted leg's toolchain matches a
+        # certified cell is read from a real run rather than guessed.
         run: |
           compiler_info_file=$(find build/semb/CMakeFiles -maxdepth 2 -name CMakeCXXCompiler.cmake | head -n1)
           grep -E "CMAKE_CXX_COMPILER_ID |CMAKE_CXX_COMPILER_VERSION |CMAKE_CXX_COMPILER_FRONTEND_VARIANT " "$compiler_info_file"
