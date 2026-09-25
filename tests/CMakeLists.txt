@@ -1711,3 +1711,24 @@ function(semb_apply_ctest_ordering)
 endfunction()
 semb_apply_ctest_ordering()
 cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_apply_ctest_ordering)
+
+# Memory. Three fixture mints need gigabytes of Python heap (peak RSS measured
+# on the GCC box, one mint at a time):
+#   regenerate_oversized_synthetic_artifact.py (hidden 2048)   ~12.9 GB
+#   wq/regenerate_c17_highcap_pair_fixture.py (cap 512)        ~7.5 GB
+#   regenerate_oversized_synthetic_artifact.py --hidden-size 1024  ~5.8 GB
+# (the c4 zero-gain mint is the c17 mint with one tensor zeroed). Two of them at
+# once, or the 12.9 GB one beside anything sizeable, exhausts a 15 GB host, and
+# the kernel kills whichever test is largest at that moment. seam_hidden_capacity_test
+# mints the two oversized artifacts, so it runs alone. The tests that may mint
+# the cap-512 pairs share one lock, so at most one of those mints runs at a
+# time (the first mints build/_scratch/te222_c17_pair; the rest find it and
+# skip the mint).
+set_tests_properties(seam_hidden_capacity_test PROPERTIES RUN_SERIAL TRUE)
+set_tests_properties(
+	superfaiss_roundtrip_synthetic
+	te194_c17_sixth_leg_construction
+	te194_query_check
+	te230_c4_zero_gain_check
+	te230_semb_cli_check
+	PROPERTIES RESOURCE_LOCK semb_multi_gb_mint)
