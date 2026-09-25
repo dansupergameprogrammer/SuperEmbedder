@@ -135,3 +135,40 @@ sec 4.4d item 4; D-SLM6161 holds hosted CI scarce):
   build must each be refused with `SEMB_FINGERPRINT_MISMATCH`. It runs in
   phases from a Visual Studio developer shell, never in CI; the phase order is
   in the script's docstring.
+
+## Using a bank with SuperFAISS
+
+A bank `semb bake` writes is a SuperFAISS `.wvbank` sidecar pair
+(`<stem>.wvbank.json` and `<stem>.wvbank.bin`: schemaVersion 1, `float32`,
+`cosine`, ids in corpus order), read by SuperFAISS's reference reader
+(`tools/wvbank.py read_bank`) or your own importer. Import it the way
+SuperFAISS's `docs/INTEGRATION.md` section 4 says: `ValidateSourceRows`, then
+`NormalizeRows` (the bank is `cosine`; SuperEmbedder does not normalize its
+rows), then `QuantizeRowsInt8` or `PadRowsFloat32`, then `ValidateBankData` at
+load.
+
+To query it, take the vector `semb query` emits for your text (`--raw` gives
+the `dims × 4` float32 bytes, the default `VECTOR_HEX=` line the same bytes in
+hex) and:
+
+1. **Pad it to the bank's `paddedDims`** — `PaddedDims(dims, quantization)`,
+   the dimension rounded up to a 16-byte row — with zero lanes, in a 16-byte
+   aligned buffer. For a 1024-dimension bank this adds no lanes in either
+   quantization.
+2. **Pass it as emitted: do not normalize it.** A `cosine` bank's rows are
+   unit-normed at bake, and SuperFAISS scores a `cosine` query as a plain dot
+   product against them, checking only that the query is finite, has zero pad
+   lanes and is not all zeros. A query's length multiplies every one of its
+   scores by the same positive factor, so it does not change the ranking the
+   scores define; the scores read as cosines only for a unit-length query.
+   In `CrossDevice` mode SuperFAISS quantizes the float32 bytes it is given,
+   so a query you normalize yourself is a different int8 query from the
+   emitted one. Its hits need not be bit-identical to hits from the emitted
+   vector on another machine.
+
+The round-trip harness (`tests/superfaiss_roundtrip/`) runs exactly these
+steps against SuperFAISS v3.3.0, the release `superfaiss.lock` pins. Over the
+239-document proof corpus it checks that SuperFAISS's float32 top-10 equals an
+independent float64 cosine top-10, and that `semb query --top 10`, an exact
+diagnostic scan and not the search engine, equals the same list; it also
+grades SuperFAISS's `CrossDevice` int8 ranking on class-match@1.
