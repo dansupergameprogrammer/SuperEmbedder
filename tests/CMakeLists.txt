@@ -1168,6 +1168,25 @@ if(NOT WIN32)
 	)
 endif()
 
+# U2 cloud build -- U2-10's C63, the adversary's keeper: real model and
+# tokenizer (SEMB_C12B_MODEL, SEMB_U1_TOKENIZER) and the adversary's two texts
+# (mid.txt, 603 B / 133 positions; short.txt). Any of them unset -> the cell
+# reports MISSING PREREQUISITE and passes; set, it carries real_artifact.
+set(SEMB_C63_MID_TEXT "" CACHE FILEPATH "C63: the adversary's mid.txt (603 B, 133 positions)")
+set(SEMB_C63_SHORT_TEXT "" CACHE FILEPATH "C63: the adversary's short.txt")
+add_executable(u2_10_c63_keeper_test u2_10_c63_keeper_test.cpp)
+target_link_libraries(u2_10_c63_keeper_test PRIVATE superembedder superslm::superslm Threads::Threads)
+set(_semb_c63_args "")
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "" AND NOT SEMB_C63_MID_TEXT STREQUAL ""
+   AND NOT SEMB_C63_SHORT_TEXT STREQUAL "")
+	set(_semb_c63_args --model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
+		--mid "${SEMB_C63_MID_TEXT}" --short "${SEMB_C63_SHORT_TEXT}" --scratch "${CMAKE_BINARY_DIR}")
+endif()
+add_test(NAME u2_10_c63_keeper COMMAND u2_10_c63_keeper_test ${_semb_c63_args})
+if(_semb_c63_args)
+	set_tests_properties(u2_10_c63_keeper PROPERTIES LABELS "real_artifact")
+endif()
+
 add_executable(te222_c17_probe EXCLUDE_FROM_ALL te222_c17_probe.cpp)
 target_link_libraries(te222_c17_probe PRIVATE superembedder superslm::superslm)
 target_include_directories(te222_c17_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
