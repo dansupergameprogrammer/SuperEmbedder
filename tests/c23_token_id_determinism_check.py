@@ -82,7 +82,8 @@ INSTRUMENT_SRC = REPO_ROOT / "tests" / "c23_token_id_determinism_test.cpp"
 
 
 def compiler_version_line(compiler: str) -> str:
-    is_clang = "clang" in Path(compiler).name.lower()
+    # cl.exe prints its banner with no arguments; clang-cl and GCC-style drivers need --version.
+    is_clang = "clang" in Path(compiler).name.lower() or not is_msvc_driver(compiler)
     argv = [compiler, "--version"] if is_clang else [compiler]
     try:
         proc = subprocess.run(argv, capture_output=True, text=True, timeout=20)
@@ -98,18 +99,42 @@ def compiler_version_line(compiler: str) -> str:
     return "<no version output>"
 
 
-def compile_instrument(compiler: str, engine_prefix: Path, out_dir: Path, tag: str) -> "tuple[bool, Path, str]":
+def is_msvc_driver(compiler: str) -> bool:
+    """cl.exe and clang-cl take MSVC-style options; every other driver takes GCC-style ones."""
+    return Path(compiler).stem.lower() in ("cl", "clang-cl")
+
+
+def compile_instrument(compiler: str, engine_prefix: Path, out_dir: Path, tag: str,
+                       engine_library: str = "") -> "tuple[bool, Path, str]":
+    # engine_library is $<TARGET_FILE:superslm::superslm>, passed by CMake, so
+    # the link names the engine archive the product itself links, whatever
+    # its platform file name; the include path is the engine prefix's own.
     out_dir.mkdir(parents=True, exist_ok=True)
-    obj = out_dir / f"c23_{tag}.obj"
-    exe = out_dir / f"c23_{tag}.exe"
-    cmd = [
-        compiler, "/nologo", "/std:c++20", "/EHsc", "/fp:precise", "/W4", "/MD",
-        f"/I{engine_prefix / 'include'}",
-        str(INSTRUMENT_SRC),
-        f"/Fo{obj}",
-        f"/Fe{exe}",
-        "/link", str(engine_prefix / "lib" / "superslm.lib"),
-    ]
+    include_dir = engine_prefix / "include"
+    if is_msvc_driver(compiler):
+        obj = out_dir / f"c23_{tag}.obj"
+        exe = out_dir / f"c23_{tag}.exe"
+        cmd = [
+            compiler, "/nologo", "/std:c++20", "/EHsc", "/fp:precise", "/W4", "/MD",
+            f"/I{include_dir}",
+            str(INSTRUMENT_SRC),
+            f"/Fo{obj}",
+            f"/Fe{exe}",
+            "/link", engine_library or str(engine_prefix / "lib" / "superslm.lib"),
+        ]
+    else:
+        # The GCC-style spelling of the same build: C++20, no FP contraction
+        # (this project's -ffp-contract=off policy, /fp:precise's counterpart),
+        # the same warning level, linked against the same engine archive.
+        exe = out_dir / f"c23_{tag}"
+        cmd = [
+            compiler, "-std=c++20", "-ffp-contract=off", "-Wall", "-Wextra",
+            f"-I{include_dir}",
+            str(INSTRUMENT_SRC),
+            "-o", str(exe),
+            engine_library or str(engine_prefix / "lib" / "libsuperslm.a"),
+            "-pthread",
+        ]
     proc = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO_ROOT)
     ok = proc.returncode == 0 and exe.exists()
     log = (proc.stdout or "") + (proc.stderr or "")
@@ -136,6 +161,7 @@ def main(argv: list) -> int:
     ap.add_argument("--engine-prefix", required=True)
     ap.add_argument("--primary-cxx-compiler", required=True)
     ap.add_argument("--secondary-cxx-compiler", default="")
+    ap.add_argument("--engine-library", default="", help="the engine archive ($<TARGET_FILE:superslm::superslm>)")
     ap.add_argument("--tokenizer", default="", help="the real, converter-emitted tokenizer .sslm (SEMB_U1_TOKENIZER)")
     args = ap.parse_args(argv)
 
@@ -181,7 +207,7 @@ def main(argv: list) -> int:
     digests = {}
     for tag, compiler in toolchains:
         version = compiler_version_line(compiler)
-        ok, exe, log = compile_instrument(compiler, engine_prefix, scratch, tag)
+        ok, exe, log = compile_instrument(compiler, engine_prefix, scratch, tag, args.engine_library)
         if not ok:
             verdict(f"toolchain {tag} ({version}): compile", "FAIL", log[-2000:])
             continue
@@ -203,7 +229,7 @@ def main(argv: list) -> int:
     # --- PRODUCT: the real 239-document corpus against the real tokenizer ---
     if args.tokenizer and Path(args.tokenizer).exists() and REAL_CORPUS.exists():
         primary_compiler = args.primary_cxx_compiler
-        ok, exe, log = compile_instrument(primary_compiler, engine_prefix, scratch, "product")
+        ok, exe, log = compile_instrument(primary_compiler, engine_prefix, scratch, "product", args.engine_library)
         if not ok:
             verdict("product: real 239-doc corpus", "FAIL", log[-2000:])
         else:

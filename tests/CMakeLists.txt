@@ -189,6 +189,7 @@ add_test(
 		--engine-prefix "${SEMB_ENGINE_PREFIX}"
 		--primary-cxx-compiler "${CMAKE_CXX_COMPILER}"
 		--secondary-cxx-compiler "${SEMB_TEST_SECOND_TOOLCHAIN_CXX}"
+		--engine-library "$<TARGET_FILE:superslm::superslm>"
 		--tokenizer "${SEMB_U1_TOKENIZER}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
