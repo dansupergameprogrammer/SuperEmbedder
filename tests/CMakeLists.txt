@@ -1328,8 +1328,8 @@ add_test(
 )
 
 # U2-1 (F4): the out-of-tree consumer, and R20/M19's post-build census, and
-# U2-3's C42 extended clauses (b'/e/f/g/h) and R9/R10's append/evidence
-# tools, and U2-7 item 3/C54's binary-mode CLI line reading, and U2-3 item
+# U2-3's C42 extended clauses (b'/e/f/g/h) (R9/R10's tool cells moved to
+# 1.x, D-SLM7711), and U2-7 item 3/C54's binary-mode CLI line reading, and U2-3 item
 # 5's --force-tier pin-tool option: standalone Python drivers, no CMake
 # target of their own (they build/configure their own scratch trees or
 # drive the CLI/tools directly).
@@ -1340,8 +1340,8 @@ add_test(
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 add_test(
-	NAME te331_u2_c42_r9_r10_check
-	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_c42_r9_r10_check.py"
+	NAME te331_u2_c42_clauses_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_c42_clauses_check.py"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 add_test(

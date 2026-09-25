@@ -6,8 +6,9 @@ RED TODAY FOR TWO INDEPENDENT REASONS, either of which this driver reports
 by name: `SEMB_ENGINE_LINK_MISMATCH` is not a status `semb.h` declares
 (the test's own runtime check would print [FAIL] for it, never [MISSING]
 or a silent skip -- but the file cannot even run that far), and
-`sslm_build_identity` is not a symbol the PINNED ENGINE (SuperSLM 1.5.0 at
-D:/_te259/engine-install-v150) defines, so the link itself fails, naming
+`sslm_build_identity` is not a symbol the PINNED ENGINE defines (SuperSLM
+v1.8.0 is the pin the plan names, D-SLM7807; this tree builds at v1.7.1, and no
+tag through v1.7.1 defines the verb, plan sec 6.2 J1), so the link itself fails, naming
 it -- exactly as the plan's own text predicts ("an engine library defining
 neither fails the application's link and names sslm_build_identity").
 

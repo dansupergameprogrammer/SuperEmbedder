@@ -4,8 +4,7 @@ ctest driver for tests/te331_u2_surface_link_test.cpp.
 WHY A DRIVER RATHER THAN A DIRECTLY-REGISTERED C++ TEST. Same reason as
 tests/te163_bank_pair_check.py: the target is EXCLUDE_FROM_ALL (it links
 against semb_encoder_open_memory / semb_encode_query /
-semb_interim_query_token_count / semb_interim_certification_verdict,
-undefined at `fca421b`), so this driver builds it on demand and reports an
+semb_interim_query_token_count, undefined at `fca421b`), so this driver builds it on demand and reports an
 unresolved symbol as RED-UNIMPLEMENTED BY NAME.
 
 Without --model/--tokenizer this driver only attempts the build (MECHANISM
@@ -29,7 +28,7 @@ from typing import List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FROZEN_SYMBOLS = ["semb_encoder_open_memory", "semb_encode_query",
-                  "semb_interim_query_token_count", "semb_interim_certification_verdict"]
+                  "semb_interim_query_token_count"]
 
 
 def build_target(cmake: str, build_dir: Path, target: str) -> Tuple[bool, List[str], str]:
@@ -74,7 +73,7 @@ def main() -> int:
         return 1
 
     if not args.model or not args.tokenizer:
-        print("[MISSING PREREQUISITE] the target LINKED (all four verbs now exist) but no "
+        print("[MISSING PREREQUISITE] the target LINKED (all three verbs now exist) but no "
               "--model/--tokenizer was given, so the real-artifact cells did not run")
         return 0
 

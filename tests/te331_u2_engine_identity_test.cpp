@@ -16,13 +16,14 @@
 //   `ResolveStatuses` pattern), returns a sentinel the test treats as
 //   MISSING rather than guessing an ordinal.
 //
-//   (2) The pinned engine at `D:/_te259/engine-install-v150` (SuperSLM
-//   1.5.0) exposes NO `sslm_build_identity` symbol at all -- the plan's own
+//   (2) The pinned engine (SuperSLM v1.8.0 is the pin the plan names,
+//   D-SLM7807; this tree builds at v1.7.1, and no tag through v1.7.1 defines
+//   the verb, plan sec 6.2 J1) exposes NO `sslm_build_identity` symbol -- the plan's own
 //   text states this exactly: "an engine library defining neither fails
 //   the application's link and names sslm_build_identity" (item 14,
 //   "Where the engine gets it"). This file declares the verb (this
 //   suite's OWN copy, per this project's ABI-contract convention -- no
-//   product or engine header declares it at 1.5.0) and calls it once, so
+//   product or engine header declares it at the pin) and calls it once, so
 //   the EXECUTABLE FAILS TO LINK, naming `sslm_build_identity`, exactly as
 //   the plan's own text predicts. tests/te331_u2_engine_identity_check.py
 //   builds this EXCLUDE_FROM_ALL target on demand and reports the
@@ -48,10 +49,11 @@
 
 #include "semb_public_abi_contract.h"
 
-// This suite's own declaration -- SuperSLM 1.5.0 (the pinned engine) does
+// This suite's own declaration -- the pinned engine (v1.7.1 here; v1.8.0 is
+// the pin the plan names) does
 // not define this symbol at all (item 14's own text: "The identity and
 // [the kernel TU] are then one object... An engine that does not define it
-// (v1.5.0) gets it from the pin tool" -- the pin tool step is itself U2-3
+// gets it from the pin tool" -- the pin tool step is itself U2-3
 // item 14's own build-time addition, not yet run against this tree's
 // pinned engine). Calling it here, unconditionally, is the point: a build
 // against today's UNPATCHED engine install fails to link and names this

@@ -1,15 +1,17 @@
 // tests/te331_u2_surface_link_test.cpp -- TE-331 (U2-1/U2-3/U2-7 red suite):
-// the red-first driver for U2-7's four surface additions
-// (`Claude/Plans/te267-u2-release-plan.md` sec 5 U2-7 items 1, 2, 6, 7):
+// the red-first driver for U2-7's three surface additions
+// (`Claude/Plans/te267-u2-release-plan.md` sec 5 U2-7 items 1, 2, 6):
 //
 //   semb_encoder_open_memory (C52, Q4/F21)
 //   semb_encode_query        (C53, Q5/F22)
 //   semb_interim_query_token_count (C55, R17)
-//   semb_interim_certification_verdict (C57, R8/M22)
 //
-// RED AT `fca421b`: none of the four exist in `superembedder`
+// Item 7 (R8, semb_interim_certification_verdict) and its cell C57 moved to
+// 1.x (D-SLM7711, plan sec 11.1) and left this driver in the U2 cloud build.
+//
+// RED AT `fca421b`: none of the three exist in `superembedder`
 // (`git grep -n "semb_encoder_open_memory\|semb_encode_query\|semb_interim_
-// query_token_count\|semb_interim_certification_verdict" src/ include/`
+// query_token_count" src/ include/`
 // returns nothing) -- this executable fails to LINK until the builder's
 // round adds them. tests/te331_u2_surface_link_check.py builds this
 // EXCLUDE_FROM_ALL target on demand and reports the unresolved symbol(s) by
@@ -38,22 +40,6 @@
 //   their difference is 0 by construction) -- a feature-oracle cell that
 //   needs no external tokenizer to grade, unlike the general (non-empty)
 //   case.
-//   C57 (informational only, this round) -- calls the verb once and prints
-//   every field. The plan's own must-accept/must-reject matrix (a build
-//   outside the certified set reporting "uncertified"; an application
-//   linking an engine item 14 would refuse reporting the check's own named
-//   status) needs U2-3 items 1, 9, 13 and 14 (the cell-form list, the
-//   identity file, and CheckLinkedEngine) to exist at all -- NONE of which
-//   is in this tree (`Claude/Vitruvius/te335-u2-fold-2026-09-19.md` sec 4:
-//   "U2-3's whole certification mechanism... is not committed to
-//   D:\SuperEmbedder at any commit"), and the deliberately-mismatched
-//   engine pins the matrix needs (a `/GS-` engine, a forced-tier engine
-//   above the host) are the ADVERSARY's own commissioning constructions
-//   (`Claude/Loki/te301-probe/`, `te313-probe/`), not artifacts this seat
-//   duplicates into product test source. This cell is a placeholder that
-//   proves the verb is callable and its fields are well-formed; C57's own
-//   graded matrix is the builder's, against the adversary's re-strike, per
-//   the plan's own handoff (sec 12, TE-335 addendum).
 //
 // USAGE: --model <.sslm> --tokenizer <.sslm> --scratch <dir>
 #include <cstdint>
@@ -293,32 +279,6 @@ void CellC55EmptyText(const Args& a) {
   semb_encoder_close(enc);
 }
 
-// -----------------------------------------------------------------------
-// C57 -- informational call only, this round (see file header comment).
-// -----------------------------------------------------------------------
-void CellC57Informational() {
-  SembInterimCertificationVerdict verdict{};
-  verdict.struct_size = sizeof(verdict);
-  const char* engine_status_name = nullptr;
-  const SembInterimStatus s = semb_interim_certification_verdict(&verdict, &engine_status_name);
-  if (s == kSembInterimOk) {
-    Info("C57 verdict", std::string("os=") + verdict.os + " arch=" + verdict.arch +
-                            " toolchain=" + verdict.compiler_id + " " + verdict.compiler_version +
-                            " dispatch=" + verdict.dispatch + " dispatched_tier=" + verdict.dispatched_tier +
-                            " certified_cell=" + verdict.certified_cell);
-  } else if (s == kSembInterimEngineRefused) {
-    Info("C57 verdict", std::string("kSembInterimEngineRefused: ") +
-                            (engine_status_name ? engine_status_name : "<NULL>"));
-  } else {
-    Info("C57 verdict", "status=" + std::to_string(static_cast<int>(s)));
-  }
-  Info("C57 own matrix", "owed to the builder: needs U2-3 items 1/9/13/14 (the cell-form list, the "
-                         "identity file, CheckLinkedEngine) to exist; the adversary's own mismatched-"
-                         "engine constructions (Claude/Loki/te301-probe, te313-probe) are the "
-                         "commissioning inputs, not fixtures this seat duplicates into product test "
-                         "source");
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -331,7 +291,6 @@ int main(int argc, char** argv) {
   CellC52MemoryEqualsPath(a);
   CellC53RawEqualsChecked(a);
   CellC55EmptyText(a);
-  CellC57Informational();
   std::printf("TOTAL cells=%d failures=%d\n", g_cells, g_failures);
   return g_failures == 0 ? 0 : 1;
 }
