@@ -204,7 +204,10 @@ bool ManifestField(const std::string& manifest, const char* field, std::string* 
 
 bool LoadCorpus(const std::string& path, std::vector<std::string>* ids,
                 std::vector<std::string>* texts, std::vector<semb_document>* docs) {
-  std::ifstream stream(path);
+  // Binary mode on every platform (U2-7 item 3, F19): a line is the bytes up
+  // to each LF, so a CR is document text everywhere, and a final line without
+  // an LF is still a line.
+  std::ifstream stream(path, std::ios::binary);
   if (!stream) return false;
   // Format is selected by the path, never by a line's contents: a
   // case-insensitive `.jsonl` extension selects JSONL; every other extension
@@ -744,6 +747,12 @@ int Query(const std::vector<std::string>& args) {
 #if defined(_WIN32)
   if (parsed.raw && _setmode(_fileno(stdout), _O_BINARY) == -1) {
     return Refuse("semb query --raw", SEMB_ARTIFACT_UNREADABLE);
+  }
+  // U2-7 item 3 (F19): stdin is read in binary mode, so a query line is the
+  // bytes up to each LF and a CR before it is query text, as on every other
+  // platform.
+  if (parsed.stdin_mode && _setmode(_fileno(stdin), _O_BINARY) == -1) {
+    return Refuse("semb query --stdin", SEMB_ARTIFACT_UNREADABLE);
   }
 #endif
   Handles handles;
