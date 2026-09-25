@@ -376,7 +376,19 @@ void CellC61bc(const Args& a) {
   SembInterimEncoder* enc = OpenInterimPath(a.model, kPairAppended);
   if (!enc) { Verdict(false, "C61 (b) setup", "open failed"); return; }
   const uint64_t P = PBytes(enc);
-  Verdict(SlotCap(enc, 0) == 0, "C61 (b) the one slot starts empty after open", "capacity=" + S(SlotCap(enc, 0)));
+  {
+    // "Its one slot starts empty, as every slot does after an open" (U2-9
+    // item 2): slot records are created on acquisition, so before the first
+    // encode the handle may hold no record at all. Empty means no record
+    // holds a buffer: every existing record reads capacity 0, and there is at
+    // most the one slot. A pool that allocates at open (today's rule) reads
+    // P * context_cap on record 0 and fails here.
+    const uint64_t records = semb_test_seam_slot_record_count(enc);
+    bool empty = records <= 1;
+    for (uint64_t i = 0; i < records; ++i) empty = empty && SlotCap(enc, i) == 0;
+    Verdict(empty, "C61 (b) the one slot starts empty after open (no record, or every record at capacity 0)",
+            "records=" + S(records) + " capacities=" + CapList(enc));
+  }
   const size_t ns[] = {6, 512, 6};
   const uint64_t want[] = {P * 64, P * 512, P * 512};
   for (int i = 0; i < 3; ++i) {
@@ -443,6 +455,10 @@ void CellC61d(const Args& a) {
     ref1 = RunInterimBatch(r, {docs[1]});
     semb_interim_encoder_close(r);
   }
+  // The reference runs are long documents too: each took the gate and left a
+  // take-time and a give-back record. The records graded below are the
+  // batch's two holders only, so the gate's records restart here.
+  semb_test_seam_gate_reset();
   SembInterimEncoder* enc = OpenInterimMemory(bytes, 2);
   if (!enc) { Verdict(false, "C61 (d) setup", "open failed"); return; }
   const uint64_t P = PBytes(enc);
