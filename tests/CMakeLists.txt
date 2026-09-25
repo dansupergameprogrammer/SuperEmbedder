@@ -209,12 +209,19 @@ if(SEMB_TEST_OBJDUMP STREQUAL "")
 			"C41 part 4: configured llvm-objdump path" FORCE)
 	endif()
 endif()
+# The scan reads `superembedder`'s own object list, written per configuration
+# from $<TARGET_OBJECTS:superembedder>, so it finds the objects under any
+# generator's layout and object suffix instead of guessing a directory.
+set(SEMB_C41_OBJECTS_LIST "${CMAKE_BINARY_DIR}/c41/superembedder-objects-$<CONFIG>.txt")
+file(GENERATE OUTPUT "${SEMB_C41_OBJECTS_LIST}"
+	CONTENT "$<JOIN:$<TARGET_OBJECTS:superembedder>,\n>\n")
 add_test(
 	NAME c41_part4_object_code_scan
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/c41_part4_object_code_scan.py"
 		--build-dir "${CMAKE_BINARY_DIR}"
 		--repo-root "${CMAKE_SOURCE_DIR}"
 		--objdump "${SEMB_TEST_OBJDUMP}"
+		--objects-list "${SEMB_C41_OBJECTS_LIST}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
@@ -1298,6 +1305,7 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te194_c41_query_scope_check.py"
 		--build-dir "${CMAKE_BINARY_DIR}"
 		--objdump "${SEMB_TEST_OBJDUMP}"
+		--objects-list "${SEMB_C41_OBJECTS_LIST}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 

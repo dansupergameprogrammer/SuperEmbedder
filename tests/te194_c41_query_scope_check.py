@@ -68,6 +68,8 @@ def main(argv: list) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", required=True)
     ap.add_argument("--objdump", default="", help="path to llvm-objdump; empty tries PATH")
+    ap.add_argument("--objects-list", default="",
+                    help="file listing $<TARGET_OBJECTS:superembedder>, one per line (written by CMake)")
     args = ap.parse_args(argv)
 
     build_dir = Path(args.build_dir)
@@ -80,7 +82,7 @@ def main(argv: list) -> int:
         print("[FAIL] C41-part4-query-scope: no llvm-objdump found; the scan runner did not execute")
         return 1
 
-    obj = c41.find_object(build_dir, QUERY_TU_CANDIDATE)
+    obj = c41.find_object(build_dir, QUERY_TU_CANDIDATE, c41.read_objects_list(args.objects_list))
     if obj is None:
         print(f"[FAIL] C41-part4-query-scope: no compiled object found for '{QUERY_TU_CANDIDATE}' "
               f"under {build_dir}; the runner did not execute")

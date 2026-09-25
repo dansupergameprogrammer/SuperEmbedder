@@ -145,7 +145,22 @@ def classify(mnemonic: str) -> bool:
     return False
 
 
-def find_object(build_dir: Path, tu: str) -> "Path | None":
+def read_objects_list(path: str) -> "list[Path] | None":
+    """Read the superembedder object list CMake wrote from $<TARGET_OBJECTS:superembedder>."""
+    if not path:
+        return None
+    return [Path(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def find_object(build_dir: Path, tu: str, objects: "list[Path] | None" = None) -> "Path | None":
+    # `objects` is the target's own object list from CMake, so the lookup
+    # holds for every generator's layout and object suffix (.o or .obj,
+    # "query.cpp.obj" under Ninja, "query.obj" under Visual Studio).
+    if objects is not None:
+        stem = Path(tu).stem
+        names = {f"{tu}.o", f"{tu}.obj", f"{stem}.o", f"{stem}.obj"}
+        candidates = [o for o in objects if o.name in names and o.exists()]
+        return candidates[0] if candidates else None
     candidates = list(build_dir.glob(f"CMakeFiles/superembedder.dir/**/{tu}.obj"))
     return candidates[0] if candidates else None
 
@@ -177,6 +192,8 @@ def main(argv: list) -> int:
     ap.add_argument("--build-dir", required=True)
     ap.add_argument("--repo-root", default=str(Path(__file__).resolve().parent.parent))
     ap.add_argument("--objdump", default="", help="path to llvm-objdump; empty tries PATH, then MISSING PREREQUISITE")
+    ap.add_argument("--objects-list", default="",
+                    help="file listing $<TARGET_OBJECTS:superembedder>, one per line (written by CMake)")
     args = ap.parse_args(argv)
 
     build_dir = Path(args.build_dir)
@@ -191,6 +208,7 @@ def main(argv: list) -> int:
 
     try:
         scoped_tus = library_translation_units(Path(args.repo_root))
+        objects = read_objects_list(args.objects_list)
     except (OSError, RuntimeError) as exc:
         print(f"C41 part 4: INFRASTRUCTURE FAIL -- {exc}")
         return 1
@@ -198,7 +216,7 @@ def main(argv: list) -> int:
     total_matches = []
     scoped_report = []
     for tu in scoped_tus:
-        obj = find_object(build_dir, tu)
+        obj = find_object(build_dir, tu, objects)
         if obj is None:
             print(f"C41 part 4: INFRASTRUCTURE FAIL -- no compiled object found for '{tu}' under {build_dir} "
                   f"-- build the 'superembedder' target first")
