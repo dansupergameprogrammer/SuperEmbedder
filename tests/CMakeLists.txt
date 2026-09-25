@@ -1155,6 +1155,19 @@ if(NOT WIN32)
 	)
 endif()
 
+# U2 cloud build -- U2-10's C66 (b), the RLIMIT_AS sweep (the GCC leg; the
+# Job-object leg is MSVC's). Links the SHIPPED static target, no seam.
+if(NOT WIN32)
+	add_executable(u2_10_c66b_rlimit_sweep_test EXCLUDE_FROM_ALL u2_10_c66b_rlimit_sweep_test.cpp)
+	target_link_libraries(u2_10_c66b_rlimit_sweep_test PRIVATE superembedder superslm::superslm Threads::Threads)
+	add_test(
+		NAME u2_10_c66b_rlimit_sweep_check
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_10_c66b_rlimit_sweep_check.py"
+			--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+endif()
+
 add_executable(te222_c17_probe EXCLUDE_FROM_ALL te222_c17_probe.cpp)
 target_link_libraries(te222_c17_probe PRIVATE superembedder superslm::superslm)
 target_include_directories(te222_c17_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
