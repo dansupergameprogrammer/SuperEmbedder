@@ -84,18 +84,28 @@ typedef enum semb_status {
 } semb_status;
 
 // Paths are sized byte spans and need not be NUL-terminated. Open derives
-// the appended end token from the tokenizer artifact's <|endoftext|> id. A zero
-// concurrency value selects the default of one workspace. `max_concurrency`
-// is a REQUEST, not a guarantee: open (TE-356) never allocates more
-// workspace slots than a reading of memory actually free at open can
-// afford, so the pool opened may hold fewer slots than requested, and open
-// refuses outright only when even one slot cannot be afforded. (`semb`'s
-// own `bake`/`verify` CLI additionally caps its own request by this
-// process's hardware concurrency and by the corpus's own document count
-// before it ever reaches open -- a caller of this ABI directly chooses its
-// own policy for that half.) A single batch call can also acquire every
-// free slot in the pool for its own duration (TE-350) -- the pool is
-// shared, greedy, and per-handle, not one reserved slot per caller.
+// the appended end token from the tokenizer artifact's <|endoftext|> id.
+// `max_concurrency` is the number of encodes that may run on this handle at
+// once; zero selects one, and a call beyond it returns
+// SEMB_CONCURRENCY_EXCEEDED. Open reserves nothing in proportion to
+// `max_concurrency`: it returns holding no workspace buffer, because its own
+// witness encodes release theirs before it returns. Each running encode holds
+// one workspace slot. The slot's buffer is sized to the document: layers x KV
+// heads x head dim x 2 bytes (57,344 for the published model) for each
+// position of the next power of two at or above the document's positions, at
+// least 64 and at most the model's context. The buffer is kept for that
+// slot's next encode, and freed after any document longer than 4,096
+// positions. At most one encode of a document longer than 4,096 positions
+// runs on a handle at a time; another such encode waits for it. Open returns
+// SEMB_ALLOCATION_FAILED when the model, the tokenizer or the open-time
+// witness cannot be allocated. An encode returns it when its slot cannot
+// grow, and the handle stays usable. (`semb`'s own `bake`/`verify` CLI
+// additionally caps its own request by this process's hardware concurrency
+// and by the corpus's own document count before it ever reaches open -- a
+// caller of this ABI directly chooses its own policy for that half.) A single
+// batch call can also acquire every free slot for its own duration (TE-350)
+// -- the slots are shared, greedy, and per-handle, not one reserved slot per
+// caller.
 typedef struct semb_config semb_config;
 struct semb_config {
   uint32_t struct_size;
@@ -130,6 +140,17 @@ struct semb_document {
 // length-prefixed. semb_encode and semb_fingerprint_of return it, every bank
 // manifest records it as encoder_fingerprint, and semb_query_open refuses a
 // bank whose encoder_fingerprint differs with SEMB_FINGERPRINT_MISMATCH.
+
+// No function declared here lets a C++ exception escape: every call returns a
+// `semb_status`. When a call on a bank, a query, or an encoder opened for the
+// CPU fails because memory cannot be allocated, it returns
+// SEMB_ALLOCATION_FAILED, and every handle the call used stays usable. When
+// the operating system or the C runtime cannot open or read a model,
+// tokenizer or bank file, the call returns SEMB_ARTIFACT_UNREADABLE, whatever
+// the reason and whichever device an encoder is opened for, a shortage of
+// memory included; memory the library allocates to hold a file's bytes falls
+// under the clauses above. Any other internal failure returns
+// SEMB_ENGINE_REFUSED, or SEMB_ARTIFACT_UNREADABLE from semb_bank_open.
 
 semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* out);
 semb_status semb_encoder_close(semb_encoder enc);

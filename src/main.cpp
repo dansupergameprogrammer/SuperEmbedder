@@ -54,11 +54,11 @@ bool HasOption(const std::vector<std::string>& args, const char* name) {
 // TE-356 (C-2): `--max-concurrency` for `semb bake` / `semb verify`, parsed
 // like `semb query`'s own `--top` (std::from_chars, the whole option value
 // consumed, zero refused). Absent, `default_value` (kBakeMaxConcurrency)
-// applies. This is the CALLER's own ceiling; the encoder still never opens
-// more slots than the machine's hardware concurrency and available memory
-// can afford (engine_adapter_interim.cpp's FinishEncoderOpen), and the
-// caller below additionally caps it to the corpus's own document count
-// before this value ever reaches open.
+// applies. This is the CALLER's own ceiling; the caller below caps it to the
+// corpus's own document count and this process's hardware concurrency before
+// this value ever reaches open. Open reserves nothing in proportion to it
+// (U2-9): it bounds how many encodes run at once, and each encode's workspace
+// is sized to its document.
 bool ParseMaxConcurrencyOption(const std::vector<std::string>& args, uint32_t default_value,
                                uint32_t* out_value) {
   const char* raw = Option(args, "--max-concurrency");
@@ -259,7 +259,7 @@ struct Handles {
 // TE-350: the workspace pool `semb bake` (and `semb verify`'s own re-encode,
 // which is a bake in every way that matters here) requests, sized to the
 // machine rather than to 1 -- `semb_interim_encode_batch_ps_n`'s own T =
-// min(documents, pool size, hardware concurrency) means a pool of 1 is what
+// min(documents, max_concurrency, hardware concurrency) means a pool of 1 is what
 // pinned every bake to a single worker thread regardless of how many logical
 // CPUs the box has.
 //
@@ -270,24 +270,19 @@ struct Handles {
 // num_kv_heads=8, head_dim=128) one workspace slot is 1,879,048,192 bytes
 // (~1.75 GiB, fixed by context_cap alone, independent of corpus or document
 // length), so a pool of 8 committed ~14 GiB at open UNCONDITIONALLY, even
-// for a one-document bake on a machine with 4 GiB free. It is now a
-// CEILING, not a request: OpenBakeConcurrency (below) sizes the actual
-// request from min(this ceiling, the corpus's own document count, this
-// process's own hardware concurrency), and FinishEncoderOpen
-// (engine_adapter_interim.cpp) additionally never allocates more slots than
-// a reading of memory actually free on THIS machine, at open, can afford --
-// refusing outright, rather than silently opening at a smaller number, when
-// even one slot cannot be afforded. `--max-concurrency` (ParseMaxConcurrencyOption,
-// above) lets a caller lower or raise the ceiling itself; it composes with,
-// and never bypasses, either adaptive term.
+// for a one-document bake on a machine with 4 GiB free. That was the rule
+// before U2-9. It is now a CEILING, not a request: OpenBakeConcurrency
+// (below) sizes the actual request from min(this ceiling, the corpus's own
+// document count, this process's own hardware concurrency). Since U2-9 open
+// reserves no workspace at all, and each encode's slot is sized to its own
+// document (engine_adapter_interim.cpp's semb::Encode), so the ceiling
+// bounds concurrency, not memory committed at open. `--max-concurrency`
+// (ParseMaxConcurrencyOption, above) lets a caller lower or raise the
+// ceiling itself; it composes with, and never bypasses, either adaptive term.
 constexpr uint32_t kBakeMaxConcurrency = 8;
 
 // TE-356 (C-2): the document-count and hardware-concurrency halves of the
-// adaptive policy above -- the two terms the CLI itself can compute without
-// opening a model (the memory-derived term needs the model's own workspace
-// geometry, known only once the artifact is read, so it lives inside
-// FinishEncoderOpen instead, uniformly for every caller including one that
-// bypasses this CLI entirely). `doc_count` is the caller's OWN count of
+// adaptive policy above. `doc_count` is the caller's OWN count of
 // what it is actually about to bake/re-encode (post-empty-document-filter),
 // never the raw corpus size. Hardware concurrency is applied HERE, not
 // inside the shared library open path, because it means a specific thing

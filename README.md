@@ -9,8 +9,11 @@ from the raw text in.
 **Status: the U1 public raw-text encoder slice is real and pinned to SuperSLM
 v1.7.1.** `include/superembedder/semb.h` exposes the frozen C ABI for
 encoder open/close, dimension discovery, raw UTF-8 encoding, and status names.
-Open reads the model and tokenizer artifacts exactly once, retains their bytes,
-validates the vocabulary join, and preallocates the declared workspace pool.
+Open reads the model and tokenizer artifacts exactly once, keeps the
+tokenizer's bytes, hands the model to the engine and releases its own copy,
+validates the vocabulary join, and returns holding no workspace, so it reserves
+nothing in proportion to `max_concurrency`; each encode's workspace is sized to
+its document.
 Open derives the appended end token from the tokenizer artifact by resolving
 `<|endoftext|>`; `semb_config` carries no token id. Encode tokenizes the caller's sized
 span unchanged, appends that artifact-pinned token exactly once, runs the
