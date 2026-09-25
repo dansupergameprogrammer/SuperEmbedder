@@ -81,6 +81,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--build-dir", required=True)
     parser.add_argument("--cmake-executable", default="cmake")
     parser.add_argument("--mutant", choices=tuple(MUTANTS), help="run one bounded mutant job")
+    parser.add_argument("--probe-exe", default="", help="the baseline probe ($<TARGET_FILE:te222_c17_probe>)")
+    parser.add_argument("--config", default="", help="the configuration ctest runs ($<CONFIG>) for multi-config generators")
     args = parser.parse_args(argv)
     cache = Path(args.build_dir) / "CMakeCache.txt"
     if not cache.exists():
@@ -105,13 +107,20 @@ def main(argv: list[str]) -> int:
             return 1
     scratch = Path(tempfile.mkdtemp(prefix="te222_c17_"))
     try:
-        baseline_build = subprocess.run([args.cmake_executable, "--build", args.build_dir, "--target", "te222_c17_probe"],
+        baseline_build = subprocess.run([args.cmake_executable, "--build", args.build_dir, "--target", "te222_c17_probe"]
+                                        + (["--config", args.config] if args.config else []),
                                         capture_output=True, text=True, timeout=480)
         if baseline_build.returncode:
             raise RuntimeError("C17 baseline probe build failed:\n" + (baseline_build.stdout + baseline_build.stderr)[-3000:])
-        baseline_exe = next(iter(Path(args.build_dir).rglob("te222_c17_probe.exe")), None)
+        # --probe-exe is $<TARGET_FILE:te222_c17_probe>, passed by CMake, so the
+        # baseline is found under any generator and any executable suffix.
+        if args.probe_exe:
+            baseline_exe = Path(args.probe_exe) if Path(args.probe_exe).exists() else None
+        else:
+            baseline_exe = next(iter(Path(args.build_dir).rglob("te222_c17_probe.exe")), None)
         if baseline_exe is None:
-            raise RuntimeError("C17 baseline probe executable is absent")
+            raise RuntimeError("C17 baseline probe executable is absent" +
+                               (f" (expected {args.probe_exe})" if args.probe_exe else ""))
         base = read_probe(baseline_exe, Path(args.build_dir) / "_scratch/c17_baseline", model, tokenizer)
         root, build = prepare(scratch, args.cmake_executable, compiler, prefix)
         query_tu = root / "src/superembedder/query.cpp"

@@ -1099,6 +1099,7 @@ function(semb_add_te194_query_workspace_tests)
     NAME te194_query_workspace_check
     COMMAND "${Python3_EXECUTABLE}" "${_semb_te194_test_dir}/te194_query_workspace_check.py"
       --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+      --exe "$<TARGET_FILE:te194_query_workspace_test>" --config "$<CONFIG>"
     WORKING_DIRECTORY "${_semb_te194_test_dir}/.."
   )
 endfunction()
@@ -1119,6 +1120,7 @@ function(semb_add_te222_query_ownership_tests)
     NAME te222_query_ownership_check
     COMMAND "${Python3_EXECUTABLE}" "${_semb_te222_test_dir}/te222_query_ownership_check.py"
       --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+      --exe "$<TARGET_FILE:te222_query_ownership_test>" --config "$<CONFIG>"
     WORKING_DIRECTORY "${_semb_te222_test_dir}/.."
   )
 endfunction()
@@ -1306,6 +1308,7 @@ add_test(
 	NAME te194_c17_sixth_leg_construction
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te194_c17_sixth_leg_construction.py"
 		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+		--probe-exe "$<TARGET_FILE:te222_c17_probe>" --config "$<CONFIG>"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 

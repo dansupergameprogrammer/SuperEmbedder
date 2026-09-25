@@ -29,8 +29,11 @@ FROZEN_SYMBOLS = ["semb_query_open", "semb_query_encode", "semb_query_close"]
 LEG_TIMEOUT_S = 900
 
 
-def build_target(cmake: str, build_dir: Path) -> Tuple[bool, List[str], str]:
-    proc = subprocess.run([cmake, "--build", str(build_dir), "--target", "te194_query_workspace_test"],
+def build_target(cmake: str, build_dir: Path, config: str = "") -> Tuple[bool, List[str], str]:
+    cmd = [cmake, "--build", str(build_dir), "--target", "te194_query_workspace_test"]
+    if config:
+        cmd += ["--config", config]
+    proc = subprocess.run(cmd,
                           cwd=REPO_ROOT, capture_output=True, text=True, errors="replace")
     out = proc.stdout + proc.stderr
     unresolved = [s for s in FROZEN_SYMBOLS
@@ -38,7 +41,12 @@ def build_target(cmake: str, build_dir: Path) -> Tuple[bool, List[str], str]:
     return proc.returncode == 0, unresolved, "\n".join(out.splitlines()[-25:])
 
 
-def find_exe(build_dir: Path) -> "Path | None":
+def find_exe(build_dir: Path, exe: str = "") -> "Path | None":
+    # --exe is $<TARGET_FILE:te194_query_workspace_test>, passed by CMake: the
+    # target is defined in the top-level directory (deferred), so it lands
+    # wherever the generator puts that directory's outputs, not in tests/.
+    if exe:
+        return Path(exe) if Path(exe).exists() else None
     for cand in (build_dir / "tests" / "te194_query_workspace_test.exe", build_dir / "tests" / "te194_query_workspace_test"):
         if cand.exists():
             return cand
@@ -50,6 +58,8 @@ def main(argv: List[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", required=True)
     ap.add_argument("--cmake-executable", required=True)
+    ap.add_argument("--exe", default="", help="the built test executable ($<TARGET_FILE:te194_query_workspace_test>)")
+    ap.add_argument("--config", default="", help="the configuration ctest runs ($<CONFIG>) for multi-config generators")
     args = ap.parse_args(argv)
     build_dir = Path(args.build_dir)
 
@@ -60,7 +70,7 @@ def main(argv: List[str]) -> int:
     scratch = build_dir / "_scratch" / "te194_query_workspace"
     scratch.mkdir(parents=True, exist_ok=True)
 
-    built, unresolved, tail = build_target(args.cmake_executable, build_dir)
+    built, unresolved, tail = build_target(args.cmake_executable, build_dir, args.config)
     if unresolved:
         print(f"[RED-UNIMPLEMENTED] te194_query_workspace_test link: unresolved symbol(s): "
               f"{', '.join(unresolved)} -- the query verbs do not exist yet")
@@ -77,9 +87,10 @@ def main(argv: List[str]) -> int:
         print("[FAIL] te194_query_workspace_test build: build failed for a reason other than an "
               f"unresolved query symbol:\n{tail}")
         return 1
-    exe = find_exe(build_dir)
+    exe = find_exe(build_dir, args.exe)
     if not exe:
-        print(f"[FAIL] te194_query_workspace_test build: target built but its executable was not found under {build_dir}")
+        print(f"[FAIL] te194_query_workspace_test build: target built but its executable was not found under {build_dir}" +
+              (f" (expected {args.exe})" if args.exe else ""))
         return 1
 
     try:
