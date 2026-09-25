@@ -52,6 +52,13 @@ informational only: `semb verify`'s corpus-identity verdict comes entirely
 from its existing row/corpus digest comparison, so a bank moved or copied as
 its three files (no sidecar), or one whose sidecar is stale, is verified
 correctly either way.
+The linked engine also writes one line of its own to stderr each time an
+encoder is opened, through the library or any `semb` verb that opens one:
+`preflight: <n>/<layers> layers carry a non-degenerate (per-output-channel)
+WSC1 fold tensor ...`. It is expected, it is not an error, and it is not
+silenced in this release. It shares the stream with the skip reports above,
+so a consumer parsing stderr tells them apart by prefix: a skip report starts
+with `skipped "`, the engine's line with `preflight: `.
 
 The encoder fingerprint, returned by `semb_encode` and `semb_fingerprint_of`, is
 the SHA-256 over five length-prefixed components: the model artifact's bytes,
@@ -121,6 +128,27 @@ ctest --test-dir build/semb --output-on-failure
 On Windows, run the above from a Developer Command Prompt (or after
 `VsDevCmd.bat`) so `cl.exe` and `dxc.exe` (required by the engine's own
 Windows configure) are resolvable.
+
+### Installing the library
+
+`cmake --install build/semb --prefix <dir>` installs the shared library
+(`semb.dll` with its import library `semb.lib` on Windows, `libsemb.so` on
+Linux, `libsemb.dylib` on macOS), the public headers `semb.h` and
+`version.h`, the `semb` CLI, and a CMake package. A consumer links it with
+
+```cmake
+find_package(superembedder CONFIG REQUIRED)
+target_link_libraries(app PRIVATE superembedder::superembedder)
+```
+
+The package's version file accepts a request for the same major version only.
+The library exports exactly the verbs `semb.h` declares and nothing else: the
+export list is generated from the header when the build is configured, and
+the build fails with `SEMB_EXPORT_LIST_MISMATCH` if the linked library's
+exports differ from it. The engine is linked into the library privately, so an
+application needs no engine of its own to use it. On Linux the engine must be
+position-independent to enter a shared library; the pin tool builds it that
+way off Windows, so an engine pinned before this release has to be pinned again.
 
 ## Pin bump procedure
 
