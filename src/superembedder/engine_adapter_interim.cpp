@@ -1184,23 +1184,32 @@ static SembInterimStatus EncodePsNBody(
   std::vector<int8_t> codes(n * hidden);
   std::vector<int64_t> ms(n), es(n);
   size_t positions = 0;
-  SembInterimStatus st = semb_interim_encode_seam(encoder, content_ids, n_content, chunk_budget,
-                                                  kSembForwardLegChunkBatched, codes.data(),
-                                                  codes.size(), ms.data(), es.data(), n,
-                                                  &positions, out_engine_status_name);
+  // U2-10: the same-file bodies, not their C-linkage boundaries -- a nested
+  // boundary would turn an escaping exception into a status here, and the
+  // outer boundary is the one that reports it.
+  SembInterimStatus st = EncodeSeamBody(encoder, content_ids, n_content, chunk_budget,
+                                        kSembForwardLegChunkBatched, codes.data(), codes.size(),
+                                        ms.data(), es.data(), n, &positions,
+                                        out_engine_status_name);
   if (st != kSembInterimOk) return st;
 
   // PS-N's position rule: the LAST position -- the appended end token's.
   std::vector<int8_t> sel(hidden);
   int64_t sel_m = 0, sel_e = 0;
-  st = semb_interim_ps_n_select(encoder, codes.data(), ms.data(), es.data(), n, n - 1, sel.data(),
-                                &sel_m, &sel_e, out_engine_status_name);
+  st = PsNSelectBody(encoder, codes.data(), ms.data(), es.data(), n, n - 1, sel.data(), &sel_m,
+                     &sel_e, out_engine_status_name);
   if (st != kSembInterimOk) return st;
 
   const SembWaPoolStatus dq = semb_ps_n_dequantize(sel.data(), sel_m, sel_e, hidden, out_vector);
   if (out_dequantize_status) *out_dequantize_status = dq;
   // U2-10 Builds item 3: a callee's allocation status becomes this verb's own.
   if (dq == kSembWaPoolAllocationFailed) return kSembInterimAllocationFailed;
+  // U2-10 Builds item 3: the pool's catch-all is an internal failure, never a
+  // dequantize corner -- it reports as this family's catch-all.
+  if (dq == kSembWaPoolInternalFailure) {
+    if (out_engine_status_name) *out_engine_status_name = "UnhandledException";
+    return kSembInterimEngineRefused;
+  }
   if (dq != kSembOk) return kSembInterimDequantizeRefused;
   return kSembInterimOk;
 }
@@ -1438,8 +1447,8 @@ static SembInterimStatus EncodeBatchPsNBody(
       int64_t sel_m = 0, sel_e = 0;
       const char* local_status = nullptr;
       const SembInterimStatus sel_st =
-          semb_interim_ps_n_select(encoder, codes.data(), ms.data(), es.data(), n, n - 1, sel.data(),
-                                    &sel_m, &sel_e, &local_status);
+          PsNSelectBody(encoder, codes.data(), ms.data(), es.data(), n, n - 1, sel.data(), &sel_m,
+                        &sel_e, &local_status);
       if (sel_st != kSembInterimOk) {
         RecordFailure(doc, sel_st, /*has_status=*/local_status != nullptr,
                       local_status ? local_status : "", kSembOk);
@@ -1452,8 +1461,9 @@ static SembInterimStatus EncodeBatchPsNBody(
         // U2-10 Builds item 3: a callee's allocation status becomes this
         // verb's own.
         RecordFailure(doc,
-                      dq == kSembWaPoolAllocationFailed ? kSembInterimAllocationFailed
-                                                        : kSembInterimDequantizeRefused,
+                      dq == kSembWaPoolAllocationFailed   ? kSembInterimAllocationFailed
+                      : dq == kSembWaPoolInternalFailure ? kSembInterimEngineRefused
+                                                         : kSembInterimDequantizeRefused,
                       /*has_status=*/false, std::string(), dq);
         return;
       }
