@@ -125,10 +125,18 @@ semb_add_cxx_test(seam_hidden_capacity_test seam_hidden_capacity_test.cpp)
 # reports SEMB_ARTIFACT_UNREADABLE at open, named in this test's own
 # failure message, rather than a silent skip; running the full suite (or
 # u1_raw_text_cells_check once) mints the pair first.
+#
+# U2 cloud build: registered on WIN32 only. The test includes <windows.h>
+# unconditionally (its cleared-mask and environment legs are Win32 calls), so
+# on Linux it cannot compile and a GCC build of the tree never completed. The
+# test is unchanged; the WSL/Linux members simply do not build it, as they
+# could not before.
 find_package(Threads REQUIRED)
-semb_add_cxx_test(c41_environment_invariance_test c41_environment_invariance_test.cpp)
-target_include_directories(c41_environment_invariance_test PRIVATE "${CMAKE_BINARY_DIR}/generated")
-target_link_libraries(c41_environment_invariance_test PRIVATE Threads::Threads)
+if(WIN32)
+	semb_add_cxx_test(c41_environment_invariance_test c41_environment_invariance_test.cpp)
+	target_include_directories(c41_environment_invariance_test PRIVATE "${CMAKE_BINARY_DIR}/generated")
+	target_link_libraries(c41_environment_invariance_test PRIVATE Threads::Threads)
+endif()
 
 # TE-182 (U1 slice 2's fourth test-author round, D-SLM6434 item 1): the
 # interim ABI's own two bare cells over semb_interim_encode_batch_ps_n's
@@ -1112,6 +1120,163 @@ if(DEFINED SEMB_LIBRARY_SOURCES)
   cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_te222_query_ownership_tests)
 endif()
 
+# U2 cloud build -- U2-9's seam-observable cells (C60 (c), C60's poison
+# must-reject/must-accept, C61 (a)-(f)) and U2-10's C66 (a). Links the test
+# seam mirror; red on today's pool (see the executable's header).
+function(semb_add_u2_9_workspace_cells_tests)
+  if(NOT TARGET superembedder_testseam)
+    return()
+  endif()
+  set(_semb_u2_9_test_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
+  add_executable(u2_9_workspace_cells_test EXCLUDE_FROM_ALL "${_semb_u2_9_test_dir}/u2_9_workspace_cells_test.cpp")
+  target_link_libraries(u2_9_workspace_cells_test PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
+  target_include_directories(u2_9_workspace_cells_test PRIVATE "${_semb_u2_9_test_dir}")
+  add_test(
+    NAME u2_9_workspace_cells_check
+    COMMAND "${Python3_EXECUTABLE}" "${_semb_u2_9_test_dir}/u2_9_workspace_cells_check.py"
+      --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+    WORKING_DIRECTORY "${_semb_u2_9_test_dir}/.."
+  )
+  set_tests_properties(u2_9_workspace_cells_check PROPERTIES TIMEOUT 2400)
+endfunction()
+if(DEFINED SEMB_LIBRARY_SOURCES)
+  cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_u2_9_workspace_cells_tests)
+endif()
+
+# U2 cloud build -- U2-10's C64, the class sweep: links the SHIPPED static
+# target with the global operator new replaced (no test seam). The driver
+# script runs every table row and driver and prints the pre-build reading.
+add_executable(u2_10_c64_class_sweep_test EXCLUDE_FROM_ALL u2_10_c64_class_sweep_test.cpp)
+target_link_libraries(u2_10_c64_class_sweep_test PRIVATE superembedder superslm::superslm Threads::Threads)
+target_include_directories(u2_10_c64_class_sweep_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(
+	NAME u2_10_c64_class_sweep_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_10_c64_class_sweep_check.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+set_tests_properties(u2_10_c64_class_sweep_check PROPERTIES TIMEOUT 3600)
+
+# U2 cloud build -- U2-10's C65 commissioning constructions (must-accept,
+# must-reject SEMB_C_LINKAGE_UNLISTED, vitality SEMB_C_LINKAGE_STALE) over the
+# shipped archive, on ELF. Red until the census tool (Builds item 5) exists.
+if(NOT WIN32)
+	add_test(
+		NAME u2_10_c65_census_commissioning_check
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_10_c65_census_commissioning_check.py"
+			--build-dir "${CMAKE_BINARY_DIR}" --archive "$<TARGET_FILE:superembedder>"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+endif()
+
+# U2 cloud build -- U2-10's C66 (b), the RLIMIT_AS sweep (the GCC leg; the
+# Job-object leg is MSVC's). Links the SHIPPED static target, no seam.
+if(NOT WIN32)
+	add_executable(u2_10_c66b_rlimit_sweep_test EXCLUDE_FROM_ALL u2_10_c66b_rlimit_sweep_test.cpp)
+	target_link_libraries(u2_10_c66b_rlimit_sweep_test PRIVATE superembedder superslm::superslm Threads::Threads)
+	add_test(
+		NAME u2_10_c66b_rlimit_sweep_check
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_10_c66b_rlimit_sweep_check.py"
+			--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+endif()
+
+# U2 cloud build -- U2-10's C63, the adversary's keeper: real model and
+# tokenizer (SEMB_C12B_MODEL, SEMB_U1_TOKENIZER) and the adversary's two texts
+# (mid.txt, 603 B / 133 positions; short.txt). Any of them unset -> the cell
+# reports MISSING PREREQUISITE and passes; set, it carries real_artifact.
+set(SEMB_C63_MID_TEXT "" CACHE FILEPATH "C63: the adversary's mid.txt (603 B, 133 positions)")
+set(SEMB_C63_SHORT_TEXT "" CACHE FILEPATH "C63: the adversary's short.txt")
+add_executable(u2_10_c63_keeper_test u2_10_c63_keeper_test.cpp)
+target_link_libraries(u2_10_c63_keeper_test PRIVATE superembedder superslm::superslm Threads::Threads)
+set(_semb_c63_args "")
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "" AND NOT SEMB_C63_MID_TEXT STREQUAL ""
+   AND NOT SEMB_C63_SHORT_TEXT STREQUAL "")
+	set(_semb_c63_args --model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
+		--mid "${SEMB_C63_MID_TEXT}" --short "${SEMB_C63_SHORT_TEXT}" --scratch "${CMAKE_BINARY_DIR}")
+endif()
+add_test(NAME u2_10_c63_keeper COMMAND u2_10_c63_keeper_test ${_semb_c63_args})
+if(_semb_c63_args)
+	set_tests_properties(u2_10_c63_keeper PROPERTIES LABELS "real_artifact")
+endif()
+
+# U2 cloud build -- U2-0 item 1's pin-carrier cell (the tokenizer manifest's
+# converter fields and the README's pin word equal the lock; must-rejects
+# mutation-proven in the cell) and the interpreter gate's red (a scratch
+# configure with an interpreter older than the converter's Unicode 15.1.0).
+add_test(
+	NAME u2_0_pin_carrier_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_0_pin_carrier_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+add_test(
+	NAME u2_0_python_gate_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_0_python_gate_check.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --prefix-path "${CMAKE_PREFIX_PATH}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# U2 cloud build -- U2-1's C56, the Linux shared library's proof: install,
+# export set, NEEDED, and the .so against the static route (synthetic pair
+# here; the real leg with SEMB_C12B_MODEL and SEMB_U1_TOKENIZER set).
+if(NOT WIN32 AND NOT APPLE)
+	set(_semb_c56_args --build-dir "${CMAKE_BINARY_DIR}" --archive "$<TARGET_FILE:superembedder>"
+		--engine-lib "$<TARGET_FILE:superslm::superslm>")
+	if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+		list(APPEND _semb_c56_args --model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}")
+	endif()
+	add_test(
+		NAME u2_1_c56_so_check
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_1_c56_so_check.py" ${_semb_c56_args}
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+	if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+		set_tests_properties(u2_1_c56_so_check PROPERTIES LABELS "real_artifact")
+	endif()
+endif()
+
+# U2 cloud build -- U2-5's C16 (no assert( in src/ or include/) and C19 (the
+# 1.0 reader's pins: an unknown manifest member accepted, with its
+# unknown-key-rejecting mutant built in the cell; schemaVersion 2 refused).
+add_test(
+	NAME u2_5_c16_no_assert_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_5_c16_no_assert_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+if(NOT WIN32)
+	add_test(
+		NAME u2_5_c19_check
+		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_5_c19_check.py"
+			--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+			--archive "$<TARGET_FILE:superembedder>" --engine-lib "$<TARGET_FILE:superslm::superslm>"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+	)
+endif()
+
+# U2 cloud build -- U2-7's C52 (d) (the in-call rewrite, through a test-seam
+# park point in the memory open) and C55's general oracle (independent
+# ref_encode counts). Links the test seam mirror; link-red until U2-7 items
+# 1, 2, 6 and the seam land.
+function(semb_add_u2_7_c52d_c55_tests)
+  if(NOT TARGET superembedder_testseam)
+    return()
+  endif()
+  set(_semb_u2_7_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
+  add_executable(u2_7_c52d_c55_test EXCLUDE_FROM_ALL "${_semb_u2_7_dir}/u2_7_c52d_c55_test.cpp")
+  target_link_libraries(u2_7_c52d_c55_test PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
+  target_include_directories(u2_7_c52d_c55_test PRIVATE "${_semb_u2_7_dir}")
+  add_test(
+    NAME u2_7_c52d_c55_check
+    COMMAND "${Python3_EXECUTABLE}" "${_semb_u2_7_dir}/u2_7_c52d_c55_check.py"
+      --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+    WORKING_DIRECTORY "${_semb_u2_7_dir}/.."
+  )
+endfunction()
+if(DEFINED SEMB_LIBRARY_SOURCES)
+  cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_u2_7_c52d_c55_tests)
+endif()
+
 add_executable(te222_c17_probe EXCLUDE_FROM_ALL te222_c17_probe.cpp)
 target_link_libraries(te222_c17_probe PRIVATE superembedder superslm::superslm)
 target_include_directories(te222_c17_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -1319,3 +1484,69 @@ if(SEMB_C12B_MODEL AND SEMB_U1_TOKENIZER)
 	)
 	set_tests_properties(superfaiss_roundtrip_real_artifact PROPERTIES LABELS "real_artifact" TIMEOUT 7200)
 endif()
+# ---------------------------------------------------------------------------
+# TE-331 (U2-1/U2-3/U2-7 red suite, `Claude/Plans/te267-u2-release-plan.md`).
+# Links against symbols undefined at this branch's own base `fca421b`
+# (semb_encoder_open_memory, semb_encode_query, semb_interim_query_token_count,
+# semb_interim_certification_verdict), so it is EXCLUDE_FROM_ALL;
+# tests/te331_u2_surface_link_check.py builds it on demand and reports the
+# unresolved symbol(s) by name, the te163/te194 red-first shape.
+# ---------------------------------------------------------------------------
+add_executable(te331_u2_surface_link_test EXCLUDE_FROM_ALL te331_u2_surface_link_test.cpp)
+target_link_libraries(te331_u2_surface_link_test PRIVATE superembedder superslm::superslm)
+target_include_directories(te331_u2_surface_link_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+set(_semb_te331_surface_args --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}")
+if(NOT SEMB_C12B_MODEL STREQUAL "")
+	list(APPEND _semb_te331_surface_args --model "${SEMB_C12B_MODEL}")
+endif()
+if(NOT SEMB_U1_TOKENIZER STREQUAL "")
+	list(APPEND _semb_te331_surface_args --tokenizer "${SEMB_U1_TOKENIZER}")
+endif()
+add_test(
+	NAME te331_u2_surface_link_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_surface_link_check.py" ${_semb_te331_surface_args}
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# Item 14/M18: sslm_build_identity + SEMB_ENGINE_LINK_MISMATCH. Links against
+# a symbol the PINNED ENGINE (SuperSLM 1.5.0) does not define at all, so it
+# is EXCLUDE_FROM_ALL; tests/te331_u2_engine_identity_check.py builds it on
+# demand and reports the unresolved symbol by name.
+add_executable(te331_u2_engine_identity_test EXCLUDE_FROM_ALL te331_u2_engine_identity_test.cpp)
+target_link_libraries(te331_u2_engine_identity_test PRIVATE superembedder superslm::superslm)
+target_include_directories(te331_u2_engine_identity_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+add_test(
+	NAME te331_u2_engine_identity_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_engine_identity_check.py" ${_semb_te331_surface_args}
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+
+# U2-1 (F4): the out-of-tree consumer, and R20/M19's post-build census, and
+# U2-3's C42 extended clauses (b'/e/f/g/h) (R9/R10's tool cells moved to
+# 1.x, D-SLM7711), and U2-7 item 3/C54's binary-mode CLI line reading, and U2-3 item
+# 5's --force-tier pin-tool option: standalone Python drivers, no CMake
+# target of their own (they build/configure their own scratch trees or
+# drive the CLI/tools directly).
+add_test(
+	NAME te331_u2_consumer_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_consumer_check.py"
+		--cmake-executable "${CMAKE_COMMAND}" --product-build "${CMAKE_BINARY_DIR}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+add_test(
+	NAME te331_u2_c42_clauses_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_c42_clauses_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+add_test(
+	NAME te331_u2_export_surface_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_export_surface_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+add_test(
+	NAME te331_u2_misc_absence_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_misc_absence_check.py"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)

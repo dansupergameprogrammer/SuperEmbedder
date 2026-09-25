@@ -911,6 +911,20 @@ extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* o
   }
 }
 
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+// U2 cloud build, the seam commit (tests/support/semb_u2_memory_seam.h): the
+// public handle's interim encoder, so the slot-record readers apply to it.
+// Test-only; absent from the shipped library.
+extern "C" SembInterimEncoder* semb_test_seam_interim_of(const void* enc) {
+  // The public handle is a registry cookie, never the object's address:
+  // resolve it through the same ready-gated lookup every verb reads through.
+  if (!enc) return nullptr;
+  std::lock_guard<std::mutex> lock(RegistryMutex());
+  const auto found = FindReadyHandleLocked(reinterpret_cast<semb_encoder>(const_cast<void*>(enc)));
+  return found == Registry().end() ? nullptr : found->second->interim;
+}
+#endif
+
 extern "C" semb_status semb_encoder_close(semb_encoder enc) {
   if (!enc) return SEMB_NULL_ARGUMENT;
   std::unique_ptr<semb_encoder_s> closing;

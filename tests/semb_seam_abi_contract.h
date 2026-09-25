@@ -53,6 +53,8 @@ enum SembEncodeStatus : int32_t {
   // *hidden_out are written. Mirrors include/superembedder/seam_abi.h
   // exactly.
   kSembEncodeHiddenTooLarge = 2,
+  // U2 cloud build, U2-10 item 3: the encode seam's allocation-failure status.
+  kSembEncodeAllocationFailed = 3,
 };
 
 // Mirrors include/superembedder/seam_abi.h's kSembWitnessMaxHidden

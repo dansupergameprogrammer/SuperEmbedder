@@ -36,6 +36,11 @@ enum SembWaPoolStatus : int32_t {
   kSembPooledSubnormal = 3,
   kSembPooledOverflow = 4,
   kSembEMinDomainExceeded = 5,
+  // U2 cloud build, U2-10 item 3: the pool's allocation-failure and internal-
+  // failure statuses. The plan names them without values; 6 and 7 are the
+  // next free values, assumed here (a build-time item for the builder).
+  kSembWaPoolAllocationFailed = 6,
+  kSembWaPoolInternalFailure = 7,
 };
 
 // Mirrors include/superembedder/pool_abi.h's kSembWaPoolMaxAbsEMin exactly
