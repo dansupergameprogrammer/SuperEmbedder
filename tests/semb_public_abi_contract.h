@@ -125,6 +125,13 @@
 // member carried it; the append gives it one. Nothing moves out of
 // kPlanStatusNames (it was never listed there).
 //
+// U2-3 items 8, 13 and 14 (`Claude/Plans/te267-u2-release-plan.md` sec 5):
+// four statuses APPENDED for the linked engine's identity check at encoder
+// and bank open -- SEMB_ENGINE_BUILD_UNRECORDED (36),
+// SEMB_ENGINE_TOOLCHAIN_MISMATCH (37), SEMB_ENGINE_LINK_MISMATCH (38) and
+// SEMB_CPU_TIER_UNSUPPORTED (39), SEMB_STATUS_NEXT_FREE now 40. Nothing
+// moves out of kPlanStatusNames (none was listed there).
+//
 // STATUSES ARE PINNED BY NAME AND BY ORDINAL, AND THE CELLS COMPARE BY NAME.
 // Behavioural cells resolve every status through `semb_status_name` (StatusByName
 // below) so that a cell is red for its own reason -- a behaviour that differs
@@ -198,7 +205,15 @@ typedef int32_t semb_status;
   X(SEMB_BANK_IN_USE,                      34) \
   /* TE-264 (U1 Slice 7 step 1, D-SLM6663): `semb verify`'s corpus-digest */ \
   /* refusal, appended at the next free ordinal.                          */ \
-  X(SEMB_CORPUS_DIGEST_MISMATCH,           35)
+  X(SEMB_CORPUS_DIGEST_MISMATCH,           35) \
+  /* U2-3 items 8, 13 and 14 (plan te267 sec 5): the linked engine's     */ \
+  /* identity check at encoder and bank open, appended at the next free  */ \
+  /* ordinals in the prototype's order (36-39, the ordinals item 14's    */ \
+  /* executed probe reports).                                            */ \
+  X(SEMB_ENGINE_BUILD_UNRECORDED,          36) \
+  X(SEMB_ENGINE_TOOLCHAIN_MISMATCH,        37) \
+  X(SEMB_ENGINE_LINK_MISMATCH,             38) \
+  X(SEMB_CPU_TIER_UNSUPPORTED,             39)
 
 enum : int32_t {
 #define SEMB_CONTRACT_STATUS_ENUM_(name, value) name = value,
@@ -207,7 +222,7 @@ enum : int32_t {
   SEMB_STATUS_NEXT_FREE  // the sentinel: never returned, never a valid argument, never named
 };
 
-static_assert(SEMB_STATUS_NEXT_FREE == 36, "the contract pins 36 named statuses, ordinals 0-35 (TE-192 appends 32-33, TE-194 appends 34, TE-264 appends 35)");
+static_assert(SEMB_STATUS_NEXT_FREE == 40, "the contract pins 40 named statuses, ordinals 0-39 (TE-192 appends 32-33, TE-194 appends 34, TE-264 appends 35, U2-3 items 8/13/14 append 36-39)");
 
 // sec 3.1 item 5: library-owned, opaque, not copyable, released only by
 // semb_encoder_close; a double close returns SEMB_INVALID_HANDLE.
@@ -268,7 +283,7 @@ inline const StatusEntry kStatusTable[] = {
 #undef SEMB_CONTRACT_STATUS_ENTRY_
 };
 inline constexpr size_t kStatusCount = sizeof(kStatusTable) / sizeof(kStatusTable[0]);
-static_assert(kStatusCount == 36, "36 named statuses (TE-192 appends 32-33, TE-194 appends SEMB_BANK_IN_USE at 34, TE-264 appends SEMB_CORPUS_DIGEST_MISMATCH at 35)");
+static_assert(kStatusCount == 40, "40 named statuses (TE-192 appends 32-33, TE-194 appends SEMB_BANK_IN_USE at 34, TE-264 appends SEMB_CORPUS_DIGEST_MISMATCH at 35, U2-3 appends 36-39)");
 
 // The name every non-member int32_t resolves to (P-5: static storage, never NULL).
 inline constexpr const char* kUnknownStatusName = "SEMB_UNKNOWN";

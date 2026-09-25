@@ -96,7 +96,18 @@ typedef struct semb_query_opaque* semb_query;
   X(SEMB_BANK_IN_USE,                      34) \
   /* `semb verify`: the bank manifest's corpus_digest disagrees with  */ \
   /* the digest of the corpus the verify re-encoded.                  */ \
-  X(SEMB_CORPUS_DIGEST_MISMATCH,           35)
+  X(SEMB_CORPUS_DIGEST_MISMATCH,           35) \
+  /* U2-3 items 8, 13 and 14: encoder and bank open read the LINKED   */ \
+  /* engine's own build identity (sslm_build_identity) before any     */ \
+  /* artifact byte is read and before any engine code runs, and       */ \
+  /* refuse, in this order of checks: no readable identity or no      */ \
+  /* build record; an engine needing an instruction-set extension     */ \
+  /* this host lacks; a compiler or standard library other than this  */ \
+  /* library's; a build record other than the one configure verified. */ \
+  X(SEMB_ENGINE_BUILD_UNRECORDED,          36) \
+  X(SEMB_ENGINE_TOOLCHAIN_MISMATCH,        37) \
+  X(SEMB_ENGINE_LINK_MISMATCH,             38) \
+  X(SEMB_CPU_TIER_UNSUPPORTED,             39)
 
 typedef enum semb_status {
 #define SEMB_STATUS_ENUM_VALUE_(name, value) name = value,
