@@ -752,18 +752,20 @@ def _literals(text: str) -> str:
     return "".join(bytes(m, "utf-8").decode("unicode_escape") for m in re.findall(r'"((?:[^"\\]|\\.)*)"', text))
 
 
+def _kernel_entry(clone: Path, build: Path) -> dict:
+    """src/matmul.cpp's own recorded compile command in the engine build (the `superslm` target's)."""
+    kernel = (clone / KERNEL_TU).resolve()
+    for e in _compile_entries(build):
+        if compile_flags._target_of(e) == "superslm" and Path(e["file"]).resolve() == kernel:
+            return e
+    raise SystemExit(f"SEMB_PIN_KERNEL_COMMAND_MISSING: no compile command for {KERNEL_TU} in the engine build")
+
+
 def probe_descriptor(clone: Path, build: Path, family: str, windows: bool) -> dict:
     """toolchain, stdlib and dispatch as the engine's kernel TU is compiled: the product's descriptor header,
     preprocessed with src/matmul.cpp's own recorded compile command, in this process's environment (the one
     the engine was just built in)."""
-    kernel = (clone / KERNEL_TU).resolve()
-    entry = None
-    for e in _compile_entries(build):
-        if compile_flags._target_of(e) == "superslm" and Path(e["file"]).resolve() == kernel:
-            entry = e
-            break
-    if entry is None:
-        raise SystemExit(f"SEMB_PIN_KERNEL_COMMAND_MISSING: no compile command for {KERNEL_TU} in the engine build")
+    entry = _kernel_entry(clone, build)
     argv = compile_flags.argv_of(entry, windows)
     probe = build / "semb_descriptor_probe.cpp"
     probe.write_text(_PROBE_TEXT, encoding="utf-8", newline="\n")
@@ -815,6 +817,159 @@ def build_record(tag: str, commit: str, clean: bool, compiler: dict, flags_sha: 
     return "sslm-build-record-v1:" + hashlib.sha256(canonical).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# U2-3 item 14: the linked engine identifies its own build. No engine tag defines sslm_build_identity, so
+# after install the tool compiles the verb's one text (src/superembedder/engine_identity/build_identity.cpp)
+# with src/matmul.cpp's own recorded compile command, in this process's environment (the one the engine was
+# just built in), with the build record on its include path, and appends the object to the installed
+# library. It appends only when the library does not define the symbol already. engine_tree_sha excludes
+# libraries, so appending moves no tree digest; librarySha256 is taken after the append.
+# ---------------------------------------------------------------------------
+IDENTITY_SYMBOL = "sslm_build_identity"
+IDENTITY_DIR = REPO_ROOT / "src" / "superembedder" / "engine_identity"
+IDENTITY_TEXT = IDENTITY_DIR / "build_identity.cpp"
+
+
+def archive_symbols(library: Path) -> set[str]:
+    """The external symbols an ar archive's own symbol index names. Reads the index member directly, so one
+    rule serves every archiver: the System V / GNU `/` member (and `/SYM64/`), which is also the first linker
+    member of a Microsoft COFF .lib (lib.exe and llvm-lib), and the BSD `__.SYMDEF` member."""
+    data = library.read_bytes()
+    if not data.startswith(b"!<arch>\n"):
+        raise SystemExit(f"SEMB_PIN_LIBRARY_UNREADABLE: {library} is not an ar archive")
+    pos, names, seen_index = 8, set(), False
+    while pos + 60 <= len(data):
+        header = data[pos:pos + 60]
+        name = header[:16].decode("latin-1").rstrip()
+        size = int(header[48:58].decode("latin-1").strip() or 0)
+        body = data[pos + 60:pos + 60 + size]
+        if name == "/" and not seen_index:
+            # First linker member: u32 BE count, count u32 BE offsets, then count NUL-terminated names.
+            count = int.from_bytes(body[:4], "big")
+            names.update(n.decode("latin-1") for n in body[4 + 4 * count:].split(b"\0")[:count])
+            seen_index = True
+        elif name == "/SYM64/" and not seen_index:
+            count = int.from_bytes(body[:8], "big")
+            names.update(n.decode("latin-1") for n in body[8 + 8 * count:].split(b"\0")[:count])
+            seen_index = True
+        elif name.startswith("#1/") or name.startswith("__.SYMDEF"):
+            extended = int(name[3:]) if name.startswith("#1/") else 0
+            real = body[:extended].rstrip(b"\0").decode("latin-1") if extended else name
+            if real.startswith("__.SYMDEF") and not seen_index:
+                rest = body[extended:]
+                ranlib_bytes = int.from_bytes(rest[:4], "little")
+                entries = rest[4:4 + ranlib_bytes]
+                strtab_at = 4 + ranlib_bytes
+                strtab_size = int.from_bytes(rest[strtab_at:strtab_at + 4], "little")
+                strtab = rest[strtab_at + 4:strtab_at + 4 + strtab_size]
+                for k in range(0, len(entries) - 7, 8):
+                    strx = int.from_bytes(entries[k:k + 4], "little")
+                    names.add(strtab[strx:strtab.index(b"\0", strx)].decode("latin-1"))
+                seen_index = True
+        pos += 60 + size
+        pos += pos & 1
+    if not seen_index:
+        raise SystemExit(f"SEMB_PIN_LIBRARY_INDEX_MISSING: {library} carries no archive symbol index")
+    return names
+
+
+def library_defines(library: Path, symbol: str) -> bool:
+    names = archive_symbols(library)
+    return symbol in names or ("_" + symbol) in names  # Mach-O prefixes C names with an underscore
+
+
+def _cache_value(build: Path, key: str) -> str:
+    m = re.search(rf"^{re.escape(key)}:[A-Z]+=(.*)$",
+                  (build / "CMakeCache.txt").read_text(encoding="utf-8", errors="replace"), re.M)
+    return m.group(1).strip() if m else ""
+
+
+def identity_compile_command(entry: dict, family: str, windows: bool, work: Path, obj: Path) -> list[str]:
+    """src/matmul.cpp's recorded command with its source replaced by the verb's text, its outputs by the
+    identity object's, and the work directory (which holds superslm_build_record.inc) added to the include
+    path. Dependency-file and diagnostic-output arguments are dropped: they write files and change no code
+    (plan U2-3 item 13 step 2b)."""
+    argv = compile_flags.argv_of(entry, windows)
+    msvc_style = family in ("msvc", "clangcl")
+    source_name = Path(entry["file"]).name
+    out, k, had_fd, had_c = [argv[0]], 1, False, False
+    while k < len(argv):
+        a = argv[k]
+        k += 1
+        if a in ("-o", "-MF", "-MT", "-MQ"):
+            k += 1
+            continue
+        if a in ("-MD", "-MMD", "-MP", "/showIncludes", "-showIncludes"):
+            continue
+        if compile_flags.OUTPUT_JOINED.match(a):
+            had_fd = had_fd or a[1:3].lower() == "fd"
+            continue
+        if Path(a).name == source_name and a.replace("\\", "/").endswith(KERNEL_TU):
+            continue
+        had_c = had_c or a in ("-c", "/c")
+        out.append(a)
+    if not had_c:
+        out.append("/c" if msvc_style else "-c")
+    if msvc_style:
+        out.append(f"/I{work}")
+        out.append(f"/Fo{obj}")
+        if had_fd:
+            out.append(f"/Fd{work / 'sslm_build_identity.pdb'}")
+    else:
+        out += [f"-I{work}", "-o", str(obj)]
+    out.append(str(IDENTITY_TEXT))
+    return out
+
+
+def append_build_identity(clone: Path, build: Path, library: Path, family: str, windows: bool,
+                          record: str) -> bool:
+    """Compiles the verb with the kernel TU's command and appends it to `library`, when `library` does not
+    define it. Returns True when it appended. Refuses when the appended object does not then name the
+    symbol in the library's index."""
+    if library_defines(library, IDENTITY_SYMBOL):
+        log(f"{library.name} defines {IDENTITY_SYMBOL} itself; the pin tool appends no identity object")
+        return False
+    work = build / "semb_build_identity"
+    if work.exists():
+        _own(work)  # inside the build directory configure_engine() just claimed for this run
+        _remove_owned(work)
+    work.mkdir(parents=True)
+    (work / "superslm_build_record.inc").write_text(f'#define SUPERSLM_BUILD_RECORD "{record}"\n',
+                                                   encoding="utf-8", newline="\n")
+    msvc_style = family in ("msvc", "clangcl")
+    obj = work / ("sslm_build_identity.obj" if msvc_style else "sslm_build_identity.o")
+    entry = _kernel_entry(clone, build)
+    cmd = identity_compile_command(entry, family, windows, work, obj)
+    log("identity compile: " + " ".join(cmd))
+    proc = subprocess.run(cmd, cwd=entry.get("directory") or str(build), capture_output=True, text=True,
+                          errors="replace")
+    if proc.returncode != 0 or not obj.is_file():
+        raise SystemExit(f"SEMB_PIN_IDENTITY_COMPILE_FAILED: compiling {IDENTITY_TEXT.name} with {KERNEL_TU}'s "
+                         f"compile command exited {proc.returncode}:\n{(proc.stdout + proc.stderr)[-2000:]}")
+    archiver = _cache_value(build, "CMAKE_AR")
+    if msvc_style:
+        # lib.exe (MSVC) or llvm-lib (clang-cl): /OUT: rewrites the archive with the object added.
+        archiver = archiver or ("lib.exe" if family == "msvc" else "llvm-lib.exe")
+        staged = library.with_name(library.stem + ".identity" + library.suffix)
+        cmd = [archiver, "/NOLOGO", f"/OUT:{staged}", str(library), str(obj)]
+    else:
+        archiver = archiver or "ar"
+        staged = None
+        cmd = [archiver, "rs", str(library), str(obj)]
+    log("identity append: " + " ".join(cmd))
+    proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+    if proc.returncode != 0:
+        raise SystemExit(f"SEMB_PIN_IDENTITY_APPEND_FAILED: {' '.join(cmd)} exited {proc.returncode}:\n"
+                         f"{(proc.stdout + proc.stderr)[-2000:]}")
+    if staged is not None:
+        os.replace(staged, library)
+    if not library_defines(library, IDENTITY_SYMBOL):
+        raise SystemExit(f"SEMB_PIN_IDENTITY_APPEND_FAILED: {library} does not define {IDENTITY_SYMBOL} after "
+                         f"the append")
+    log(f"appended {obj.name} to {library}: {IDENTITY_SYMBOL} carries {record}")
+    return True
+
+
 def engine_build_record(clone: Path, build: Path, prefix: Path, tag: str, commit: str, clean: bool,
                         library: Path) -> dict:
     """provenance.json's engine_build object (plan U2-3 item 13). Outside engine_tree_sha, which stays a
@@ -831,6 +986,8 @@ def engine_build_record(clone: Path, build: Path, prefix: Path, tag: str, commit
     for r in residual:
         log(f"SEMB_COMPILE_FLAGS_LOCATION {r}")
     flags_sha = compile_flags.digest(rec)
+    record = build_record(tag, commit, clean, compiler, flags_sha)
+    append_build_identity(clone, build, library, family, windows, record)
     return {
         "compiler": compiler,
         "toolchain": probe["toolchain"],
@@ -839,7 +996,7 @@ def engine_build_record(clone: Path, build: Path, prefix: Path, tag: str, commit
         "flags": {"family": family, "record": rec, "residual": residual},
         "flagsSha": flags_sha,
         "librarySha256": hashlib.sha256(library.read_bytes()).hexdigest(),
-        "buildRecord": build_record(tag, commit, clean, compiler, flags_sha),
+        "buildRecord": record,
     }
 
 
