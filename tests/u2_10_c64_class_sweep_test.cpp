@@ -211,8 +211,8 @@ struct Expected {
 
 Expected ExpectedFor(const std::string& row) {
   static const std::map<std::string, int> kFamily = {
-      {"semb_encoder_open", 0}, {"semb_encoder_close", 0}, {"semb_encoder_dims", 0}, {"semb_encode", 0},
-      {"semb_encode_batch", 0}, {"semb_bank_open", 0}, {"semb_bank_close", 0}, {"semb_query_open", 0},
+      {"semb_encoder_open", 0}, {"semb_encoder_open_memory", 0}, {"semb_encoder_close", 0}, {"semb_encoder_dims", 0}, {"semb_encode", 0},
+      {"semb_encode_query", 0}, {"semb_encode_batch", 0}, {"semb_bank_open", 0}, {"semb_bank_close", 0}, {"semb_query_open", 0},
       {"semb_query_encode", 0}, {"semb_query_close", 0}, {"semb_fingerprint_of", 0}, {"semb_bake_to_path", 0},
       {"semb_wb_digest", 0}, {"semb_wq_digest", 0}, {"semb_bank_acquire_query", 0},
       {"semb_bank_release_query", 0}, {"semb_bank_debug_state", 0}, {"semb_bank_ranked_state", 0},
@@ -221,6 +221,8 @@ Expected ExpectedFor(const std::string& row) {
       {"semb_interim_encoder_geometry", 1}, {"semb_interim_encode_seam", 1}, {"semb_interim_ps_n_select", 1},
       {"semb_interim_encode_ps_n", 1}, {"semb_interim_encode_batch_ps_n", 1},
       {"semb_interim_release_workspaces", 1},  // U2-9 item 2's release verb, U2-10 Builds item 6
+      // U2-7's three (U2-10 Builds item 6): two semb.h verbs, one interim verb.
+      {"semb_interim_query_token_count", 1},
       {"semb_encode_document_for_witness", 2},
       {"semb_wa_pool_run", 3}, {"semb_ps_n_dequantize", 3},
   };
@@ -257,6 +259,8 @@ const char* const kAllRows[] = {
     "semb_interim_encode_seam", "semb_interim_ps_n_select", "semb_interim_encode_ps_n",
     "semb_interim_encode_batch_ps_n", "semb_encode_document_for_witness", "semb_wa_pool_run",
     "semb_ps_n_dequantize", "semb_wa_digest", "semb_interim_release_workspaces",
+    // U2-7's three (U2-10 Builds item 6).
+    "semb_encoder_open_memory", "semb_encode_query", "semb_interim_query_token_count",
 };
 
 
@@ -312,6 +316,20 @@ std::vector<float> QueryVec(semb_query q, const std::string& t, uint32_t dims, s
   std::vector<float> v(dims ? dims : 1);
   size_t req = 0;
   const semb_status s = SW(semb_query_encode(q, t.data(), t.size(), v.data(), v.size() * 4, &req));
+  if (st) *st = s;
+  if (s != SEMB_OK) v.clear();
+  return v;
+}
+
+// semb_encode_query (U2-7 item 2): the query form of semb_encode.
+std::vector<float> EncodeQueryVec(semb_encoder e, const std::string& t, semb_status* st = nullptr) {
+  uint32_t dims = 0;
+  semb_encoder_dims(e, &dims);
+  std::vector<float> v(dims ? dims : 1);
+  size_t req = 0;
+  semb_fingerprint fp{};
+  fp.struct_size = sizeof(fp);
+  const semb_status s = SW(semb_encode_query(e, t.data(), t.size(), v.data(), v.size() * 4, &req, &fp));
   if (st) *st = s;
   if (s != SEMB_OK) v.clear();
   return v;
@@ -417,6 +435,23 @@ bool EncFollowText(Ctx& c, const std::string& t) {
   return s == SEMB_OK && v == RefVec(t);
 }
 bool EncFollow(Ctx& c) { return EncFollowText(c, kShort); }
+// semb_encode_query's follow-up: the query form on the same handle equals a
+// fresh handle's (references computed once per process, unarmed).
+bool EncQueryFollowText(Ctx& c, const std::string& t) {
+  static std::map<std::string, std::vector<float>> refs;
+  auto it = refs.find(t);
+  if (it == refs.end()) {
+    semb_encoder f = OpenEnc(1);
+    std::vector<float> v = f ? EncodeQueryVec(f, t) : std::vector<float>{};
+    if (f) semb_encoder_close(f);
+    it = refs.emplace(t, v).first;
+  }
+  semb_encoder e = c.enc ? c.enc : c.out_enc;
+  if (!e) return false;
+  semb_status s = SEMB_OK;
+  const auto v = EncodeQueryVec(e, t, &s);
+  return s == SEMB_OK && !it->second.empty() && v == it->second;
+}
 // The long drivers' follow-up is the driver's own long document (U2-9 item 5
 // releases its buffer after it), so every armed call on the handle grows from
 // capacity 0, as C64's long driver states. A short follow-up would leave record
@@ -1026,6 +1061,90 @@ bool BuildDriver(const std::string& row, const std::string& drv, uint32_t mc, Dr
     };
     d->call = [](Ctx& c) { return static_cast<int32_t>(SW(semb_interim_release_workspaces(c.ienc))); };
     d->follow = InterimFollow;
+    return true;
+  }
+
+  // ---- U2-7's three (U2-10 Builds item 6) ----
+  if (row == "semb_encoder_open_memory" && drv == "short") {
+    // The memory open runs semb_encoder_open's internal open (U2-7 item 1),
+    // its witness included, on owned copies of the caller's spans.
+    static std::vector<uint8_t> model_bytes, tok_bytes;
+    if (model_bytes.empty()) { model_bytes = ReadAll(g.model); tok_bytes = ReadAll(g.tokenizer); }
+    auto mem_cfg = [](uint32_t m) {
+      semb_memory_config cfg{};
+      cfg.struct_size = sizeof(cfg);
+      cfg.model_bytes = model_bytes.data();
+      cfg.model_len = model_bytes.size();
+      cfg.tokenizer_bytes = tok_bytes.data();
+      cfg.tokenizer_len = tok_bytes.size();
+      cfg.max_concurrency = m;
+      return cfg;
+    };
+    d->call = [mc, mem_cfg](Ctx& c) {
+      const semb_memory_config cfg = mem_cfg(mc);
+      return static_cast<int32_t>(SW(semb_encoder_open_memory(&cfg, &c.out_enc)));
+    };
+    // Follow-up: a fresh memory open encodes the path open's reference bytes.
+    d->follow = [mc, mem_cfg](Ctx&) {
+      const semb_memory_config cfg = mem_cfg(mc);
+      semb_encoder e = nullptr;
+      if (semb_encoder_open_memory(&cfg, &e) != SEMB_OK || !e) return false;
+      semb_status s = SEMB_OK;
+      const bool ok = EncodeVec(e, kShort, &s) == RefVec(kShort) && s == SEMB_OK;
+      return semb_encoder_close(e) == SEMB_OK && ok;
+    };
+    return true;
+  }
+  if (row == "semb_encode_query") {
+    // One composition, two wrappers (U2-7 item 2): the query form reaches
+    // what semb_query_encode reaches, so it takes the same drivers when the
+    // table lists them -- short, a query truncated at context_cap - 1, the
+    // growth driver and the long driver.
+    uint32_t qmc = mc;
+    std::string text = kShort;
+    if (drv == "truncated_query") text = Text(5200);
+    else if (drv == "growth") text = G;
+    else if (drv == "long") text = L;
+    else if (drv != "short") return false;
+    if (drv == "growth" || drv == "long") qmc = 1;
+    const bool growth = drv == "growth";
+    d->setup = [qmc, growth](Ctx& c) {
+      c.enc = OpenEnc(qmc);
+      if (growth && c.enc) EncodeQueryVec(c.enc, Text(6));
+    };
+    d->call = [text](Ctx& c) { semb_status s; EncodeQueryVec(c.enc, text, &s); return static_cast<int32_t>(s); };
+    // The long and truncated queries (C > 4,096) follow up with their own
+    // text, as the long drivers do (EncFollowText).
+    if (drv == "long" || drv == "truncated_query") {
+      d->follow = [text](Ctx& c) { return EncQueryFollowText(c, text); };
+    } else {
+      d->follow = [](Ctx& c) { return EncQueryFollowText(c, kShort); };
+    }
+    d->fresh_per_k = d->growth = growth;
+    return true;
+  }
+  if (row == "semb_interim_query_token_count" && drv == "short") {
+    // R17's count over the composed query, on the public handle (U2-7 item 6).
+    d->setup = [mc](Ctx& c) { c.enc = OpenEnc(mc); };
+    d->call = [](Ctx& c) {
+      int64_t n = -1;
+      return static_cast<int32_t>(SW(semb_interim_query_token_count(c.enc, kShort.data(), kShort.size(), &n)));
+    };
+    // Follow-up: the same count unarmed equals a fresh handle's, and the
+    // handle still encodes its reference bytes.
+    d->follow = [](Ctx& c) {
+      static int64_t ref = -2;
+      if (ref == -2) {
+        semb_encoder f = OpenEnc(1);
+        ref = -3;
+        if (f && semb_interim_query_token_count(f, kShort.data(), kShort.size(), &ref) != kSembInterimOk) ref = -3;
+        if (f) semb_encoder_close(f);
+      }
+      int64_t n = -1;
+      return c.enc && ref >= 0 &&
+             semb_interim_query_token_count(c.enc, kShort.data(), kShort.size(), &n) == kSembInterimOk &&
+             n == ref && EncFollow(c);
+    };
     return true;
   }
 
