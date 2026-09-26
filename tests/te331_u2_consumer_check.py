@@ -132,7 +132,12 @@ def consumer(cmake: str, prefix: Path, build: Path, version: str | None, model: 
                 and p.suffix in ("", ".exe")), None)
     if exe is None:
         return "build", "te331_consumer not found after build"
-    rc, out = run([str(exe), model, tok])
+    # A Windows consumer of the shared library finds semb.dll through PATH (no rpath), so the install's bin
+    # directory goes first, as any application's launcher would put it.
+    env = None
+    if os.name == "nt":
+        env = dict(os.environ, PATH=str(prefix / "bin") + os.pathsep + os.environ.get("PATH", ""))
+    rc, out = run([str(exe), model, tok], env=env)
     if rc != 0 or not out.startswith("OK "):
         return "run", out
     return "ok", out
