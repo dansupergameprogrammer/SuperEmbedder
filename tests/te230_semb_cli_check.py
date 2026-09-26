@@ -132,8 +132,13 @@ class Report:
 
 
 def call(args: list[str], stdin: str | None = None, timeout: int = 420) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(args, cwd=ROOT, input=stdin, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=timeout)
+    # Standard input goes as UTF-8 bytes: a text-mode pipe writes each "\n" as CRLF on Windows, and the CLI reads a
+    # CR before the LF as text (README: "a CR before the LF is text"). Output is decoded as text mode would, CRLF
+    # read as LF.
+    proc = subprocess.run(args, cwd=ROOT, input=None if stdin is None else stdin.encode("utf-8"),
+                          capture_output=True, timeout=timeout)
+    decode = lambda b: b.decode("utf-8", errors="replace").replace("\r\n", "\n")
+    return subprocess.CompletedProcess(proc.args, proc.returncode, decode(proc.stdout), decode(proc.stderr))
 
 
 def call_bytes(args: list[str], timeout: int = 420) -> subprocess.CompletedProcess[bytes]:
@@ -576,7 +581,8 @@ def main(argv: list[str]) -> int:
         # TE-232 cell 3: a plain-text corpus is one document per line, ids =
         # line numbers, base ZERO (D-SLM6632): the first line's id is "0".
         plain_lines = [json.loads(line)["text"] for line in corpus.read_text(encoding="utf-8").splitlines()]
-        plain = scratch / "plain_corpus.txt"; plain.write_text("\n".join(plain_lines) + "\n", encoding="utf-8")
+        plain = scratch / "plain_corpus.txt"
+        plain.write_text("\n".join(plain_lines) + "\n", encoding="utf-8", newline="\n")  # LF on every platform
         equivalent = scratch / "plain_equivalent.jsonl"
         equivalent.write_text("\n".join(json.dumps({"id": str(i), "text": line})
                                          for i, line in enumerate(plain_lines)) + "\n", encoding="utf-8")
