@@ -7,10 +7,42 @@
       "derived": "U2 cloud build: GCC 13.3.0 on Linux, the U2 base's libsuperembedder.a. nm --defined-only, T/W, no _Z prefix, reads exactly the 37 table names, so no name needs a reference TU and the list is empty."
     },
     "msvc19.33": {
-      "list": ["wmemcpy", "wmemset", "fprintf", "_vfprintf_l", "__local_stdio_printf_options", "snprintf", "vsnprintf"],
+      "list": [
+        "wmemcpy",
+        "wmemset",
+        "fprintf",
+        "_vfprintf_l",
+        "__local_stdio_printf_options",
+        "snprintf",
+        "vsnprintf"
+      ],
       "derived": "The seven names the plan's executed MSVC 19.33 probe found; each reference TU compiles and defines its name, and semb_status_name's does not (C2065) (te267 U2-10 C65, 'Executed on MSVC 19.33'). Re-derived by C65's tool at its first dev-box run."
     },
-    "msvc19.44": {"list": null, "derived": "owed: derived at the member's first dev-box run"},
-    "clang-cl18.1.8": {"list": null, "derived": "owed: derived at the member's first dev-box run"}
+    "msvc19.44": {
+      "list": [
+        "wmemcpy",
+        "wmemset",
+        "fprintf",
+        "_vfprintf_l",
+        "__local_stdio_printf_options",
+        "snprintf",
+        "vsnprintf",
+        "_Check_memory_order",
+        "__std_is_file_not_found"
+      ],
+      "derived": "Dev box, MSVC 19.44.35214 (BuildTools vcvars): one reference TU per candidate over the system headers the library's sources include at this tree (Windows branch), taking the name's address, compiled /O2 /Ob2 /EHsc /GR /MD /DNDEBUG /fp:precise /std:c++20; each of the nine defines its name by C65's COFF rule, and semb_status_name's does not compile. The same construction under MSVC 19.33 reproduces that family's seven."
+    },
+    "clang-cl18.1.8": {
+      "list": [
+        "wmemcpy",
+        "wmemset",
+        "fprintf",
+        "_vfprintf_l",
+        "__local_stdio_printf_options",
+        "snprintf",
+        "vsnprintf"
+      ],
+      "derived": "Dev box, clang-cl 18.1.8 under the vcvars 14.33 STL: the same construction; seven names define theirs, _Check_memory_order does not compile, __std_is_file_not_found compiles without defining it, and semb_status_name's does not compile."
+    }
   }
 }
