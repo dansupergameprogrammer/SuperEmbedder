@@ -1,0 +1,34 @@
+{
+  "cellId": "clangcl18.1.8-auto@avx2",
+  "runId": "te444-clangcl18.1.8-auto-avx2-2026-09-26",
+  "date": "2026-09-26",
+  "pass": "provisional",
+  "host": "AMD Ryzen 9 3950X 16-Core Processor",
+  "manifestSha256": "33f09a59b02eb6cae0772678b3a717c98138850da7ab05b795f114f14f86d101",
+  "buildDescriptor": {
+    "os": "windows",
+    "isa": "x86-64",
+    "toolchain": "Clang 18.1.8 (MSVC frontend 193331631)",
+    "stdlib": "MSVC STL 202205L",
+    "configuration": "Release",
+    "buildSystem": "cmake",
+    "dispatch": "auto",
+    "compileFlags": "f9ff4e8f00ce7f66d4cd2440f42d9d98eab4b9d7b572661ca6ae899ee72b08b9",
+    "engineFlags": "d1ae4c8e83b0af6c411d7dbcd0677ece0be592a65ca7bfaa17d6e3ba41903427"
+  },
+  "machineTier": "avx2",
+  "certificationEpoch": "ac4cb6abad3c4f6af568a4c47650e5e7b3f48dfea901a26f854144327b29fa37",
+  "certifiedBuildsSha256": "24f3ff45891e64780d832a17e3295741a3b82bafe01190f0be2529a5e1945153",
+  "certifiedCell": "clangcl18.1.8-auto@avx2",
+  "dispatchedTier": "avx2",
+  "hostBestTier": "avx2",
+  "enginePin": {
+    "tag": "v1.8.0",
+    "commit": "9ed52bb55af881348be6ccb591efdaa133f84329",
+    "engine_tree_sha": "ffad24449984ba5b7390a2cec007be9404bc1c64dfd529c1f420de37653e567c"
+  },
+  "productCommit": "62914965d5e83ad4b79a94d84a0e611b69e1e1e2",
+  "derivationInputsSha256": "a5f012ccfc2ad4631882fa08d00097d3e72a5ad945bd85d0ab1a2433a0c98906",
+  "rowDigest": "e8ad5d05c31eced1afa8967f0babc72212718effea9e19b0c46d2282e9bcde72",
+  "tokenIdDigest": "e440e227fb5bdd3cc58895ac4fa536e533c8e5988fc993c4f3286e36680de835"
+}

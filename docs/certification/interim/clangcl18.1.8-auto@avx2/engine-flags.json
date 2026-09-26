@@ -1,0 +1,314 @@
+{
+  "schemaVersion": 1,
+  "family": "clangcl",
+  "sha256": "d1ae4c8e83b0af6c411d7dbcd0677ece0be592a65ca7bfaa17d6e3ba41903427",
+  "residual": [],
+  "record": {
+    "superslm:<src>\\src\\artifact.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\damped_greedy_antilm.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\damped_greedy_phaseD.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\damped_greedy_phaseD_loop.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\damped_greedy_topk.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\decode_digest.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\forward\\checked_chain_funnel.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\forward\\forward_sites.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\intmath.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\matmul.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\model.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\proof_manifest.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\sha256.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\silu_lut.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\sslm_abi.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\tokenizer.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\trace_hook.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    }
+  }
+}

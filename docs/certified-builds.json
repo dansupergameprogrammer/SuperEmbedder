@@ -1,42 +1,71 @@
 {
   "schemaVersion": 1,
   "release": "1.0.0-interim",
-  "enginePin": {
-    "tag": "v1.8.0",
-    "commit": "9ed52bb55af881348be6ccb591efdaa133f84329",
-    "engine_tree_sha": "7fde276c9cbdc8215ee654d06ff182738d9f9fd9d84ce87f8112f7c1b2c54a24"
-  },
   "builds": [
     {
-      "id": "win-x64-msvc-avx2-zen2",
-      "os": "Windows 10 x64",
+      "id": "msvc19.33-auto@avx2",
+      "os": "windows",
       "isa": "x86-64",
       "objectFormat": "COFF",
-      "toolchain": "MSVC 19.33.31631.0",
-      "cpuTier": "AVX2",
-      "artifact": "qwen3-embedding-0.6b-1p5.sslm sha256=0be28bf42637264df85481eb925c46f674da7db97fd7601c6732881ad8f99fbf; tokenizer qwen3-embedding-0.6b-tokenizer.sslm sha256=2ba15e621e28f4f58046a89a4e4b1e3e6ea8c4e1a4f5397238634b589082b9d3",
-      "host": "AMD Ryzen 9 3950X (Zen 2), Windows 10 x64, dev box"
+      "toolchain": "MSVC 193331631.0",
+      "stdlib": "MSVC STL 202205L",
+      "configuration": "Release",
+      "buildSystem": "cmake",
+      "dispatch": "auto",
+      "compileFlags": "a333e94163c8e0d119be8b19ad2d3f38dabab5e50abd1bff51f5a9fab3a0ba9b",
+      "engineFlags": "e2216d1eaad5bb061cfc5315726515eb4e35894158e25c6a3de542ea1dafcdc9",
+      "cpuTier": "avx2",
+      "artifact": {
+        "model": {
+          "name": "qwen3-embedding-0.6b-1p5.sslm",
+          "sha256": "0be28bf42637264df85481eb925c46f674da7db97fd7601c6732881ad8f99fbf"
+        },
+        "tokenizer": {
+          "name": "qwen3-embedding-0.6b-tokenizer.sslm",
+          "sha256": "2ba15e621e28f4f58046a89a4e4b1e3e6ea8c4e1a4f5397238634b589082b9d3"
+        }
+      },
+      "host": "AMD Ryzen 9 3950X 16-Core Processor",
+      "evidence": "docs/certification/interim"
     },
     {
-      "id": "win-x64-clangcl-avx2-zen2",
-      "os": "Windows 10 x64",
+      "id": "clangcl18.1.8-auto@avx2",
+      "os": "windows",
       "isa": "x86-64",
       "objectFormat": "COFF",
-      "toolchain": "Clang 18.1.8 (MSVC frontend)",
-      "cpuTier": "AVX2",
-      "artifact": "qwen3-embedding-0.6b-1p5.sslm sha256=0be28bf42637264df85481eb925c46f674da7db97fd7601c6732881ad8f99fbf; tokenizer qwen3-embedding-0.6b-tokenizer.sslm sha256=2ba15e621e28f4f58046a89a4e4b1e3e6ea8c4e1a4f5397238634b589082b9d3",
-      "host": "AMD Ryzen 9 3950X (Zen 2), Windows 10 x64, dev box"
+      "toolchain": "Clang 18.1.8 (MSVC frontend 193331631)",
+      "stdlib": "MSVC STL 202205L",
+      "configuration": "Release",
+      "buildSystem": "cmake",
+      "dispatch": "auto",
+      "compileFlags": "f9ff4e8f00ce7f66d4cd2440f42d9d98eab4b9d7b572661ca6ae899ee72b08b9",
+      "engineFlags": "d1ae4c8e83b0af6c411d7dbcd0677ece0be592a65ca7bfaa17d6e3ba41903427",
+      "cpuTier": "avx2",
+      "artifact": {
+        "model": {
+          "name": "qwen3-embedding-0.6b-1p5.sslm",
+          "sha256": "0be28bf42637264df85481eb925c46f674da7db97fd7601c6732881ad8f99fbf"
+        },
+        "tokenizer": {
+          "name": "qwen3-embedding-0.6b-tokenizer.sslm",
+          "sha256": "2ba15e621e28f4f58046a89a4e4b1e3e6ea8c4e1a4f5397238634b589082b9d3"
+        }
+      },
+      "host": "AMD Ryzen 9 3950X 16-Core Processor",
+      "evidence": "docs/certification/interim"
     }
   ],
   "pairwiseProofs": [
     {
-      "a": "win-x64-msvc-avx2-zen2",
-      "b": "win-x64-clangcl-avx2-zen2",
-      "runId": "te439-interim-2026-09-25",
-      "date": "2026-09-25",
+      "a": "msvc19.33-auto@avx2",
+      "b": "clangcl18.1.8-auto@avx2",
+      "runIds": [
+        "te444-msvc19.33-auto-avx2-2026-09-26",
+        "te444-clangcl18.1.8-auto-avx2-2026-09-26"
+      ],
       "rowDigest": "e8ad5d05c31eced1afa8967f0babc72212718effea9e19b0c46d2282e9bcde72",
-      "tokenIdDigest": "e440e227fb5bdd3cc58895ac4fa536e533c8e5988fc993c4f3286e36680de835",
-      "evidence": "docs/certification/interim"
+      "tokenIdDigest": "e440e227fb5bdd3cc58895ac4fa536e533c8e5988fc993c4f3286e36680de835"
     }
-  ]
+  ],
+  "gpuVerifications": []
 }
