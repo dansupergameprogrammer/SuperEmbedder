@@ -10,7 +10,10 @@ table. `--write-table` fills the table's `c64_pre_build` column from this run
 (the pre-build reading, te267 U2-10 C64).
 
 Red on today's library by the plan's predictions (C64, "Red today"); on GCC
-the cl.exe-only (c) reds do not apply.
+the cl.exe-only (c) reds do not apply. The executable runs each arm in a child
+process on every platform (fork() on POSIX; on Windows a re-launch of itself
+with --c64-child-arm/--c64-child-k0), so this script is the same on cl.exe,
+clang-cl and GCC.
 """
 from __future__ import annotations
 
@@ -40,7 +43,9 @@ def find_exe(build_dir: Path) -> Path | None:
     for c in (build_dir / "tests" / TARGET, build_dir / "tests" / (TARGET + ".exe")):
         if c.exists():
             return c
-    return None
+    # A multi-config generator (Visual Studio) puts it under tests/<config>/.
+    hits = [h for h in build_dir.rglob(TARGET + ".exe") if h.is_file()]
+    return hits[0] if hits else None
 
 
 def main(argv: list[str]) -> int:
