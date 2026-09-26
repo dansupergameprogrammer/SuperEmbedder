@@ -80,7 +80,8 @@ def main(argv: list[str]) -> int:
         else:
             print(f"[FAIL] {TARGET} build failed\n{out[-3000:]}")
         return 1
-    exe = next((p for p in (build / TARGET, build / "tests" / TARGET) if p.exists()), None)
+    exe = next((p for d in (build, build / "tests") for p in (d / TARGET, d / (TARGET + ".exe")) if p.is_file()),
+               None)
     if exe is None:
         print(f"[FAIL] {TARGET} absent after build")
         return 1
