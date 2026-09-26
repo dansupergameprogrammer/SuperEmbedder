@@ -1302,6 +1302,98 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c62/regenerate_c62_texts.py" --check
 )
 
+# U2 cloud build -- U2-9's C62: the adversary's constructions (te267 U2-9, C62,
+# P:2794-2811), authored blind to the test author's own controls and run
+# through C62's own code, unchanged. C62 is registered under the
+# instrument-commissioning rule with built_by the test author and
+# constructed_by the adversary; its verdicts stay quarantined until every
+# construction below has fired on the dev box (P:2797-2799).
+#   u2_9_c62_calibration_comparison   every platform: C62's comparison code at
+#                                     each bound +-16 MiB, constructed readings
+#   u2_9_c62_calibration_reading      Windows: the must-accept calibration
+#                                     process (P:2806-2811), reader only
+#   u2_9_c62_must_reject_a            Windows + real artifact: C62's process on
+#                                     the pin-step build (P:2800-2802)
+#   u2_9_c62_must_reject_{forced,held}_*   Windows + real artifact: C62's
+#                                     process on the test-seam library
+#                                     (P:2803-2805; "held" is a build-time
+#                                     item under D-SLM7811: the forced arm
+#                                     cannot reach the steady comparison)
+#   u2_9_c62_must_reject_mechanism    every platform: the forced hooks on the
+#                                     synthetic cap-5,000 pair
+# Off Windows the Windows-only entries exit 77 (Skipped); on Windows without
+# SEMB_C12B_MODEL / SEMB_U1_TOKENIZER they report MISSING PREREQUISITE (77).
+add_executable(u2_9_c62_calibration_test u2_9_c62_calibration_test.cpp)
+target_link_libraries(u2_9_c62_calibration_test PRIVATE u2_9_c62_reader)
+add_test(NAME u2_9_c62_calibration_comparison COMMAND u2_9_c62_calibration_test --legs comparison)
+add_test(NAME u2_9_c62_calibration_reading COMMAND u2_9_c62_calibration_test --legs reading)
+set_tests_properties(u2_9_c62_calibration_reading PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 600)
+set(_semb_c62_real_args)
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+	set(_semb_c62_real_args --model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}")
+endif()
+add_test(
+	NAME u2_9_c62_must_reject_a
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_9_c62_pin_step_must_reject.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+		--generator "${CMAKE_GENERATOR}" --generator-platform "${CMAKE_GENERATOR_PLATFORM}"
+		--generator-toolset "${CMAKE_GENERATOR_TOOLSET}" --c-compiler "${CMAKE_C_COMPILER}"
+		--cxx-compiler "${CMAKE_CXX_COMPILER}" --config "$<CONFIG>" --prefix-path "${CMAKE_PREFIX_PATH}"
+		--python "${Python3_EXECUTABLE}" --short "${_semb_c62_short}" --long "${_semb_c62_long}"
+		${_semb_c62_real_args}
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+set_tests_properties(u2_9_c62_must_reject_a PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 7200)
+if(_semb_c62_real_args)
+	set_tests_properties(u2_9_c62_must_reject_a PROPERTIES LABELS "real_artifact")
+endif()
+set_property(GLOBAL PROPERTY SEMB_C62_TEXTS "${_semb_c62_short};${_semb_c62_long}")
+set_property(GLOBAL PROPERTY SEMB_C62_REAL_ARGS "${_semb_c62_real_args}")
+# The test-seam constructions link `superembedder_testseam`, defined by a call
+# deferred to the root, so they are added by one too.
+function(semb_add_u2_9_c62_constructions)
+	if(NOT TARGET superembedder_testseam)
+		return()
+	endif()
+	set(_dir "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
+	get_property(_texts GLOBAL PROPERTY SEMB_C62_TEXTS)
+	get_property(_real GLOBAL PROPERTY SEMB_C62_REAL_ARGS)
+	list(GET _texts 0 _short)
+	list(GET _texts 1 _long)
+	add_executable(u2_9_c62_must_reject_test EXCLUDE_FROM_ALL "${_dir}/u2_9_c62_must_reject_test.cpp")
+	target_link_libraries(u2_9_c62_must_reject_test PRIVATE u2_9_c62_process superembedder_testseam
+		superslm::superslm Threads::Threads)
+	target_include_directories(u2_9_c62_must_reject_test PRIVATE "${_dir}")
+	set(_driver "${Python3_EXECUTABLE}" "${_dir}/u2_9_c62_must_reject_check.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}" --config "$<CONFIG>")
+	add_test(NAME u2_9_c62_must_reject_mechanism COMMAND ${_driver} --mode mechanism
+		WORKING_DIRECTORY "${_dir}/..")
+	set_tests_properties(u2_9_c62_must_reject_mechanism PROPERTIES TIMEOUT 1200)
+	# name | mode | mc | leg
+	foreach(_c "forced_mc1|forced|1|long" "forced_mc4|forced|4|long" "held_short_mc1|held|1|short"
+	           "held_long_mc1|held|1|long" "held_batch_mc4|held|4|long")
+		string(REPLACE "|" ";" _f "${_c}")
+		list(GET _f 0 _name)
+		list(GET _f 1 _mode)
+		list(GET _f 2 _mc)
+		list(GET _f 3 _leg)
+		set(_args --mode ${_mode} --mc ${_mc} --leg ${_leg} --long "${_long}")
+		if(_mc EQUAL 1)
+			list(APPEND _args --short "${_short}")
+		endif()
+		add_test(NAME u2_9_c62_must_reject_${_name} COMMAND ${_driver} ${_args} ${_real}
+			WORKING_DIRECTORY "${_dir}/..")
+		set_tests_properties(u2_9_c62_must_reject_${_name} PROPERTIES SKIP_RETURN_CODE 77 RUN_SERIAL TRUE
+			TIMEOUT 3600)
+		if(_real)
+			set_tests_properties(u2_9_c62_must_reject_${_name} PROPERTIES LABELS "real_artifact")
+		endif()
+	endforeach()
+endfunction()
+if(DEFINED SEMB_LIBRARY_SOURCES)
+	cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_u2_9_c62_constructions)
+endif()
+
 # U2 cloud build -- U2-0 item 1's pin-carrier cell (the tokenizer manifest's
 # converter fields and the README's pin word equal the lock; must-rejects
 # mutation-proven in the cell) and the interpreter gate's red (a scratch
@@ -1761,6 +1853,7 @@ set_property(GLOBAL PROPERTY SEMB_PYTHON_GATE_TESTS
 	u2_1_c56_so_check
 	u2_5_c19_check
 	u2_7_c52d_c55_check
+	u2_9_c62_must_reject_mechanism
 	u2_9_workspace_cells_check)
 
 # Applied in the directory that registered each test: here for this file's
