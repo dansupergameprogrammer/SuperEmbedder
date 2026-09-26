@@ -147,7 +147,16 @@ void* Allocate(size_t n, size_t align) {
     }
   }
   void* p = nullptr;
-  const size_t a = align < sizeof(void*) ? sizeof(void*) : align;
+  // The replaced operator new keeps the contract it replaces: every block is
+  // aligned to at least __STDCPP_DEFAULT_NEW_ALIGNMENT__ (16 on x64). An 8 here
+  // is harmless under posix_memalign, which rounds to malloc's 16, but the
+  // UCRT's _aligned_malloc(n, 8) returns an address 8 mod 16, so every
+  // harness std::vector<float> handed to semb_encode or semb_query_encode was
+  // refused SEMB_MISALIGNED_BUFFER on Windows: follow-ups read red, and the
+  // encode rows counted K = 0.
+  constexpr size_t kMinAlign = __STDCPP_DEFAULT_NEW_ALIGNMENT__ < sizeof(void*) ? sizeof(void*)
+                                                                                 : __STDCPP_DEFAULT_NEW_ALIGNMENT__;
+  const size_t a = align < kMinAlign ? kMinAlign : align;
 #if defined(_WIN32)
   // Every hooked allocation is _aligned_malloc'd, so Release frees every one with _aligned_free.
   p = _aligned_malloc(n ? n : 1, a);
