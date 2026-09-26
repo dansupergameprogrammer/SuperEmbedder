@@ -54,7 +54,16 @@
 extern "C" semb_status semb_bank_debug_state(semb_bank bank, uint8_t out_fingerprint[32],
                                                int64_t* out_count, int64_t* out_dims);
 
+#include "superslm/matmul.h"
 #include "superslm/sha256.h"
+
+#if SUPERSLM_MATMUL_HAVE_SIMD_X64
+#if defined(_MSC_VER)
+#include <intrin.h>
+#else
+#include <cpuid.h>
+#endif
+#endif
 
 namespace fs = std::filesystem;
 
@@ -112,6 +121,63 @@ void Observed(const std::string& what) {
   std::fflush(stdout);
 }
 const char* Name(semb_status s) { const char* n = semb_status_name(s); return n ? n : "<NULL>"; }
+
+// The CPU tier this build dispatches to (te267 U2-3 item 8, P:1108-1114),
+// from producers other than the manifest writer. A forced build dispatches
+// to its forced tier: the dispatch field of the engine-build record this
+// build's configure verified (TE163_ENGINE_DISPATCH, from
+// SEMB_ENGINE_DISPATCH; an open reaches the bake only after the linked-engine
+// check matched that record, item 14). An auto build dispatches to the
+// host's best tier: this test's own CPUID and XGETBV reading, resolved by the
+// engine's tier rule (superslm::ResolveDotRowTier, the resolver the engine's
+// dispatch calls, exported for verification). A non-x64 build is scalar.
+// Returns "" when the build states no dispatch.
+std::string ExpectedDispatchedTier() {
+#ifdef TE163_ENGINE_DISPATCH
+  const std::string dispatch = TE163_ENGINE_DISPATCH;
+#else
+  const std::string dispatch;
+#endif
+  if (dispatch.empty() || dispatch != "auto") return dispatch;
+#if SUPERSLM_MATMUL_HAVE_SIMD_X64
+  unsigned r0[4] = {0, 0, 0, 0}, r1[4] = {0, 0, 0, 0}, r7[4] = {0, 0, 0, 0};
+  auto cpuid = [](unsigned leaf, unsigned sub, unsigned r[4]) {
+#if defined(_MSC_VER)
+    int v[4];
+    __cpuidex(v, static_cast<int>(leaf), static_cast<int>(sub));
+    for (int i = 0; i < 4; ++i) r[i] = static_cast<unsigned>(v[i]);
+#else
+    __cpuid_count(leaf, sub, r[0], r[1], r[2], r[3]);
+#endif
+  };
+  cpuid(0, 0, r0);
+  cpuid(1, 0, r1);
+  if (r0[0] >= 7) cpuid(7, 0, r7);
+  unsigned long long xcr0 = 0;
+  if (r1[2] & (1u << 27)) {  // OSXSAVE: XGETBV is available
+#if defined(_MSC_VER)
+    xcr0 = _xgetbv(0);
+#else
+    unsigned lo = 0, hi = 0;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    xcr0 = (static_cast<unsigned long long>(hi) << 32) | lo;
+#endif
+  }
+  switch (superslm::ResolveDotRowTier(static_cast<int>(r0[0]), static_cast<int>(r1[2]), static_cast<int>(r7[1]),
+                                      xcr0)) {
+    case 0:
+      return "sse2";
+    case 1:
+      return "avx2";
+    case 2:
+      return "avx512";
+    default:
+      return "unknown";
+  }
+#else
+  return "scalar";
+#endif
+}
 
 std::string Hex(const uint8_t* d, size_t n) {
   static const char* kHex = "0123456789abcdef";
@@ -508,13 +574,20 @@ int main(int argc, char** argv) {
       }
 
       // TE-187 bare cell 5 (row 5(c), D-SLM6409(c)); label convention
-      // renamed at U1 Slice 7 step 8 (D-SLM7212): object_code_sha,
-      // engine_object_code_sha, and machine_tier (the top-level field;
-      // provenance.witness.cpu_tier carries the same convention) carry the
-      // named not-computed label rather than a computed value -- a
-      // guard-vitality claim about what must NOT be true in 1.0, violated
-      // by any one of the four carrying a computed or fabricated value.
-      // Computing them is 1.x scope.
+      // renamed at U1 Slice 7 step 8 (D-SLM7212): object_code_sha and
+      // engine_object_code_sha carry the named not-computed label rather
+      // than a computed value -- a guard-vitality claim about what must NOT
+      // be true in 1.0, violated by either carrying a computed or fabricated
+      // value. Computing them is 1.x scope.
+      //
+      // U2-3 item 8 (te267, D-SLM7279 overriding D-SLM7212 for this one
+      // field, P:1108-1114): the top-level machine_tier and
+      // provenance.witness.cpu_tier no longer carry the label; each carries
+      // the tier this build dispatched to (sse2, avx2, avx512 or scalar),
+      // graded against ExpectedDispatchedTier() -- the configure-verified
+      // engine record's forced tier, or on an auto build the host's best
+      // tier from this test's own CPUID reading -- never a fixed string, so
+      // the same cell holds on an AVX2 host and an AVX-512 host.
       //
       // TE-272 (D-SLM7257, sec 7): semb_source_sha joins the same check.
       // It was excluded on D-SLM6443 item 2's reasoning -- that a
@@ -545,12 +618,15 @@ int main(int argc, char** argv) {
         Verdict(is_uncomputed_label(engine_object_code_sha),
                 label + "/cell1 provenance.engine_object_code_sha carries the not-computed-in-1.0 label "
                         "(D-SLM6409(c), D-SLM7212)", engine_object_code_sha);
-        Verdict(is_uncomputed_label(machine_tier),
-                label + "/cell1 the top-level machine_tier carries the not-computed-in-1.0 label "
-                        "(D-SLM6409(c), D-SLM7212)", machine_tier);
-        Verdict(is_uncomputed_label(witness_cpu_tier),
-                label + "/cell1 provenance.witness.cpu_tier carries the not-computed-in-1.0 label "
-                        "(D-SLM6409(c), D-SLM7212)", witness_cpu_tier);
+        const std::string want_tier = ExpectedDispatchedTier();
+        const bool want_tier_named =
+            want_tier == "sse2" || want_tier == "avx2" || want_tier == "avx512" || want_tier == "scalar";
+        Verdict(want_tier_named && machine_tier == want_tier,
+                label + "/cell1 the top-level machine_tier carries the dispatched tier (U2-3 item 8, D-SLM7279)",
+                "machine_tier=" + machine_tier + " dispatched=" + (want_tier.empty() ? "<unstated>" : want_tier));
+        Verdict(want_tier_named && witness_cpu_tier == want_tier,
+                label + "/cell1 provenance.witness.cpu_tier carries the dispatched tier (U2-3 item 8, D-SLM7279)",
+                "cpu_tier=" + witness_cpu_tier + " dispatched=" + (want_tier.empty() ? "<unstated>" : want_tier));
         Verdict(is_uncomputed_label(semb_source_sha),
                 label + "/cell1 provenance.semb_source_sha carries the not-computed-in-1.0 label "
                         "(D-SLM6409(c), D-SLM7257)", semb_source_sha);

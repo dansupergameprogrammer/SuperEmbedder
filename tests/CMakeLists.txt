@@ -979,6 +979,9 @@ add_test(
 add_executable(te163_bank_pair_test EXCLUDE_FROM_ALL te163_bank_pair_test.cpp)
 target_link_libraries(te163_bank_pair_test PRIVATE superembedder superslm::superslm)
 target_include_directories(te163_bank_pair_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+# U2-3 item 8: cell 1 grades the manifest's tier against the dispatch of the
+# engine-build record this configure verified (auto -> the host's best tier).
+target_compile_definitions(te163_bank_pair_test PRIVATE TE163_ENGINE_DISPATCH="${SEMB_ENGINE_DISPATCH}")
 
 set(_semb_te163_args --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}")
 if(NOT SEMB_C12B_MODEL STREQUAL "")
