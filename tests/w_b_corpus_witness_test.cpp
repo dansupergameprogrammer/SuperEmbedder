@@ -95,10 +95,12 @@
 // own sec 6 F-4 derivation -- see that section's own header comment.
 //
 // USAGE: --model <.sslm> --tokenizer <.sslm> --dims <n>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
@@ -114,6 +116,7 @@
 #include "semb_seam_abi_contract.h"
 #include "semb_wb_witness_abi_contract.h"
 #include "json_mini.h"
+#include "support/semb_epoch_oracle.h"
 
 // TE-155 item 1 (D-SLM6341): the independent recomputation below needs
 // context_cap to apply the SAME per-document cut
@@ -922,10 +925,18 @@ int main(int argc, char** argv) {
   //                           TU's own contract types) -- W-Q's leg folds
   //                           from the product's own accessor exactly the
   //                           way W-B's does (TE-228)
-  //   certification_epoch   = SHA-256 of docs/certified-builds.json's exact
-  //                           committed bytes, read by this cell from the
-  //                           repository file (sec 3.3's field row, sec
-  //                           4.1a; D-SLM7192; U1 Slice 7 step 4)
+  //   certification_epoch   = the identity file's digest in the verdict's
+  //                           form (U2-3 items 1 and 9, te267 P:1003-1006,
+  //                           P:1156-1158; D-SLM7309): SHA-256 of
+  //                           docs/certification-identity.json's exact bytes,
+  //                           read by this cell from the repository file, for
+  //                           a certified cell, else SHA-256("SEMB-UNCERTIFIED"
+  //                           || NUL || those bytes). The form is the verdict
+  //                           a one-document bake by the SAME encoder reports
+  //                           as its manifest's certified_cell; the verdict
+  //                           itself is graded independently of the product
+  //                           by tests/te264_fingerprint_final_check.py's
+  //                           epoch cell (tests/support/semb_epoch_oracle.h)
   //
   //   fingerprint = SHA-256(u64_le(32)||model_sha || u64_le(32)||tokenizer_sha
   //                          || u64_le(32)||template_sha256 || u64_le(32)||witness_sha
@@ -934,8 +945,8 @@ int main(int argc, char** argv) {
   // the full 32-byte digest over the five length-prefixed fields, no tag and
   // no truncation (sec 3.3; `SEMBP001` retired at U1 Slice 7 step 5). The
   // expected value takes no input from the product beyond the three witness
-  // accessor digests: the literals are typed from the plan and the
-  // certification document is read from the repository. It was RED by
+  // accessor digests and the verdict its own bake reports: the literals are
+  // typed from the plan and the identity file is read from the repository. It was RED by
   // design until U1 Slice 7's steps 3, 4 and 5 all landed (TE-264). The
   // mutation-proof below (this round's own casebook) is what confirms the
   // cell is actually sensitive to W-B's own fold rather than passing by
@@ -952,7 +963,7 @@ int main(int argc, char** argv) {
         "query\nQuery:";
     // sec 3.2's compiled-in end-token literal (D-8's third template field).
     constexpr char kEndToken[] = "<|endoftext|>";
-    const std::vector<uint8_t> cert_doc = ReadFile("docs/certified-builds.json");
+    const std::vector<uint8_t> cert_doc = ReadFile(semb_epoch_oracle::kIdentityPath);
 
     auto sha256 = [](const void* data, size_t n, uint8_t out[32]) {
       superslm::Sha256 h;
@@ -968,8 +979,8 @@ int main(int argc, char** argv) {
     const std::vector<uint8_t> tokenizer_bytes = ReadFile(a.tokenizer);
     if (model_bytes.empty() || tokenizer_bytes.empty() || cert_doc.empty()) {
       Verdict(false, "(fingerprint) semb_fingerprint equals the independently-recomputed five-field composition",
-              cert_doc.empty() ? "docs/certified-builds.json is absent or empty in the repository (U1 Slice 7 step 4 "
-                                 "writes it); the certification_epoch field cannot be recomputed"
+              cert_doc.empty() ? "docs/certification-identity.json is absent or empty in the repository (U2-3 "
+                                 "item 9 writes it); the certification_epoch field cannot be recomputed"
                                : "cannot read model/tokenizer artifact bytes");
     } else {
       uint8_t model_sha[32], tokenizer_sha[32];
@@ -998,14 +1009,41 @@ int main(int argc, char** argv) {
         uint8_t expected[32]{}, actual[32]{};
         bool composed = false;
         std::string wq_why;
-        if (Is(swq, "SEMB_OK") && Is(swb, "SEMB_OK")) {
+        // The verdict this encoder reports: one document baked by the same
+        // handle into a scratch stem, its manifest's certified_cell read.
+        std::string cell;
+        {
+          const std::filesystem::path dir =
+              std::filesystem::temp_directory_path() /
+              ("w_b_corpus_witness_test_verdict_" +
+               std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+          std::error_code ec;
+          std::filesystem::create_directories(dir, ec);
+          const std::string stem = (dir / "verdict").string();
+          const char doc_id[] = "verdict-0";
+          const char doc_text[] = "the verdict probe document";
+          semb_document doc{};
+          doc.struct_size = sizeof(doc);
+          doc.id = doc_id;
+          doc.id_len = sizeof(doc_id) - 1;
+          doc.utf8 = doc_text;
+          doc.utf8_len = sizeof(doc_text) - 1;
+          const semb_status sb = semb_bake_to_path(enc, &doc, 1, stem.c_str(), stem.size());
+          if (Is(sb, "SEMB_OK")) {
+            const std::vector<uint8_t> m = ReadFile(stem + ".semb.json");
+            cell = semb_epoch_oracle::CertifiedCellOf(std::string(m.begin(), m.end()));
+          }
+          wq_why = "bake=" + std::string(Name(sb)) + " certified_cell=" + (cell.empty() ? "<none>" : cell);
+          std::filesystem::remove_all(dir, ec);
+        }
+        if (Is(swq, "SEMB_OK") && Is(swb, "SEMB_OK") && !cell.empty()) {
           uint8_t witness_sha[32], certification_epoch[32];
           std::vector<uint8_t> witness;
           witness.insert(witness.end(), wa, wa + 32);
           witness.insert(witness.end(), wb, wb + 32);
           witness.insert(witness.end(), wq, wq + 32);
           sha256(witness.data(), witness.size(), witness_sha);
-          sha256(cert_doc.data(), cert_doc.size(), certification_epoch);
+          semb_epoch_oracle::EpochFor(cell, std::string(cert_doc.begin(), cert_doc.end()), certification_epoch);
 
           std::vector<uint8_t> composition;
           update_field(&composition, model_sha);
@@ -1031,7 +1069,7 @@ int main(int argc, char** argv) {
           wq_why += " raw=" + std::string(Name(se)) + " expected=" + Hex(expected) +
                     " actual=" + Hex(actual);
         } else {
-          wq_why = "wq=" + std::string(Name(swq)) + " wb=" + std::string(Name(swb));
+          wq_why += " wq=" + std::string(Name(swq)) + " wb=" + std::string(Name(swb));
         }
         Verdict(composed, "(fingerprint) semb_fingerprint equals the independently-recomputed five-field composition",
                 wq_why);

@@ -1480,9 +1480,11 @@ add_test(
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
 
-# Step 4 (c) (D-SLM7206): the C42 (a)-(c) release checker refuses its three
-# constructions on a synthetic four-member package, each on its own clause,
-# accepts the unedited package, and accepts the committed interim package.
+# Step 4 (c) (D-SLM7206), re-based by U2-3 (te267 Must-accepts): the C42 release
+# checker accepts a real-shaped two-cell interim package, refuses (a), (b), (c),
+# (c') and the code reviewer's m1-m3 on copies of it, each on its own clauses,
+# and accepts the committed package (owed to the dev box until the interim cells
+# are re-executed on the U2-3 tree).
 add_test(
 	NAME te264_c42_checker_check
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te264_c42_checker_check.py"

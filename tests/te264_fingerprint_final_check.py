@@ -11,16 +11,31 @@ clear components (`<stem>.semb.json`).  One cell per step, selected with
                with f the empty PS-N document frame, p the query-prefix
                literal of plan sec 2.1 and e the end-token literal
                `<|endoftext|>` of plan sec 3.2 -- all three typed here.
-  epoch        step 4 (a).  `certification_epoch` in the manifest equals the
-               SHA-256 of `docs/certified-builds.json`'s exact bytes, read by
-               this test from the repository file.
-  epoch-edit   step 4 (e), C42 (d)'s construction.  With the build current,
-               the committed document is edited by one byte (one
-               `pairwiseProofs[].evidence` string, same length, still valid
-               JSON), the probe is re-run WITHOUT rebuilding, and cell (a)'s
-               comparison must read RED against the edited file while the
-               epoch still equals the SHA-256 of the bytes the build compiled
-               in.  The file is restored byte for byte.
+  epoch        step 4 (a), re-keyed by U2-3 item 9 (te267 P:1003-1006,
+               P:1136-1137, P:1156-1158).  `certification_epoch` in the
+               manifest is the identity file's digest in the verdict's form:
+               SHA-256 of `docs/certification-identity.json`'s exact bytes
+               when the build resolves to a certified cell, else SHA-256 of
+               "SEMB-UNCERTIFIED" || NUL || those bytes.  The verdict is
+               decided HERE, independently of the product's own verdict, by
+               the plan's matching rule (P:1000-1002, P:1179-1181, the
+               descriptor fields P:1225-1227): exactly one `builds[]` entry of
+               the committed list whose nine descriptor fields equal the
+               manifest's `build_descriptor` and whose `cpuTier` equals its
+               `machine_tier`, paired once with every other cell under one
+               rowDigest.  The manifest's `certified_cell` must name the same
+               verdict.  The identity bytes are read from the repository file.
+  epoch-edit   step 4 (e), C42 (d)'s construction, gaining the identity-file
+               edit beside the list edit (P:1158-1159).  With the build
+               current, the probe is re-run WITHOUT rebuilding twice: once
+               with one byte of the committed list edited (one
+               `pairwiseProofs[].evidence` letter's case, same length, valid
+               JSON) -- the list is read, never digested (P:1007-1008), so
+               the epoch is unchanged; and once with one byte of the identity
+               file edited (one letter of its `product` value) -- the epoch
+               still equals the verdict form over the compiled-in bytes, so
+               (a)'s comparison reads RED against the edited file.  Both files
+               are restored byte for byte.
   untagged     step 5.  `semb_fingerprint_of` and the fingerprint
                `semb_encode` returns both equal the manifest's
                `encoder_fingerprint` (the untagged five-field digest) of the
@@ -28,8 +43,10 @@ clear components (`<stem>.semb.json`).  One cell per step, selected with
                bytes `SEMBP001`.
 
 Oracles: the literals are typed from the plan, and the certification
-document's bytes are read from the repository; no expected value is taken
-from the product.  The artifacts are the synthetic mechanism pair
+files' bytes are read from the repository; no expected value is taken from
+the product.  The epoch cells read the manifest's `build_descriptor` and
+`machine_tier` as the build's reported identity and decide the verdict from
+the committed list themselves.  The artifacts are the synthetic mechanism pair
 (tests/u1_raw_text_cells_check.py's `ensure_pair`) unless --model and
 --tokenizer are given; `template_sha256` and `certification_epoch` do not
 depend on the artifacts.
@@ -52,6 +69,15 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
 
 CERT_DOC = ROOT / "docs" / "certified-builds.json"
+IDENTITY_DOC = ROOT / "docs" / "certification-identity.json"
+# te267 P:1005: the uncertified epoch's prefix, typed from the plan: the ASCII
+# bytes and one NUL, then the identity file's bytes.
+UNCERTIFIED_PREFIX = b"SEMB-UNCERTIFIED\0"
+UNCERTIFIED_CELL = "uncertified"
+# te267 P:1225-1227: the descriptor fields a cell is matched on, each by
+# string equality.
+DESCRIPTOR_FIELDS = ("os", "isa", "toolchain", "stdlib", "configuration", "buildSystem", "dispatch",
+                     "compileFlags", "engineFlags")
 
 # Plan sec 2.1 (the query-side instruction prefix, character for character)
 # and plan sec 3.2 (the compiled-in end-token literal).  PS-N's document
@@ -124,6 +150,63 @@ def edit_one_evidence_byte(original: bytes) -> bytes | None:
     return None
 
 
+def fully_paired(cell: str, cells: set, proofs: list) -> bool:
+    """te267 P:1179-1181: the cell has exactly one pair with every other cell,
+    and every such pair carries one rowDigest."""
+    partners: dict[str, int] = {}
+    digests = set()
+    for p in proofs:
+        if not isinstance(p, dict) or cell not in (p.get("a"), p.get("b")):
+            continue
+        other = p.get("b") if p.get("a") == cell else p.get("a")
+        if other == cell or other not in cells or not p.get("rowDigest"):
+            return False
+        digests.add(p.get("rowDigest"))
+        partners[other] = partners.get(other, 0) + 1
+    return len(digests) <= 1 and all(partners.get(o) == 1 for o in cells - {cell})
+
+
+def decide_cell(list_bytes: bytes, manifest: dict) -> tuple[str | None, str]:
+    """The verdict by the plan's rule over the committed list and the
+    manifest's reported descriptor and tier; returns (cell id, or
+    UNCERTIFIED_CELL; or None when the manifest carries no descriptor) and a
+    diagnostic."""
+    descriptor, tier = manifest.get("build_descriptor"), manifest.get("machine_tier")
+    if not isinstance(descriptor, dict) or not isinstance(tier, str):
+        return None, f"manifest build_descriptor={descriptor!r} machine_tier={tier!r}"
+    try:
+        doc = json.loads(list_bytes.decode("utf-8"))
+        builds, proofs = doc["builds"], doc["pairwiseProofs"]
+    except (ValueError, KeyError, TypeError) as exc:
+        return UNCERTIFIED_CELL, f"the list does not parse as a list: {exc}"
+    cells = {b.get("id") for b in builds if isinstance(b, dict)}
+    matched = [b.get("id") for b in builds if isinstance(b, dict) and b.get("cpuTier") == tier
+               and all(isinstance(b.get(f), str) and b.get(f) == descriptor.get(f) for f in DESCRIPTOR_FIELDS)
+               and fully_paired(b.get("id"), cells, proofs)]
+    why = f"descriptor={json.dumps(descriptor, sort_keys=True)} tier={tier}; matching cells={matched}"
+    return (matched[0] if len(matched) == 1 else UNCERTIFIED_CELL), why
+
+
+def epoch_for(cell: str, identity_bytes: bytes) -> str:
+    """te267 P:1003-1006: the identity file's digest in the verdict's form."""
+    if cell == UNCERTIFIED_CELL:
+        return hashlib.sha256(UNCERTIFIED_PREFIX + identity_bytes).hexdigest()
+    return hashlib.sha256(identity_bytes).hexdigest()
+
+
+def edit_one_identity_byte(original: bytes) -> bytes | None:
+    """One byte of the identity file's `product` value changed, same length
+    and still valid JSON: its first ASCII letter has its case flipped."""
+    m = re.search(rb'"product"\s*:\s*"([^"\\]*)"', original)
+    if not m:
+        return None
+    for i in range(m.start(1), m.end(1)):
+        c = original[i:i + 1]
+        if c.isalpha():
+            return original[:i] + c.swapcase() + original[i + 1:]
+    return None
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--build-dir", type=Path, required=True)
@@ -137,13 +220,15 @@ def main(argv: list[str]) -> int:
     shutil.rmtree(scratch, ignore_errors=True)
     scratch.mkdir(parents=True)
 
-    backup = args.build_dir.resolve() / "_scratch" / "te264" / "certified-builds.json.backup"
-    if backup.exists():
-        # A prior epoch-edit run that did not reach its restore: put the
-        # committed bytes back before anything reads the document.
-        shutil.copyfile(backup, CERT_DOC)
-        backup.unlink()
-        print(f"[NOTE] restored {CERT_DOC} from a stale backup left by an interrupted epoch-edit run")
+    backups = {doc: args.build_dir.resolve() / "_scratch" / "te264" / f"{doc.name}.backup"
+               for doc in (CERT_DOC, IDENTITY_DOC)}
+    for doc, backup in backups.items():
+        if backup.exists():
+            # A prior epoch-edit run that did not reach its restore: put the
+            # committed bytes back before anything reads the document.
+            shutil.copyfile(backup, doc)
+            backup.unlink()
+            print(f"[NOTE] restored {doc} from a stale backup left by an interrupted epoch-edit run")
 
     model, tokenizer = args.model, args.tokenizer
     if not model or not tokenizer:
@@ -177,59 +262,87 @@ def main(argv: list[str]) -> int:
 
     elif args.cell == "epoch":
         got = manifest.get("certification_epoch")
-        # Diagnostic only, never the oracle: the U1 pending sentinel the
-        # provisional tree hashes in place of the document.
-        sentinel = hashlib.sha256(b"SEMB-CERTIFIED-BUILDS-PENDING-AFTER-U1-RAW-ENCODER-SLICE").hexdigest()
-        note = "; the manifest value is SHA-256 of the pending sentinel" if got == sentinel else ""
-        if not CERT_DOC.exists():
-            report.add(False, "step 4 (a): manifest certification_epoch equals SHA-256 of docs/certified-builds.json",
-                       f"docs/certified-builds.json is absent from the repository; manifest certification_epoch={got}{note}")
+        cell = ("step 4 (a), U2-3 item 9: manifest certification_epoch is the identity file's digest in the "
+                "verdict's form")
+        if not IDENTITY_DOC.exists() or not CERT_DOC.exists():
+            report.add(False, cell, f"identity file present={IDENTITY_DOC.exists()} list present={CERT_DOC.exists()}; "
+                                    f"manifest certification_epoch={got}")
         else:
-            want = hashlib.sha256(CERT_DOC.read_bytes()).hexdigest()
-            report.add(got == want,
-                       "step 4 (a): manifest certification_epoch equals SHA-256 of docs/certified-builds.json",
-                       f"expected={want} manifest={got}{note}")
+            identity = IDENTITY_DOC.read_bytes()
+            decided, why = decide_cell(CERT_DOC.read_bytes(), manifest)
+            if decided is None:
+                report.add(False, cell, f"the manifest carries no descriptor to decide the verdict from: {why}")
+            else:
+                want = epoch_for(decided, identity)
+                other = epoch_for(UNCERTIFIED_CELL if decided != UNCERTIFIED_CELL else "member", identity)
+                note = "; the manifest carries the OTHER form's value" if got == other else ""
+                if got == hashlib.sha256(CERT_DOC.read_bytes()).hexdigest():
+                    note = "; the manifest value is SHA-256 of the whole list (the pre-U2-3 epoch)"
+                report.add(got == want, cell, f"verdict={decided} ({why}); expected={want} manifest={got}{note}")
+                reported = manifest.get("certified_cell")
+                report.add(reported == decided,
+                           "step 4 (a), U2-3 item 1: the manifest's certified_cell names the verdict the plan's "
+                           "matching rule gives",
+                           f"decided={decided} manifest certified_cell={reported!r}")
 
     elif args.cell == "epoch-edit":
-        cell = "step 4 (e), C42 (d): a post-build edit of docs/certified-builds.json makes (a) read RED"
-        if not CERT_DOC.exists():
-            report.add(False, cell, "docs/certified-builds.json is absent; the construction has no document to edit")
+        cell = ("step 4 (e), C42 (d): post-build edits of the list and of the identity file leave the compiled-in "
+                "epoch, and make (a) read RED against the edited identity file")
+        if not CERT_DOC.exists() or not IDENTITY_DOC.exists():
+            report.add(False, cell, f"list present={CERT_DOC.exists()} identity file present={IDENTITY_DOC.exists()}; "
+                                    f"the construction has no document to edit")
             return 1
-        original = CERT_DOC.read_bytes()
-        original_sha = hashlib.sha256(original).hexdigest()
-        precondition = manifest.get("certification_epoch") == original_sha
-        report.add(precondition, "step 4 (e) precondition: (a) is green on the unedited document",
-                   f"expected={original_sha} manifest={manifest.get('certification_epoch')}")
-        edited = edit_one_evidence_byte(original)
-        if edited is None:
-            report.add(False, cell, "the document carries no pairwiseProofs[].evidence string with a letter to edit")
+        originals = {doc: doc.read_bytes() for doc in (CERT_DOC, IDENTITY_DOC)}
+        list_bytes, identity = originals[CERT_DOC], originals[IDENTITY_DOC]
+        decided, why = decide_cell(list_bytes, manifest)
+        if decided is None:
+            report.add(False, cell, f"the manifest carries no descriptor to decide the verdict from: {why}")
             return 1
-        try:
-            json.loads(edited.decode("utf-8"))
-            valid_json = True
-        except ValueError:
-            valid_json = False
-        shutil.copyfile(CERT_DOC, backup)
-        try:
-            CERT_DOC.write_bytes(edited)
-            edited_manifest, _, why2 = run_probe(probe, model, tokenizer, scratch / "probe_after_edit")
-        finally:
-            CERT_DOC.write_bytes(original)
-            restored = hashlib.sha256(CERT_DOC.read_bytes()).hexdigest() == original_sha
-            if restored:
-                backup.unlink(missing_ok=True)
-        report.add(restored, "step 4 (e): docs/certified-builds.json restored byte for byte",
-                   f"sha256={original_sha}")
-        if edited_manifest is None:
-            report.add(False, cell, f"probe after the edit: {why2}")
-        else:
+        compiled_epoch = epoch_for(decided, identity)
+        precondition = manifest.get("certification_epoch") == compiled_epoch
+        report.add(precondition, "step 4 (e) precondition: (a) is green on the unedited files",
+                   f"verdict={decided}; expected={compiled_epoch} manifest={manifest.get('certification_epoch')}")
+        edits = {CERT_DOC: edit_one_evidence_byte(list_bytes), IDENTITY_DOC: edit_one_identity_byte(identity)}
+        for doc, edited in edits.items():
+            if edited is None:
+                report.add(False, cell, f"{doc.name} carries no string this construction edits")
+                return 1
+        for doc, edited in edits.items():
+            try:
+                json.loads(edited.decode("utf-8"))
+                valid_json = True
+            except ValueError:
+                valid_json = False
+            original = originals[doc]
+            shutil.copyfile(doc, backups[doc])
+            try:
+                doc.write_bytes(edited)
+                edited_manifest, _, why2 = run_probe(probe, model, tokenizer, scratch / f"probe_after_{doc.stem}_edit")
+            finally:
+                doc.write_bytes(original)
+                restored = doc.read_bytes() == original
+                if restored:
+                    backups[doc].unlink(missing_ok=True)
+            report.add(restored, f"step 4 (e): {doc.name} restored byte for byte",
+                       f"sha256={hashlib.sha256(original).hexdigest()}")
+            shape = f"edit same-length={len(edited) == len(original)} valid-json={valid_json}"
+            if edited_manifest is None:
+                report.add(False, f"{cell} [{doc.name}]", f"probe after the edit: {why2}")
+                continue
             epoch = edited_manifest.get("certification_epoch")
-            edited_sha = hashlib.sha256(edited).hexdigest()
-            report.add(precondition and valid_json and len(edited) == len(original)
-                       and epoch != edited_sha and epoch == original_sha, cell,
-                       f"edit same-length={len(edited) == len(original)} valid-json={valid_json}; "
-                       f"epoch after edit={epoch}; SHA-256(edited file)={edited_sha}; "
-                       f"SHA-256(compiled-in bytes)={original_sha}")
+            if doc == CERT_DOC:
+                # The list is read and never digested (P:1007-1008): the epoch
+                # neither follows the edit nor moves.
+                report.add(precondition and valid_json and len(edited) == len(original)
+                           and epoch == compiled_epoch, f"{cell} [list edit]",
+                           f"{shape}; epoch after edit={epoch}; compiled-in epoch={compiled_epoch}; "
+                           f"SHA-256(edited list)={hashlib.sha256(edited).hexdigest()}")
+            else:
+                edited_epoch = epoch_for(decided, edited)
+                report.add(precondition and valid_json and len(edited) == len(original)
+                           and epoch == compiled_epoch and epoch != edited_epoch, f"{cell} [identity edit]",
+                           f"{shape}; epoch after edit={epoch}; verdict form over the edited file={edited_epoch}; "
+                           f"over the compiled-in bytes={compiled_epoch}")
 
     elif args.cell == "untagged":
         want = manifest.get("encoder_fingerprint")
