@@ -5,15 +5,33 @@
 // Public semb.h API only, on the pinned REAL model and tokenizer. Links the
 // member's own static product target and engine, with the global operator new
 // replaced: the armed call fails, once, the first allocation of at least
-// 100,000 B it makes. The document is the adversary's mid.txt (603 bytes, 133
-// positions).
+// 100,000 B it makes. The document has the adversary's mid.txt's measured
+// shape, 133 positions (P:3183-3184).
 //
-// SETUP PRECONDITION, ASSERTED ON EVERY LEG: the fired size equals the leg's
-// predicted value, stated before the run -- on the encode legs the batch
-// worker's `codes` buffer, n x hidden = 133 x 1,024 = 136,192 B; on the query
-// leg, 154,663 B (the adversary's measurement on cl.exe). A fired size that
-// differs emits NO verdict for that leg (reported as PRECONDITION), and the
-// difference is attributed before the cell runs again.
+// THE TEXTS. The adversary's mid.txt (603 B) and short.txt were cut from a
+// pool that no longer exists. Their replacements are committed:
+// tests/fixtures/c63/mid.txt (fiqa-295971, 645 B, 132 content tokens + the
+// terminator = 133 positions) and short.txt (fiqa-103125, 56 B), selected by
+// tests/fixtures/c63/regenerate_c63_texts.py from a committed FiQA pool whose
+// token ids were measured by the real tokenizer; hashes in
+// c63-texts.manifest.json. The cell asserts both files' byte counts first.
+//
+// SETUP PRECONDITION, ASSERTED ON EVERY LEG (P:3185-3192): the fired size
+// equals the leg's predicted value, stated before the run: positions x
+// hidden, the batch worker's `codes` buffer (std::vector<int8_t>), plus what
+// the standard library's allocator adds to that request before it reaches
+// operator new. On the encode legs, 133 x 1,024 = 136,192 B; under the MSVC
+// STL (cl.exe and clang-cl) a request of 4,096 B or more is over-allocated for
+// 32-byte alignment by sizeof(void*) + 31 = 39 B on x64 Release, which is
+// the 136,231 B TE-408's hook read on cl.exe [M]; on libstdc++ it adds 0. On
+// the query leg, the composed query's positions x 1,024 + the same overhead:
+// the adversary's text read 154,663 B = 151 x 1,024 + 39 on cl.exe [M]. The
+// replacement mid.txt's composed-query position count is NOT yet measured
+// (it needs the real tokenizer; see the manifest), so until it is stated
+// (--query-positions, or kQueryPositions below once measured) the query legs
+// do not run and report PRECONDITION. A fired size that differs emits NO
+// verdict for that leg (reported as PRECONDITION), and the difference is
+// attributed before the cell runs again.
 //
 // Legs, at max_concurrency 1 and 4 (at 4, four consecutive armed calls fail
 // before the follow-ups, each able to take one slot):
@@ -29,7 +47,8 @@
 // RED TODAY on cl.exe at 1 and 4 (the plan's reading); GREEN today on
 // clang-cl for the adapter TU and on the prototype. On GCC it is run for its
 // reading. Real artifact only: without --model/--tokenizer/--mid/--short it
-// reports MISSING PREREQUISITE and exits 0.
+// reports MISSING PREREQUISITE and exits 0 (tests/CMakeLists.txt passes the
+// committed texts; the model and tokenizer are the configure's).
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -91,6 +110,33 @@ std::string ReadAll(const std::string& p) {
 }
 const char* Name(semb_status s) { const char* n = semb_status_name(s); return n ? n : "?"; }
 
+// The committed texts' measured shape (tests/fixtures/c63/c63-texts.manifest.json).
+constexpr size_t kMidBytes = 645;
+constexpr size_t kShortBytes = 56;
+constexpr size_t kMidPositions = 133;
+// The query leg's composed positions for mid.txt: 0 = not yet measured.
+constexpr size_t kQueryPositions = 0;
+constexpr size_t kHidden = 1024;
+
+// What the standard library's allocator adds to a std::vector request before
+// calling operator new. The MSVC STL over-allocates requests of at least
+// 4,096 B on x86/x64 for 32-byte alignment: sizeof(void*) + 31 B, plus one
+// more pointer (a sentinel) under _DEBUG. libstdc++ and libc++ add nothing.
+size_t AllocatorOverhead(size_t request) {
+#if defined(_MSVC_STL_VERSION) && (defined(_M_X64) || defined(_M_IX86)) && !defined(_M_ARM64EC)
+  if (request >= 4096) {
+#ifdef _DEBUG
+    return 2 * sizeof(void*) + 31;
+#else
+    return sizeof(void*) + 31;
+#endif
+  }
+#endif
+  (void)request;
+  return 0;
+}
+size_t Predicted(size_t positions) { return positions * kHidden + AllocatorOverhead(positions * kHidden); }
+
 struct Vec {
   semb_status st = SEMB_OK;
   std::vector<float> v;
@@ -129,7 +175,8 @@ Vec Query(semb_query q, const std::string& t, uint32_t dims) {
 
 int main(int argc, char** argv) {
   std::string model, tokenizer, mid_path, short_path, scratch = ".";
-  size_t predicted_encode = 136192, predicted_query = 154663;
+  size_t mid_positions = kMidPositions, query_positions = kQueryPositions;
+  size_t predicted_encode = 0, predicted_query = 0;  // 0 = derive from positions
   for (int i = 1; i + 1 < argc; ++i) {
     const std::string k = argv[i];
     if (k == "--model") model = argv[++i];
@@ -139,19 +186,36 @@ int main(int argc, char** argv) {
     else if (k == "--scratch") scratch = argv[++i];
     else if (k == "--predicted-encode") predicted_encode = std::strtoull(argv[++i], nullptr, 10);
     else if (k == "--predicted-query") predicted_query = std::strtoull(argv[++i], nullptr, 10);
+    else if (k == "--mid-positions") mid_positions = std::strtoull(argv[++i], nullptr, 10);
+    else if (k == "--query-positions") query_positions = std::strtoull(argv[++i], nullptr, 10);
   }
+  if (predicted_encode == 0) predicted_encode = Predicted(mid_positions);
+  if (predicted_query == 0 && query_positions != 0) predicted_query = Predicted(query_positions);
   if (model.empty() || tokenizer.empty() || mid_path.empty() || short_path.empty()) {
-    std::printf("[MISSING PREREQUISITE] C63: needs the real model, its tokenizer, and the adversary's mid.txt "
-                "(603 B, 133 positions) and short.txt -- owed to the dev box (cl.exe members at 1 and 4)\n");
+    std::printf("[MISSING PREREQUISITE] C63: needs the real model, its tokenizer, and the committed mid.txt "
+                "(645 B, 133 positions) and short.txt -- owed to the dev box (cl.exe members at 1 and 4)\n");
     return 0;
   }
   const std::string mid = ReadAll(mid_path), shrt = ReadAll(short_path);
-  Verdict(mid.size() == 603, "C63 setup: mid.txt is the adversary's 603-byte document",
+  Verdict(mid.size() == kMidBytes, "C63 setup: mid.txt is the committed 645-byte, 133-position document",
           std::to_string(mid.size()) + " bytes");
+  Verdict(shrt.size() == kShortBytes, "C63 setup: short.txt is the committed 56-byte document",
+          std::to_string(shrt.size()) + " bytes");
+  std::printf("C63 predicted fired sizes, stated before the run: encode legs %zu B (%zu positions); query leg %s\n",
+              predicted_encode, mid_positions,
+              predicted_query ? (std::to_string(predicted_query) + " B").c_str()
+                              : "NOT STATED (the composed query's positions are unmeasured)");
   for (const uint32_t mc : {1u, 4u}) {
     for (int leg = 0; leg < 3; ++leg) {
       const char* leg_name = leg == 0 ? "(i) semb_encode" : leg == 1 ? "(ii) semb_encode_batch" : "(iii) semb_query_encode";
       const std::string tag = std::string("C63 ") + leg_name + " armed, mc " + std::to_string(mc);
+      if (leg == 2 && predicted_query == 0) {
+        std::printf("[PRECONDITION] %s: the query leg's predicted fired size is not stated (mid.txt's composed-query "
+                    "positions are unmeasured; tests/fixtures/c63/regenerate_c63_texts.py --measure) -- no verdict\n",
+                    tag.c_str());
+        ++g_fail;
+        continue;
+      }
       semb_config cfg{};
       cfg.struct_size = sizeof(cfg);
       cfg.model_path = model.data();

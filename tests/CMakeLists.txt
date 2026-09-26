@@ -1199,23 +1199,48 @@ if(NOT WIN32)
 endif()
 
 # U2 cloud build -- U2-10's C63, the adversary's keeper: real model and
-# tokenizer (SEMB_C12B_MODEL, SEMB_U1_TOKENIZER) and the adversary's two texts
-# (mid.txt, 603 B / 133 positions; short.txt). Any of them unset -> the cell
-# reports MISSING PREREQUISITE and passes; set, it carries real_artifact.
-set(SEMB_C63_MID_TEXT "" CACHE FILEPATH "C63: the adversary's mid.txt (603 B, 133 positions)")
-set(SEMB_C63_SHORT_TEXT "" CACHE FILEPATH "C63: the adversary's short.txt")
+# tokenizer (SEMB_C12B_MODEL, SEMB_U1_TOKENIZER) and two texts. The
+# adversary's texts (mid.txt, 603 B / 133 positions; short.txt) came from a
+# pool that no longer exists; the committed replacements (tests/fixtures/c63/,
+# mid.txt 645 B / 133 positions, short.txt 56 B; hashes in
+# c63-texts.manifest.json) are used when the two cache paths are empty (the
+# default, and what a build directory configured before them holds); set, a
+# path overrides them. Model or tokenizer unset -> the
+# cell reports MISSING PREREQUISITE and passes; set, it carries real_artifact.
+# SEMB_C63_QUERY_POSITIONS is mid.txt's composed-query position count, stated
+# before the run once measured (regenerate_c63_texts.py --measure); unstated,
+# the query legs report PRECONDITION.
+set(SEMB_C63_MID_TEXT "" CACHE FILEPATH "C63: mid.txt; empty = the committed fixtures/c63/mid.txt (645 B, 133 positions)")
+set(SEMB_C63_SHORT_TEXT "" CACHE FILEPATH "C63: short.txt; empty = the committed fixtures/c63/short.txt (56 B)")
+set(_semb_c63_mid "${SEMB_C63_MID_TEXT}")
+set(_semb_c63_short "${SEMB_C63_SHORT_TEXT}")
+if(_semb_c63_mid STREQUAL "")
+	set(_semb_c63_mid "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c63/mid.txt")
+endif()
+if(_semb_c63_short STREQUAL "")
+	set(_semb_c63_short "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c63/short.txt")
+endif()
+set(SEMB_C63_QUERY_POSITIONS "" CACHE STRING "C63: mid.txt's composed-query positions, once measured")
 add_executable(u2_10_c63_keeper_test u2_10_c63_keeper_test.cpp)
 target_link_libraries(u2_10_c63_keeper_test PRIVATE superembedder superslm::superslm Threads::Threads)
 set(_semb_c63_args "")
-if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "" AND NOT SEMB_C63_MID_TEXT STREQUAL ""
-   AND NOT SEMB_C63_SHORT_TEXT STREQUAL "")
+if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
 	set(_semb_c63_args --model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}"
-		--mid "${SEMB_C63_MID_TEXT}" --short "${SEMB_C63_SHORT_TEXT}" --scratch "${CMAKE_BINARY_DIR}")
+		--mid "${_semb_c63_mid}" --short "${_semb_c63_short}" --scratch "${CMAKE_BINARY_DIR}")
+	if(NOT SEMB_C63_QUERY_POSITIONS STREQUAL "")
+		list(APPEND _semb_c63_args --query-positions "${SEMB_C63_QUERY_POSITIONS}")
+	endif()
 endif()
 add_test(NAME u2_10_c63_keeper COMMAND u2_10_c63_keeper_test ${_semb_c63_args})
 if(_semb_c63_args)
 	set_tests_properties(u2_10_c63_keeper PROPERTIES LABELS "real_artifact")
 endif()
+# C63's committed texts are the ones the manifest hashes, and the query prefix
+# the regenerator measures with is the product's (no tokenizer, no network).
+add_test(
+	NAME u2_10_c63_texts_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c63/regenerate_c63_texts.py" --check
+)
 
 # U2 cloud build -- U2-0 item 1's pin-carrier cell (the tokenizer manifest's
 # converter fields and the README's pin word equal the lock; must-rejects
