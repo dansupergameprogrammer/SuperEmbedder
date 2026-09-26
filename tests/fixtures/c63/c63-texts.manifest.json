@@ -1,0 +1,37 @@
+{
+  "schema": "semb_c63_texts_manifest_v1",
+  "minted": "2026-09-26",
+  "minted_by": "tests/fixtures/c63/regenerate_c63_texts.py --write (U2 cloud build)",
+  "cell": "te267 sec 5 U2-10, C63 (the adversary's keeper)",
+  "replaces": "the adversary's mid.txt (603 B, 133 positions) and short.txt (34 B), whose source pool was deleted",
+  "source": {
+    "repository": "the records repository",
+    "commit": "9fa21eb9",
+    "jsonl": "Claude/Brunel/te439-runs/fiqa-long80/fiqa-long80.jsonl",
+    "jsonl_sha256": "831cf2ed0718dede12e7129b74f15b7ddcc8c5d3a2e10cff0f7b1c50ab1da896",
+    "tokens": "Claude/Brunel/te439-runs/fiqa-long80/fiqa-long80.tokens.tsv",
+    "tokens_sha256": "9453461fd3132f57ff42e395b2973f3f064b44a20882cc18ca9c7227be214e8a",
+    "tokenizer": "Qwen3-Embedding-0.6B at snapshot 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3, add_special_tokens=False"
+  },
+  "selection_rule": "short.txt: the pool's first row (its shortest document). mid.txt: the pool's one document with exactly 132 content tokens, whole (132 + the appended terminator 151643 = 133 positions). Each is the row's text, UTF-8, no trailing newline.",
+  "files": {
+    "mid.txt": {
+      "id": "fiqa-295971",
+      "sha256": "1c75ba2bc23c5a995b78729098614f7a817b8525d41bd9c78ae3153817995adf",
+      "bytes": 645,
+      "content_tokens": 132,
+      "positions": 133,
+      "positions_source": "measured: the pool's committed token ids"
+    },
+    "short.txt": {
+      "id": "fiqa-103125",
+      "sha256": "e6fa40a4aaf3bf7a35340e380bc4c4d1ae603e93ca4e0f93bdf07f5c40453ecf",
+      "bytes": 56,
+      "content_tokens": 15,
+      "positions": 16,
+      "positions_source": "measured: the pool's committed token ids"
+    }
+  },
+  "query_leg_positions": null,
+  "query_leg_positions_source": "OWED to the dev box: regenerate_c63_texts.py --measure <snapshot dir> (the composed query is not the prefix's count plus the document's)"
+}
