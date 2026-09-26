@@ -1862,6 +1862,12 @@ set_property(GLOBAL PROPERTY SEMB_PYTHON_GATE_TESTS
 	u2_1_c56_so_check
 	u2_5_c19_check
 	u2_7_c52d_c55_check
+	u2_9_c62_must_reject_a
+	u2_9_c62_must_reject_forced_mc1
+	u2_9_c62_must_reject_forced_mc4
+	u2_9_c62_must_reject_held_batch_mc4
+	u2_9_c62_must_reject_held_long_mc1
+	u2_9_c62_must_reject_held_short_mc1
 	u2_9_c62_must_reject_mechanism
 	u2_9_workspace_cells_check)
 
