@@ -32,6 +32,6 @@
       "positions_source": "measured: the pool's committed token ids"
     }
   },
-  "query_leg_positions": null,
-  "query_leg_positions_source": "OWED to the dev box: regenerate_c63_texts.py --measure <snapshot dir> (the composed query is not the prefix's count plus the document's)"
+  "query_leg_positions": 152,
+  "query_leg_positions_source": "measured on the dev box with the real tokenizer: regenerate_c63_texts.py --measure <snapshot dir> (the composed query is not the prefix's count plus the document's); every C63 leg then passed on the dev box's MSVC run"
 }

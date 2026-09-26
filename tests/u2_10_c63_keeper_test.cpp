@@ -26,10 +26,12 @@
 // the 136,231 B TE-408's hook read on cl.exe [M]; on libstdc++ it adds 0. On
 // the query leg, the composed query's positions x 1,024 + the same overhead:
 // the adversary's text read 154,663 B = 151 x 1,024 + 39 on cl.exe [M]. The
-// replacement mid.txt's composed-query position count is NOT yet measured
-// (it needs the real tokenizer; see the manifest), so until it is stated
-// (--query-positions, or kQueryPositions below once measured) the query legs
-// do not run and report PRECONDITION. A fired size that differs emits NO
+// replacement mid.txt's composed query is 152 positions, measured on the dev
+// box with the real tokenizer (regenerate_c63_texts.py --measure; the
+// manifest's query_leg_positions), so the query leg predicts 152 x 1,024 =
+// 155,648 B, + 39 B under the MSVC STL. --query-positions overrides it; 0
+// means not stated, and the query legs then report PRECONDITION. A fired
+// size that differs emits NO
 // verdict for that leg (reported as PRECONDITION), and the difference is
 // attributed before the cell runs again.
 //
@@ -114,8 +116,10 @@ const char* Name(semb_status s) { const char* n = semb_status_name(s); return n 
 constexpr size_t kMidBytes = 645;
 constexpr size_t kShortBytes = 56;
 constexpr size_t kMidPositions = 133;
-// The query leg's composed positions for mid.txt: 0 = not yet measured.
-constexpr size_t kQueryPositions = 0;
+// The query leg's composed positions for mid.txt (the query instruction
+// prefix + mid.txt + the terminator), measured on the dev box with the real
+// tokenizer; 0 would mean not stated.
+constexpr size_t kQueryPositions = 152;
 constexpr size_t kHidden = 1024;
 
 // What the standard library's allocator adds to a std::vector request before

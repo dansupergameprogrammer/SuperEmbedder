@@ -17,10 +17,17 @@
 // every handle the driver opened closing SEMB_OK with the live count back at
 // its post-warm-up value.
 //
-// Each arm runs in a forked child, so a termination (std::terminate from an
+// Each arm runs in a child process, so a termination (std::terminate from an
 // escaped exception on a worker thread, or a noexcept frame) is read as a
-// verdict for that k, never as the harness dying: the parent re-forks from
-// k + 1 and reports the terminating k.
+// verdict for that k, never as the harness dying: the parent starts a new
+// child from k + 1 and reports the terminating k. On POSIX the child is a
+// fork() of the parent, read through a pipe and waitpid(). On Windows (cl.exe
+// and clang-cl, where C64 (c)'s reds live) the parent re-launches this
+// executable with the same command line plus --c64-child-arm <arm>
+// --c64-child-k0 <k0>, its stdout redirected into a pipe the parent reads,
+// and waits with WaitForSingleObject; the child rebuilds the same driver from
+// the same arguments and runs exactly what the forked child runs. The
+// parent runs no product code on either path.
 //
 // EXPECTED STATUSES COME FROM ITEM 3 (U2-10 Builds item 3's family table),
 // in this source (`ExpectedFor` below), never from tools/c_boundary_table.json
@@ -47,11 +54,28 @@
 // Output lines (parsed by tests/u2_10_c64_class_sweep_check.py):
 //   K <row> <driver> <mc> <K>
 //   ARM <arm> k=<k> status=<s> want=<w> fired=<0|1> escaped=<0|1> leak=<d> follow=<0|1> close=<0|1>
-//   TERMINATED <arm> k=<k> signal=<n>
+//   TERMINATED <arm> k=<k> signal=<n>        (POSIX: the signal, or -exit status)
+//   TERMINATED <arm> k=<k> exit=0x<code>     (Windows: the child's exit code; an
+//                                             unhandled SEH exception's code, 0x3
+//                                             for abort(), 0x8E for the watchdog)
 //   SUMMARY <row> <driver> <mc> <arm> K=<K> pass=<p> fail=<f> first_fail_k=<k> first_fail=<detail>
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+#include <malloc.h>
+#include <process.h>
+#else
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -124,7 +148,13 @@ void* Allocate(size_t n, size_t align) {
   }
   void* p = nullptr;
   const size_t a = align < sizeof(void*) ? sizeof(void*) : align;
+#if defined(_WIN32)
+  // Every hooked allocation is _aligned_malloc'd, so Release frees every one with _aligned_free.
+  p = _aligned_malloc(n ? n : 1, a);
+  if (!p) throw std::bad_alloc();
+#else
   if (posix_memalign(&p, a, n ? n : 1) != 0) throw std::bad_alloc();
+#endif
   live.fetch_add(1, std::memory_order_relaxed);
   if (n != 0 && n == watch_size.load(std::memory_order_relaxed)) watch_hits.fetch_add(1);
   return p;
@@ -132,7 +162,11 @@ void* Allocate(size_t n, size_t align) {
 void Release(void* p) {
   if (!p) return;
   live.fetch_sub(1, std::memory_order_relaxed);
+#if defined(_WIN32)
+  _aligned_free(p);
+#else
   std::free(p);
+#endif
 }
 void Disarm() { fail_at.store(0); }
 
@@ -192,6 +226,14 @@ void operator delete[](void* p, std::align_val_t, const std::nothrow_t&) noexcep
 namespace fs = std::filesystem;
 
 namespace {
+
+int ProcessId() {
+#if defined(_WIN32)
+  return _getpid();
+#else
+  return static_cast<int>(getpid());
+#endif
+}
 
 // ---------------------------------------------------------------------------
 // Item 3's family table (U2-10 Builds item 3), in this source.
@@ -356,7 +398,7 @@ struct Docs {
 std::string BankStem() {
   static std::string stem;
   if (!stem.empty()) return stem;
-  stem = (fs::path(g.scratch) / ("c64_bank_" + std::to_string(getpid()))).string();
+  stem = (fs::path(g.scratch) / ("c64_bank_" + std::to_string(ProcessId()))).string();
   semb_encoder e = OpenEnc(1);
   Docs d({"a short bank document"});
   if (!e || semb_bake_to_path(e, d.docs.data(), 1, stem.data(), stem.size()) != SEMB_OK) {
@@ -558,7 +600,7 @@ int32_t BatchCall(semb_encoder e, const std::vector<std::string>& texts) {
 }
 int32_t BakeCall(semb_encoder e, const std::vector<std::string>& texts, const std::string& tag) {
   Docs d(texts);
-  const std::string stem = (fs::path(g.scratch) / ("c64_bake_" + tag + "_" + std::to_string(getpid()))).string();
+  const std::string stem = (fs::path(g.scratch) / ("c64_bake_" + tag + "_" + std::to_string(ProcessId()))).string();
   return SW(semb_bake_to_path(e, d.docs.data(), d.docs.size(), stem.data(), stem.size()));
 }
 int32_t InterimBatchCall(SembInterimEncoder* e, const std::vector<std::vector<int32_t>>& docs) {
@@ -1190,13 +1232,24 @@ bool BuildDriver(const std::string& row, const std::string& drv, uint32_t mc, Dr
 }
 
 // ---------------------------------------------------------------------------
-// The sweep (one arm, from k0, in a forked child).
+// The sweep (one arm, from k0, in a child process).
 // ---------------------------------------------------------------------------
+#if defined(_WIN32)
+// The Windows child's stdout is the parent's pipe (binary mode, set at the
+// child's start); every protocol line is flushed as it is written, so a
+// child that terminates leaves every line it finished in the pipe.
+void Line(const std::string& s) {
+  const std::string l = s + "\n";
+  std::fwrite(l.data(), 1, l.size(), stdout);
+  std::fflush(stdout);
+}
+#else
 int g_out_fd = 1;
 void Line(const std::string& s) {
   const std::string l = s + "\n";
   (void)!write(g_out_fd, l.data(), l.size());
 }
+#endif
 
 struct Counted {
   uint64_t k = 0;
@@ -1240,9 +1293,31 @@ Counted WarmAndCount(Driver& d) {
 }
 
 // Per-k watchdog (seconds): a call or follow-up that stalls (a gate or a slot
-// never given back makes the next waiter wait forever) ends the child with
-// SIGALRM, which the parent reports as TERMINATED at that k -- red, not a hang.
+// never given back makes the next waiter wait forever) ends the child, which
+// the parent reports as TERMINATED at that k -- red, not a hang. POSIX:
+// alarm(), so SIGALRM ends it. Windows has no alarm(): one watchdog thread,
+// started with CreateThread before the warm-up (so it allocates nothing
+// through the hooked operator new, and nothing it does is counted), polls the
+// armed deadline and ends the process with kWatchdogExitCode.
 unsigned g_watchdog_s = 0;
+#if defined(_WIN32)
+constexpr UINT kWatchdogExitCode = 0x8E;  // 128 + SIGALRM's 14, by analogy
+std::atomic<unsigned long long> g_deadline_ms{0};  // GetTickCount64 value; 0 = disarmed
+DWORD WINAPI WatchdogThread(LPVOID) {
+  for (;;) {
+    const unsigned long long d = g_deadline_ms.load();
+    if (d != 0 && GetTickCount64() > d) TerminateProcess(GetCurrentProcess(), kWatchdogExitCode);
+    Sleep(100);
+  }
+}
+void StartWatchdog() {
+  const HANDLE t = CreateThread(nullptr, 0, WatchdogThread, nullptr, 0, nullptr);
+  if (t) CloseHandle(t);
+}
+void ArmWatchdog(unsigned s) { g_deadline_ms.store(s ? GetTickCount64() + 1000ull * s : 0ull); }
+#else
+void ArmWatchdog(unsigned s) { alarm(s); }
+#endif
 
 void RunArm(Driver& d, int arm, uint64_t K, uint64_t k0, int64_t live_after_warm, int32_t want) {
   Ctx c;
@@ -1253,7 +1328,7 @@ void RunArm(Driver& d, int arm, uint64_t K, uint64_t k0, int64_t live_after_warm
       open = true;
     }
     Line("BEGIN " + std::to_string(arm) + " k=" + std::to_string(k));
-    if (g_watchdog_s) alarm(g_watchdog_s);
+    if (g_watchdog_s) ArmWatchdog(g_watchdog_s);
     const int64_t live_before = hook::live.load();
     hook::fired.store(0);
     hook::mode.store(arm);
@@ -1285,7 +1360,7 @@ void RunArm(Driver& d, int arm, uint64_t K, uint64_t k0, int64_t live_after_warm
       << " escaped=" << (escaped ? 1 : 0) << " leak=" << (d.growth ? 0 : leak) << " follow=" << (follow ? 1 : 0)
       << " close=" << (close_ok ? 1 : 0) << " leak_after_close=" << leak_after_close;
     Line(o.str());
-    alarm(0);
+    ArmWatchdog(0);
   }
   if (open) {
     const bool close_ok = Closes(c);
@@ -1295,10 +1370,146 @@ void RunArm(Driver& d, int arm, uint64_t K, uint64_t k0, int64_t live_after_warm
   }
 }
 
+// What one child runs, on both platforms: the warm-up and the counting run
+// (K and the per-k cost), then the arm from k0, then DONE.
+void ChildBody(Driver& d, bool leaf, int arm, uint64_t k0, int32_t want) {
+  const Counted cnt = WarmAndCount(d);
+  Line("K " + std::to_string(cnt.k));
+  {
+    // Per-k cost of an armed step: the call and its follow-up, plus the
+    // setup and closes when the driver runs them per k.
+    const double per_k = cnt.call_s + cnt.follow_s + (d.fresh_per_k ? cnt.setup_s + cnt.close_s : 0.0);
+    char b[128];
+    std::snprintf(b, sizeof(b), "PERK %.6f", per_k);
+    Line(b);
+    g_watchdog_s = static_cast<unsigned>(std::max(120.0, 30.0 * per_k));
+  }
+  if (!leaf && !g.count_only) RunArm(d, arm, cnt.k, k0, cnt.live_after_warm, want);
+  Line("DONE");
+}
+
+// One child's reading: everything it wrote, and how it ended when it did not
+// reach DONE ("signal=<n>" on POSIX, "exit=0x<code>" on Windows).
+struct ChildRun {
+  std::string out;
+  std::string ended;
+};
+
+#if defined(_WIN32)
+// Appends one argument to a Windows command line, quoted by the rules
+// CommandLineToArgvW and the CRT's argv parser undo.
+void AppendArg(std::wstring& cmd, const std::wstring& a) {
+  cmd += L' ';
+  if (!a.empty() && a.find_first_of(L" \t\n\v\"") == std::wstring::npos) {
+    cmd += a;
+    return;
+  }
+  cmd += L'"';
+  for (size_t i = 0;; ++i) {
+    size_t slashes = 0;
+    while (i < a.size() && a[i] == L'\\') { ++i; ++slashes; }
+    if (i == a.size()) { cmd.append(slashes * 2, L'\\'); break; }
+    if (a[i] == L'"') { cmd.append(slashes * 2 + 1, L'\\'); cmd += L'"'; }
+    else { cmd.append(slashes, L'\\'); cmd += a[i]; }
+  }
+  cmd += L'"';
+}
+
+// Re-launches this executable with its own command line plus the child
+// arguments, stdout into a pipe, and reads it to EOF before waiting.
+bool SpawnChild(int arm, uint64_t k0, ChildRun* run) {
+  SECURITY_ATTRIBUTES sa{};
+  sa.nLength = sizeof(sa);
+  sa.bInheritHandle = TRUE;
+  HANDLE rd = nullptr, wr = nullptr;
+  if (!CreatePipe(&rd, &wr, &sa, 0)) return false;
+  SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);  // only the write end is the child's
+  HANDLE err = nullptr;
+  DuplicateHandle(GetCurrentProcess(), GetStdHandle(STD_ERROR_HANDLE), GetCurrentProcess(), &err, 0, TRUE,
+                  DUPLICATE_SAME_ACCESS);
+  std::wstring cmd = GetCommandLineW();
+  AppendArg(cmd, L"--c64-child-arm");
+  AppendArg(cmd, std::to_wstring(arm));
+  AppendArg(cmd, L"--c64-child-k0");
+  AppendArg(cmd, std::to_wstring(k0));
+  std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+  buf.push_back(L'\0');
+  wchar_t exe[32768];
+  const DWORD n = GetModuleFileNameW(nullptr, exe, 32768);
+  STARTUPINFOW si{};
+  si.cb = sizeof(si);
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdInput = nullptr;
+  si.hStdOutput = wr;
+  si.hStdError = err ? err : wr;
+  PROCESS_INFORMATION pi{};
+  const BOOL ok = n != 0 && n < 32768 &&
+                  CreateProcessW(exe, buf.data(), nullptr, nullptr, TRUE, 0, nullptr, nullptr, &si, &pi);
+  CloseHandle(wr);
+  if (err) CloseHandle(err);
+  if (!ok) {
+    CloseHandle(rd);
+    return false;
+  }
+  CloseHandle(pi.hThread);
+  char tmp[4096];
+  DWORD got = 0;
+  while (ReadFile(rd, tmp, sizeof(tmp), &got, nullptr) && got > 0) run->out.append(tmp, got);
+  CloseHandle(rd);
+  WaitForSingleObject(pi.hProcess, INFINITE);
+  DWORD code = 0;
+  GetExitCodeProcess(pi.hProcess, &code);
+  CloseHandle(pi.hProcess);
+  char b[32];
+  std::snprintf(b, sizeof(b), "exit=0x%lX", static_cast<unsigned long>(code));
+  run->ended = b;
+  return true;
+}
+
+// The child's side: no error-reporting dialog or abort message box may stall
+// a terminating child (the parent reads its exit code instead), and its
+// stdout is binary so the parent reads LF lines.
+void PrepareChild() {
+  SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+#if defined(_MSC_VER) || defined(_UCRT)
+  _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
+  _setmode(_fileno(stdout), _O_BINARY);
+  StartWatchdog();
+}
+#else
+// fork()s the child, which runs ChildBody writing into a pipe and _exit()s;
+// the parent reads the pipe to EOF, then waitpid()s.
+bool SpawnChild(Driver& d, bool leaf, int arm, uint64_t k0, int32_t want, ChildRun* run) {
+  int fds[2];
+  if (pipe(fds) != 0) return false;
+  const pid_t pid = fork();
+  if (pid == 0) {
+    close(fds[0]);
+    g_out_fd = fds[1];
+    ChildBody(d, leaf, arm, k0, want);
+    close(fds[1]);
+    _exit(0);
+  }
+  close(fds[1]);
+  char tmp[4096];
+  ssize_t r;
+  while ((r = read(fds[0], tmp, sizeof(tmp))) > 0) run->out.append(tmp, static_cast<size_t>(r));
+  close(fds[0]);
+  int wst = 0;
+  waitpid(pid, &wst, 0);
+  const int sig = WIFSIGNALED(wst) ? WTERMSIG(wst) : -WEXITSTATUS(wst);
+  run->ended = "signal=" + std::to_string(sig);
+  return true;
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char** argv) {
   bool print_expected = false;
+  int child_arm = -1;  // >= 0: this process is a Windows child (--c64-child-arm)
+  uint64_t child_k0 = 1;
   for (int i = 1; i < argc; ++i) {
     const std::string k = argv[i];
     auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -1311,6 +1522,8 @@ int main(int argc, char** argv) {
     else if (k == "--k-stride") g.k_stride = std::max<uint64_t>(1, std::stoull(next()));
     else if (k == "--count-only") g.count_only = true;
     else if (k == "--print-expected") print_expected = true;
+    else if (k == "--c64-child-arm") child_arm = std::stoi(next());
+    else if (k == "--c64-child-k0") child_k0 = std::stoull(next());
     else if (k == "--arms") {
       g.arms.clear();
       std::stringstream ss(next());
@@ -1338,6 +1551,20 @@ int main(int argc, char** argv) {
   const Expected ex = ExpectedFor(g.row);
   const bool leaf = std::string(ex.family) == "leaf";
   std::fflush(stdout);
+#if defined(_WIN32)
+  if (child_arm >= 0) {
+    // The Windows child: exactly the forked child's work, then exit 0.
+    PrepareChild();
+    ChildBody(d, leaf, child_arm, child_k0, child_arm == 2 ? ex.catch_all : ex.alloc);
+    std::fflush(stdout);
+    return 0;
+  }
+#else
+  if (child_arm >= 0) {
+    std::fprintf(stderr, "--c64-child-arm is the Windows child's; POSIX children are forked\n");
+    return 2;
+  }
+#endif
 
   // K is counted in a child too, so the parent never runs product code.
   uint64_t K = 0;
@@ -1348,41 +1575,18 @@ int main(int argc, char** argv) {
     std::string first_fail;
     bool counted = false;
     for (int attempt = 0; attempt < 100000; ++attempt) {
-      int fds[2];
-      if (pipe(fds) != 0) return 4;
-      const pid_t pid = fork();
-      if (pid == 0) {
-        close(fds[0]);
-        g_out_fd = fds[1];
-        const Counted cnt = WarmAndCount(d);
-        Line("K " + std::to_string(cnt.k));
-        {
-          // Per-k cost of an armed step: the call and its follow-up, plus the
-          // setup and closes when the driver runs them per k.
-          const double per_k = cnt.call_s + cnt.follow_s + (d.fresh_per_k ? cnt.setup_s + cnt.close_s : 0.0);
-          char b[128];
-          std::snprintf(b, sizeof(b), "PERK %.6f", per_k);
-          Line(b);
-          g_watchdog_s = static_cast<unsigned>(std::max(120.0, 30.0 * per_k));
-        }
-        if (!leaf && !g.count_only) RunArm(d, arm, cnt.k, k0, cnt.live_after_warm, want);
-        Line("DONE");
-        close(fds[1]);
-        _exit(0);
-      }
-      close(fds[1]);
-      std::string buf;
-      char tmp[4096];
-      ssize_t r;
-      while ((r = read(fds[0], tmp, sizeof(tmp))) > 0) buf.append(tmp, static_cast<size_t>(r));
-      close(fds[0]);
-      int wst = 0;
-      waitpid(pid, &wst, 0);
-      std::istringstream lines(buf);
+      ChildRun child;
+#if defined(_WIN32)
+      if (!SpawnChild(arm, k0, &child)) return 4;
+#else
+      if (!SpawnChild(d, leaf, arm, k0, want, &child)) return 4;
+#endif
+      std::istringstream lines(child.out);
       std::string line;
       uint64_t last_begin = 0;
       bool done = false;
       while (std::getline(lines, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.rfind("K ", 0) == 0) {
           const uint64_t kk = std::stoull(line.substr(2));
           if (!counted) {
@@ -1420,12 +1624,24 @@ int main(int argc, char** argv) {
         } else if (line == "DONE") {
           done = true;
         }
+#if defined(_WIN32)
+        else if (!line.empty()) {
+          // Anything else the child printed (a SETUP-FAIL line): a forked
+          // child's printf reaches the parent's stdout directly; this one's
+          // reached the pipe, so it is passed on.
+          std::printf("%s\n", line.c_str());
+        }
+#endif
       }
       if (done) break;
-      const int sig = WIFSIGNALED(wst) ? WTERMSIG(wst) : -WEXITSTATUS(wst);
-      std::printf("TERMINATED %d k=%llu signal=%d\n", arm, static_cast<unsigned long long>(last_begin), sig);
+      std::printf("TERMINATED %d k=%llu %s\n", arm, static_cast<unsigned long long>(last_begin), child.ended.c_str());
       ++fail;
-      if (!first_fail_k) { first_fail_k = last_begin; first_fail = "terminated signal " + std::to_string(sig); }
+      if (!first_fail_k) {
+        std::string how = child.ended;
+        std::replace(how.begin(), how.end(), '=', ' ');
+        first_fail_k = last_begin;
+        first_fail = "terminated " + how;
+      }
       if (last_begin == 0) break;  // died before any armed call: nothing to resume
       k0 = last_begin + g.k_stride > K ? (last_begin < K ? K : K + 1) : last_begin + g.k_stride;
       if (k0 > K) break;
