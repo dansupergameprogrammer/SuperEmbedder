@@ -1598,6 +1598,17 @@ add_test(
 		--cmake-executable "${CMAKE_COMMAND}" --product-build "${CMAKE_BINARY_DIR}"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+# U2-1 / U2-3 items 1 and 14: `semb --version` prints the descriptor, the
+# dispatched tier, the cell verdict and its epoch, the certification line and
+# the linked engine's own report, each graded against a producer the CLI does
+# not write.
+add_test(
+	NAME u2_1_version_line_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_1_version_line_check.py"
+		--semb "$<TARGET_FILE:semb>" --build-dir "${CMAKE_BINARY_DIR}"
+		--engine-provenance "${SEMB_ENGINE_PROVENANCE_FILE}" --configuration "$<CONFIG>"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
 add_test(
 	NAME te331_u2_c42_clauses_check
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/te331_u2_c42_clauses_check.py"
