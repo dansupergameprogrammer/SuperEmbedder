@@ -770,20 +770,27 @@ def probe_descriptor(clone: Path, build: Path, family: str, windows: bool) -> di
     probe = build / "semb_descriptor_probe.cpp"
     probe.write_text(_PROBE_TEXT, encoding="utf-8", newline="\n")
     msvc_style = family in ("msvc", "clangcl")
-    out, k = [argv[0]], 1
+    out, k, had_dashdash = [argv[0]], 1, False
     while k < len(argv):
         a = argv[k]
-        if a in ("-o", "-MF", "-MT", "-MQ"):
+        if not msvc_style and a in ("-o", "-MF", "-MT", "-MQ"):
             k += 2
             continue
         k += 1
-        if a in ("-c", "/c", "-MD", "-MMD", "-MP", "/showIncludes", "-showIncludes") or \
-                compile_flags.OUTPUT_JOINED.match(a):
+        if msvc_style and a == "--":  # clang-cl: every later argument is an input file
+            had_dashdash = True
+            continue
+        # On the MSVC frontend -MD/-MT select the C runtime, a code option, so they stay (as in the identity
+        # compile); on GCC they are dependency-file options.
+        if a in ("-c", "/c", "/showIncludes", "-showIncludes") or (not msvc_style and a in ("-MD", "-MMD", "-MP")) \
+                or compile_flags.OUTPUT_JOINED.match(a):
             continue
         if Path(a).name == Path(entry["file"]).name and a.replace("\\", "/").endswith(KERNEL_TU):
             continue
         out.append(a)
     out += (["/E", f"/I{DESCRIPTOR_HEADER_DIR}"] if msvc_style else ["-E", f"-I{DESCRIPTOR_HEADER_DIR}"])
+    if had_dashdash:
+        out.append("--")
     out.append(str(probe))
     proc = subprocess.run(out, cwd=entry.get("directory") or str(build), capture_output=True, text=True,
                           errors="replace")
