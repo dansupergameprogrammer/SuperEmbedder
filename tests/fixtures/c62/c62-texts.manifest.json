@@ -1,0 +1,30 @@
+{
+  "schema": "semb_c62_texts_manifest_v1",
+  "minted": "2026-09-26",
+  "minted_by": "tests/fixtures/c62/regenerate_c62_texts.py --write (U2 cloud build)",
+  "cell": "te267 sec 5 U2-9, C62 (resident memory of a real process)",
+  "replaces": "TE-398's short.txt (34 B, 5 content tokens) and long.txt (4,423 B, 1,111 content tokens), whose source pool was deleted",
+  "source": {
+    "repository": "the records repository",
+    "commit": "9fa21eb9",
+    "jsonl": "Claude/Brunel/te439-runs/fiqa-long80/fiqa-long80.jsonl",
+    "jsonl_sha256": "831cf2ed0718dede12e7129b74f15b7ddcc8c5d3a2e10cff0f7b1c50ab1da896"
+  },
+  "selection_rule": "short.txt: the pool's first row's text, its first 17 characters. long.txt: every row's text in file order joined by one space, its first 5,131 characters (the cut falls before a space). Each is UTF-8, no trailing newline.",
+  "files": {
+    "short.txt": {
+      "sha256": "38da9c5df56fe547773e7ab74779ef3c04843d3677b170e565bb7e32481f18e7",
+      "bytes": 17,
+      "content_tokens": 5,
+      "positions": 6
+    },
+    "long.txt": {
+      "sha256": "197800557c261aa1225a9920d77c9c238cd86585aa60ee4ffa286df23530d2c9",
+      "bytes": 5131,
+      "content_tokens": 1111,
+      "positions": 1112
+    }
+  },
+  "content_tokens_source": "counted with SuperSLM's TokenizerView over the engine's committed Qwen2.5 tokenizer artifact (tests/fixtures/qwen2.5-1.5b.tok.sslm in SuperSLM), which reproduced all 80 pool rows' committed Qwen3-Embedding-0.6B ids exactly",
+  "content_tokens_owed": "the count under the Qwen3-Embedding-0.6B tokenizer itself: C62 asserts it with the product's tokenizer artifact before any per-document verdict, and regenerate_c62_texts.py --measure <snapshot dir> counts it on the dev box"
+}

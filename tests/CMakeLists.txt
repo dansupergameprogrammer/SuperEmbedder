@@ -1247,6 +1247,66 @@ add_test(
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c63/regenerate_c63_texts.py" --check
 )
 
+# U2 cloud build -- U2-9's C62, resident memory of a real process (te267 U2-9,
+# C62). Windows only (GetProcessMemoryInfo, QueryWorkingSetEx; P:2845), the
+# public semb.h API on the shipped static library, the real model and
+# tokenizer (SEMB_C12B_MODEL, SEMB_U1_TOKENIZER), one process per
+# max_concurrency (P:2722): u2_9_c62_resident_memory_mc1 ((a), (b)) and _mc4
+# ((a), (c)). Exit 77 is ctest's Skipped: on every other platform the
+# executable reports SKIPPED (platform), and on Windows without the model or
+# tokenizer it reports MISSING PREREQUISITE; neither passes. Set, the model
+# and tokenizer make the two tests real_artifact. They run serially: another
+# test's memory pressure can trim the ballast, and a trimmed page emits no
+# verdict. The texts default to the committed tests/fixtures/c62/ pair.
+#
+# Two libraries carry C62's code for the adversary's constructions (P:2794-2810):
+#   u2_9_c62_reader   the reading and comparison code alone, no product library
+#                     (a calibration process links only this; u2_9_c62_reader.h)
+#   u2_9_c62_process  one C62 process with hooks; links NO product library, so
+#                     a construction links it with `superembedder_testseam` in
+#                     place of `superembedder` (u2_9_c62_process.h)
+# Both build on every platform, so GCC compiles everything but the Win32 bodies.
+set(SEMB_C62_SHORT_TEXT "" CACHE FILEPATH "C62: the 5-token text; empty = the committed fixtures/c62/short.txt (17 B)")
+set(SEMB_C62_LONG_TEXT "" CACHE FILEPATH "C62: the 1,111-token text; empty = the committed fixtures/c62/long.txt (5,131 B)")
+set(_semb_c62_short "${SEMB_C62_SHORT_TEXT}")
+set(_semb_c62_long "${SEMB_C62_LONG_TEXT}")
+if(_semb_c62_short STREQUAL "")
+	set(_semb_c62_short "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c62/short.txt")
+endif()
+if(_semb_c62_long STREQUAL "")
+	set(_semb_c62_long "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c62/long.txt")
+endif()
+add_library(u2_9_c62_reader STATIC u2_9_c62_reader.cpp)
+target_include_directories(u2_9_c62_reader PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+if(WIN32)
+	target_link_libraries(u2_9_c62_reader PUBLIC psapi)
+endif()
+add_library(u2_9_c62_process STATIC u2_9_c62_process.cpp)
+target_include_directories(u2_9_c62_process PUBLIC "${CMAKE_SOURCE_DIR}/include")
+target_link_libraries(u2_9_c62_process PUBLIC u2_9_c62_reader superslm::superslm)
+add_executable(u2_9_c62_resident_memory_test u2_9_c62_resident_memory_test.cpp)
+target_link_libraries(u2_9_c62_resident_memory_test PRIVATE u2_9_c62_process superembedder superslm::superslm)
+foreach(_semb_c62_mc 1 4)
+	set(_semb_c62_args --mc ${_semb_c62_mc} --long "${_semb_c62_long}")
+	if(_semb_c62_mc EQUAL 1)
+		list(APPEND _semb_c62_args --short "${_semb_c62_short}")
+	endif()
+	if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+		list(APPEND _semb_c62_args --model "${SEMB_C12B_MODEL}" --tokenizer "${SEMB_U1_TOKENIZER}")
+	endif()
+	add_test(NAME u2_9_c62_resident_memory_mc${_semb_c62_mc} COMMAND u2_9_c62_resident_memory_test ${_semb_c62_args})
+	set_tests_properties(u2_9_c62_resident_memory_mc${_semb_c62_mc} PROPERTIES
+		SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 1800)
+	if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
+		set_tests_properties(u2_9_c62_resident_memory_mc${_semb_c62_mc} PROPERTIES LABELS "real_artifact")
+	endif()
+endforeach()
+# C62's committed texts are the ones the manifest hashes (no tokenizer, no network).
+add_test(
+	NAME u2_9_c62_texts_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c62/regenerate_c62_texts.py" --check
+)
+
 # U2 cloud build -- U2-0 item 1's pin-carrier cell (the tokenizer manifest's
 # converter fields and the README's pin word equal the lock; must-rejects
 # mutation-proven in the cell) and the interpreter gate's red (a scratch
