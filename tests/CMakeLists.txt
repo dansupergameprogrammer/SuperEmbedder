@@ -1301,6 +1301,10 @@ foreach(_semb_c62_mc 1 4)
 		set_tests_properties(u2_9_c62_resident_memory_mc${_semb_c62_mc} PROPERTIES LABELS "real_artifact")
 	endif()
 endforeach()
+# C62's floor precondition (P:2733-2734) at the comparison level, every platform.
+add_executable(u2_9_c62_reader_floor_test u2_9_c62_reader_floor_test.cpp)
+target_link_libraries(u2_9_c62_reader_floor_test PRIVATE u2_9_c62_reader)
+add_test(NAME u2_9_c62_reader_floor COMMAND u2_9_c62_reader_floor_test)
 # C62's committed texts are the ones the manifest hashes (no tokenizer, no network).
 add_test(
 	NAME u2_9_c62_texts_check
