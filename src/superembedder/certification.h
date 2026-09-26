@@ -56,6 +56,11 @@ const Verdict& ProcessVerdict();
 // SHA-256 of the compiled-in list's bytes (the manifest's certified_builds_sha256; provenance only).
 const std::array<uint8_t, 32>& CompiledListSha256();
 
+// The certification line this build compiled in: the identity file's `line` member ("" when it carries no
+// integer one) and the SHA-256 of the identity file's exact bytes (a certified cell's epoch).
+std::string IdentityLine();
+const std::array<uint8_t, 32>& IdentitySha256();
+
 }  // namespace semb::certification
 
 #endif  // SUPEREMBEDDER_CERTIFICATION_H

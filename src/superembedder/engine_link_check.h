@@ -35,6 +35,9 @@ Verdict CheckLinkedEngine();
 // The linked engine's build record as it reports it ("" when it reports none).
 std::string LinkedBuildRecord();
 
+// The SSLM_ISA_* bits named, comma-separated, in bit order ("none" for no bit set).
+std::string IsaNames(uint64_t bits);
+
 // The linked engine's forced tier as a descriptor `dispatch` string: auto, scalar, sse2, avx2 or avx512;
 // "unknown" when the identity is unreadable.
 std::string LinkedDispatch();
