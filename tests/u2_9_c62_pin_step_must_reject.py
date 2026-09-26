@@ -8,9 +8,26 @@ The pin-step build is the last build before U2-9 (P:2648): the SuperSLM v1.8.0 p
 the U2 line (PIN_STEP_COMMIT, the second parent of the pin-step merge). This driver
 
   1. exports that commit's tree with `git archive` into the build's scratch (no worktree is registered),
-     copies in THIS build's superslm.lock (the same engine the U2 tip links), and configures and builds
-     its shipped `superembedder` static library with this build's generator, compilers, configuration
-     and engine prefix;
+     and configures and builds its shipped `superembedder` static library with this build's generator,
+     compilers, configuration and engine prefix -- the SAME installed engine the U2 tip links. Two files
+     outside the product's source are taken from THIS tree, and nothing else:
+       - superslm.lock. The pin step's own lock and this one name the same tag (v1.8.0) and commit
+         (9ed52bb); they differ only in `tree=`, the digest of the engine's members, which U2-3 item 13
+         (F33) made platform-free by reading installed members with CRLF as LF. The pin step's committed
+         lock carries the old rule's Windows value (7fde276c...); the engine installed for the U2 tip
+         declares the new rule's value (ffad2444...) in its provenance.
+       - tools/pin-superslm/provenance_lib.py, the digest rule the pin step's configure guard recomputes
+         the tree with. With the pin step's own rule, NO lock passes that guard against this install:
+         the pin step's lock fails its provenance check (7fde276c... against the declared ffad2444...),
+         and this build's lock fails its recompute (the old rule gives 7fde276c... on Windows, where the
+         generated package files carry CRLF), which is the SEMB_ENGINE_INSTALL_DIVERGED the dev box read.
+     So the guard runs whole and unmodified except for that one rule, and still re-reads every engine
+     member's bytes and refuses a dirty or divergent install; the members' bytes are the pinned v1.8.0
+     engine's under both rules (the rule differs only on CRLF in CMake-generated package files). The
+     alternative -- the pin step's own lock with an engine re-pinned by the pin step's own tool -- would
+     link a separately built engine library rather than the one the U2 tip is measured against. None of
+     this enters the pin step's library: the guard runs at configure, and src/ and include/ are the pin
+     step's own;
   2. configures tests/c62_pin_step/ standalone, which compiles C62's own process (this tree's
      u2_9_c62_reader.cpp, u2_9_c62_process.cpp, u2_9_c62_resident_memory_test.cpp, unchanged) against
      the pin step's public header and links the pin step's library;
@@ -115,7 +132,13 @@ def main(argv: list[str]) -> int:
             t.extractall(src, filter="data")
         else:
             t.extractall(src)
+    # The lock and the digest rule, from this tree (see the module docstring, step 1).
     shutil.copyfile(REPO_ROOT / "superslm.lock", src / "superslm.lock")
+    shutil.copyfile(REPO_ROOT / "tools" / "pin-superslm" / "provenance_lib.py",
+                    src / "tools" / "pin-superslm" / "provenance_lib.py")
+    print(f"pin step {PIN_STEP_COMMIT}: superslm.lock and tools/pin-superslm/provenance_lib.py taken from this "
+          f"tree (same tag and commit; the platform-free tree digest, U2-3 item 13); src/ and include/ are the "
+          f"pin step's own")
     gen = ["-G", a.generator]
     if a.generator_platform:
         gen += ["-A", a.generator_platform]

@@ -142,9 +142,14 @@ bool BeginExcursion(Ballast* b) {
   b->base = CommitAndTouch(gap + static_cast<uint64_t>(kMiB), &b->bytes);
   if (!b->base) return false;
   b->raised = Read();
-  b->floor_ok = b->raised.ok;
+  b->floor_ok = FloorAboveEarlierPeaks(b->before, b->raised);
+  return true;
+}
+
+bool FloorAboveEarlierPeaks(const Counters& before, const Counters& raised) {
+  if (!before.ok || !raised.ok) return false;
   for (int c = 0; c < kCounters; ++c)
-    if (b->raised.peak[c] != b->raised.current[c]) b->floor_ok = false;
+    if (raised.current[c] < before.peak[c]) return false;
   return true;
 }
 
@@ -162,6 +167,8 @@ void EndExcursion(Ballast* b, const Counters& base, bool action_ok, LegReading* 
   r.before = b->before;
   r.raised = b->raised;
   r.floor_ok = b->floor_ok;
+  for (int c = 0; c < kCounters; ++c)
+    r.floor_gap_bytes[c] = b->raised.peak[c] > b->raised.current[c] ? b->raised.peak[c] - b->raised.current[c] : 0;
   if (r.ballast_committed) {
     // Step 4.
     r.nonresident_pages = NonResidentPages(b->base, b->bytes);
@@ -238,8 +245,13 @@ void PrintLeg(std::FILE* out, const char* cell, const LegReading& leg) {
   }
   if (leg.ballasted) {
     std::fprintf(out, "  precondition, ballast committed: %s\n", leg.ballast_committed ? "yes" : "NO");
-    std::fprintf(out, "  precondition, each peak equals its current value after the ballast: %s\n",
+    std::fprintf(out,
+                 "  precondition, each raised current value is at or above its peak before the ballast "
+                 "(P:2733): %s\n",
                  leg.floor_ok ? "yes" : "NO (no verdict)");
+    std::fprintf(out, "  raised peak - raised current: WS %llu B, private %llu B (reported; errs toward refusal)\n",
+                 static_cast<unsigned long long>(leg.floor_gap_bytes[kWorkingSet]),
+                 static_cast<unsigned long long>(leg.floor_gap_bytes[kPrivateBytes]));
     std::fprintf(out, "  precondition, every ballast page resident after the action: %s",
                  leg.resident_ok ? "yes\n" : "NO (no verdict): ");
     if (!leg.resident_ok)

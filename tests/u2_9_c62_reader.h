@@ -36,8 +36,13 @@
 //   1. Read both current values and both peaks. Commit and touch a ballast
 //      block 1 MiB larger than the larger of the two gaps (peak - current),
 //      rounded up to a page, every page written with distinct bytes (so page
-//      combining cannot merge them), and read again. PRECONDITION: each peak
-//      now equals its current value; otherwise the leg emits no verdict.
+//      combining cannot merge them), and read again. PRECONDITION (P:2733-
+//      2734, "each peak now equals its current value, so the floor is above
+//      every earlier peak"): each counter's raised current value is at or
+//      above that counter's peak before the ballast, i.e. the floor is above
+//      every earlier peak; otherwise the leg emits no verdict. See
+//      FloorAboveEarlierPeaks for why this, and not byte equality of the
+//      raised peak and current value, is the tested property.
 //   2. Run the action, then read both peaks and both current values.
 //   3. Excursion = each peak (after) - its pre-action value (the raised
 //      floor). Steady = each current value (after) - the ballast's size -
@@ -103,8 +108,27 @@ struct Ballast {
   uint64_t bytes = 0;      // committed and touched; what steady subtracts
   Counters before;         // step 1's first reading
   Counters raised;         // step 1's second reading: the pre-action values
-  bool floor_ok = false;   // precondition 1: raised.peak == raised.current, both counters
+  bool floor_ok = false;   // precondition 1: FloorAboveEarlierPeaks(before, raised)
 };
+
+// Precondition 1 (P:2733-2734). True iff both readings are ok and, for each
+// counter, raised.current >= before.peak: the pre-encode value (the floor)
+// is at or above every peak the process reached before the ballast, so no
+// earlier peak (the open's, a prior encode's) can enter the excursion.
+//
+// Why not raised.peak == raised.current, the plan's literal wording: the
+// wording is the means, "so the floor is above every earlier peak" is the
+// end. On Windows the raised peak exceeds the raised current value by a few
+// pages (< 0.1 MiB, dev box, MSVC): the working set dips between the last
+// ballast touch and the reading. Any such gap was reached during the ballast
+// step itself, above every earlier peak, so it is not the open's history. It
+// can only raise the excursion (peak after - raised current), never lower
+// it, so it errs toward refusal; its size is printed with each leg
+// (floor_gap_bytes). The comparison is exact, in bytes, with no slack: the
+// ballast is 1 MiB larger than the larger gap, so a healthy step clears the
+// earlier peak by about 1 MiB, and a raised current even one byte below an
+// earlier peak is refused.
+bool FloorAboveEarlierPeaks(const Counters& before, const Counters& raised);
 
 struct LegReading {
   // Inputs and raw readings.
@@ -119,6 +143,9 @@ struct LegReading {
   bool ballast_committed = false;
   bool floor_ok = false;
   bool resident_ok = false;
+  // raised.peak - raised.current per counter (0 if the peak is not above it):
+  // reported, not gated; see FloorAboveEarlierPeaks.
+  uint64_t floor_gap_bytes[kCounters]{};
   uint64_t nonresident_pages = 0;
   // Step 3, in MiB, per counter. Excursion is defined only on ballasted legs.
   double steady_mib[kCounters]{};
