@@ -566,6 +566,27 @@ bool InterimFollowLong(Ctx& c) {
   SembInterimEncoder* e = c.ienc ? c.ienc : c.out_ienc;
   return e && ref.st == kSembInterimOk && Seam(e, Ids(4097), 0, kSembForwardLegChunkBatched) == ref;
 }
+// The seam's two-chunk driver's follow-up: its own 200-position document in
+// two chunk-batched calls on the same handle, equal to a fresh handle's. The
+// document is C = 256; a short follow-up would leave the slot holding P * 64
+// after any k that emptied it, and the next armed call's growth (item 3,
+// P:2496-2497: release first, then allocate) failed at its own index would
+// read -1 on the live count by design (P:3257-3259 exempts only the growth
+// driver from the equality). Following up with the driver's own document keeps
+// the slot at C = 256 before every armed call, so no armed call on this driver
+// grows from a held buffer and the equality holds at every k. The held-buffer
+// growth site is the growth driver's, graded by its closes.
+bool InterimFollowTwoChunk(Ctx& c) {
+  static SeamRef ref;
+  static bool done = false;
+  if (!done) {
+    SembInterimEncoder* f = OpenInterim();
+    if (f) { ref = Seam(f, Ids(200), 100, kSembForwardLegChunkBatched); semb_interim_encoder_close(f); }
+    done = true;
+  }
+  SembInterimEncoder* e = c.ienc ? c.ienc : c.out_ienc;
+  return e && ref.st == kSembInterimOk && Seam(e, Ids(200), 100, kSembForwardLegChunkBatched) == ref;
+}
 bool BankFollow(Ctx& c) {
   semb_bank b = c.bank ? c.bank : c.out_bank;
   if (!b) return false;
@@ -1028,7 +1049,7 @@ bool BuildDriver(const std::string& row, const std::string& drv, uint32_t mc, Dr
     d->call = [positions, budget, leg](Ctx& c) {
       return static_cast<int32_t>(Seam(c.ienc, Ids(positions), budget, leg).st);
     };
-    d->follow = drv == "long" ? InterimFollowLong : InterimFollow;
+    d->follow = drv == "long" ? InterimFollowLong : drv == "two_chunk" ? InterimFollowTwoChunk : InterimFollow;
     d->fresh_per_k = d->growth = growth;
     return true;
   }
