@@ -979,6 +979,9 @@ add_test(
 add_executable(te163_bank_pair_test EXCLUDE_FROM_ALL te163_bank_pair_test.cpp)
 target_link_libraries(te163_bank_pair_test PRIVATE superembedder superslm::superslm)
 target_include_directories(te163_bank_pair_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+# U2-3 item 8: cell 1 grades the manifest's tier against the dispatch of the
+# engine-build record this configure verified (auto -> the host's best tier).
+target_compile_definitions(te163_bank_pair_test PRIVATE TE163_ENGINE_DISPATCH="${SEMB_ENGINE_DISPATCH}")
 
 set(_semb_te163_args --build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}")
 if(NOT SEMB_C12B_MODEL STREQUAL "")
@@ -1207,9 +1210,11 @@ endif()
 # default, and what a build directory configured before them holds); set, a
 # path overrides them. Model or tokenizer unset -> the
 # cell reports MISSING PREREQUISITE and passes; set, it carries real_artifact.
-# SEMB_C63_QUERY_POSITIONS is mid.txt's composed-query position count, stated
-# before the run once measured (regenerate_c63_texts.py --measure); unstated,
-# the query legs report PRECONDITION.
+# The query leg's position count, 152 (the query instruction prefix + mid.txt
+# + the terminator), is the test's kQueryPositions and the manifest's
+# query_leg_positions, measured on the dev box with the real tokenizer
+# (regenerate_c63_texts.py --measure). SEMB_C63_QUERY_POSITIONS, when set,
+# overrides it for a replacement mid.txt.
 set(SEMB_C63_MID_TEXT "" CACHE FILEPATH "C63: mid.txt; empty = the committed fixtures/c63/mid.txt (645 B, 133 positions)")
 set(SEMB_C63_SHORT_TEXT "" CACHE FILEPATH "C63: short.txt; empty = the committed fixtures/c63/short.txt (56 B)")
 set(_semb_c63_mid "${SEMB_C63_MID_TEXT}")
@@ -1220,7 +1225,7 @@ endif()
 if(_semb_c63_short STREQUAL "")
 	set(_semb_c63_short "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c63/short.txt")
 endif()
-set(SEMB_C63_QUERY_POSITIONS "" CACHE STRING "C63: mid.txt's composed-query positions, once measured")
+set(SEMB_C63_QUERY_POSITIONS "" CACHE STRING "C63: mid.txt's composed-query positions; empty = the committed 152")
 add_executable(u2_10_c63_keeper_test u2_10_c63_keeper_test.cpp)
 target_link_libraries(u2_10_c63_keeper_test PRIVATE superembedder superslm::superslm Threads::Threads)
 set(_semb_c63_args "")
