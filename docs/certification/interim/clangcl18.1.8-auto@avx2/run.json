@@ -4,7 +4,7 @@
   "date": "2026-09-26",
   "pass": "provisional",
   "host": "AMD Ryzen 9 3950X 16-Core Processor",
-  "manifestSha256": "33f09a59b02eb6cae0772678b3a717c98138850da7ab05b795f114f14f86d101",
+  "manifestSha256": "3f819048906adfebd0bbb54648239bce868cf8b32f6f3089e583b224bb641f1e",
   "buildDescriptor": {
     "os": "windows",
     "isa": "x86-64",
@@ -18,7 +18,7 @@
   },
   "machineTier": "avx2",
   "certificationEpoch": "ac4cb6abad3c4f6af568a4c47650e5e7b3f48dfea901a26f854144327b29fa37",
-  "certifiedBuildsSha256": "24f3ff45891e64780d832a17e3295741a3b82bafe01190f0be2529a5e1945153",
+  "certifiedBuildsSha256": "d7f344e4484df10f7339ca66ea61b14b10a7092445d4b9d06ff5467e1ee537f2",
   "certifiedCell": "clangcl18.1.8-auto@avx2",
   "dispatchedTier": "avx2",
   "hostBestTier": "avx2",
@@ -27,7 +27,7 @@
     "commit": "9ed52bb55af881348be6ccb591efdaa133f84329",
     "engine_tree_sha": "ffad24449984ba5b7390a2cec007be9404bc1c64dfd529c1f420de37653e567c"
   },
-  "productCommit": "62914965d5e83ad4b79a94d84a0e611b69e1e1e2",
+  "productCommit": "ce88f63e0d462ddc50c6d90403ccb0d16e9be471",
   "derivationInputsSha256": "a5f012ccfc2ad4631882fa08d00097d3e72a5ad945bd85d0ab1a2433a0c98906",
   "rowDigest": "e8ad5d05c31eced1afa8967f0babc72212718effea9e19b0c46d2282e9bcde72",
   "tokenIdDigest": "e440e227fb5bdd3cc58895ac4fa536e533c8e5988fc993c4f3286e36680de835"
