@@ -1207,9 +1207,11 @@ endif()
 # default, and what a build directory configured before them holds); set, a
 # path overrides them. Model or tokenizer unset -> the
 # cell reports MISSING PREREQUISITE and passes; set, it carries real_artifact.
-# SEMB_C63_QUERY_POSITIONS is mid.txt's composed-query position count, stated
-# before the run once measured (regenerate_c63_texts.py --measure); unstated,
-# the query legs report PRECONDITION.
+# The query leg's position count, 152 (the query instruction prefix + mid.txt
+# + the terminator), is the test's kQueryPositions and the manifest's
+# query_leg_positions, measured on the dev box with the real tokenizer
+# (regenerate_c63_texts.py --measure). SEMB_C63_QUERY_POSITIONS, when set,
+# overrides it for a replacement mid.txt.
 set(SEMB_C63_MID_TEXT "" CACHE FILEPATH "C63: mid.txt; empty = the committed fixtures/c63/mid.txt (645 B, 133 positions)")
 set(SEMB_C63_SHORT_TEXT "" CACHE FILEPATH "C63: short.txt; empty = the committed fixtures/c63/short.txt (56 B)")
 set(_semb_c63_mid "${SEMB_C63_MID_TEXT}")
@@ -1220,7 +1222,7 @@ endif()
 if(_semb_c63_short STREQUAL "")
 	set(_semb_c63_short "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c63/short.txt")
 endif()
-set(SEMB_C63_QUERY_POSITIONS "" CACHE STRING "C63: mid.txt's composed-query positions, once measured")
+set(SEMB_C63_QUERY_POSITIONS "" CACHE STRING "C63: mid.txt's composed-query positions; empty = the committed 152")
 add_executable(u2_10_c63_keeper_test u2_10_c63_keeper_test.cpp)
 target_link_libraries(u2_10_c63_keeper_test PRIVATE superembedder superslm::superslm Threads::Threads)
 set(_semb_c63_args "")
