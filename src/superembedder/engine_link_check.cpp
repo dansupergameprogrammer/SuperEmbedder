@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <utility>
 #if defined(__has_include)
 #if __has_include(<version>)
 #include <version>
@@ -199,6 +200,37 @@ Verdict CheckLinkedEngine() {
 std::string LinkedBuildRecord() {
   const SslmBuildIdentity* id = Readable(sslm_build_identity());
   return id ? std::string(id->build_record) : std::string();
+}
+
+std::string IsaNames(uint64_t bits) {
+  static const std::pair<uint64_t, const char*> kNames[] = {
+      {SSLM_ISA_SSE3, "SSE3"},           {SSLM_ISA_SSSE3, "SSSE3"},         {SSLM_ISA_SSE4_1, "SSE4_1"},
+      {SSLM_ISA_SSE4_2, "SSE4_2"},       {SSLM_ISA_POPCNT, "POPCNT"},       {SSLM_ISA_AVX, "AVX"},
+      {SSLM_ISA_AVX2, "AVX2"},           {SSLM_ISA_FMA, "FMA"},             {SSLM_ISA_F16C, "F16C"},
+      {SSLM_ISA_BMI1, "BMI1"},           {SSLM_ISA_BMI2, "BMI2"},           {SSLM_ISA_LZCNT, "LZCNT"},
+      {SSLM_ISA_MOVBE, "MOVBE"},         {SSLM_ISA_AVX512F, "AVX512F"},     {SSLM_ISA_AVX512BW, "AVX512BW"},
+      {SSLM_ISA_AVX512DQ, "AVX512DQ"},   {SSLM_ISA_AVX512VL, "AVX512VL"},   {SSLM_ISA_AVX512CD, "AVX512CD"},
+      {SSLM_ISA_AVX512VNNI, "AVX512VNNI"}, {SSLM_ISA_AVX512VBMI, "AVX512VBMI"},
+      {SSLM_ISA_AVX512IFMA, "AVX512IFMA"}, {SSLM_ISA_AVX512BF16, "AVX512BF16"},
+      {SSLM_ISA_AVX512FP16, "AVX512FP16"}, {SSLM_ISA_AVXVNNI, "AVXVNNI"}, {SSLM_ISA_AVX10, "AVX10"},
+  };
+  std::string out;
+  uint64_t named = 0;
+  for (const auto& [bit, name] : kNames) {
+    named |= bit;
+    if ((bits & bit) == 0) continue;
+    if (!out.empty()) out += ',';
+    out += name;
+  }
+  if ((bits & ~named) != 0) {
+    if (!out.empty()) out += ',';
+    out += "0x";
+    static const char kHex[] = "0123456789abcdef";
+    std::string hex;
+    for (uint64_t rest = bits & ~named; rest != 0; rest >>= 4) hex.insert(hex.begin(), kHex[rest & 0xF]);
+    out += hex;
+  }
+  return out.empty() ? std::string("none") : out;
 }
 
 std::string LinkedDispatch() {

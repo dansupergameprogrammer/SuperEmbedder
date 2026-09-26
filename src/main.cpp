@@ -1,5 +1,6 @@
 // src/main.cpp -- Slice 6's `semb` command-line drivers over the frozen C ABI.
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -21,6 +22,9 @@
 #include <io.h>
 #endif
 
+#include "certification.h"
+#include "engine_identity/superslm_build_identity.h"
+#include "engine_link_check.h"
 #include "json_lite.h"
 #include "semb_engine_pin.h"
 #include "superembedder/bake_abi.h"
@@ -900,6 +904,64 @@ int Inspect(const std::vector<std::string>& args) {
   return 0;
 }
 
+std::string HexOf(const std::array<uint8_t, 32>& digest) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  for (uint8_t b : digest) {
+    out.push_back(kHex[b >> 4]);
+    out.push_back(kHex[b & 0x0f]);
+  }
+  return out;
+}
+
+// A descriptor value as a JSON string literal: the compiler strings carry spaces.
+std::string Quoted(const std::string& value) {
+  return semb::json::Write(semb::json::Value::MakeString(value));
+}
+
+// U2-1's build line (plan U2-1, the installed-CLI item; U2-3 items 1 and 14). Every value comes from the
+// source encoder open reads: the compiled-in descriptor, with `dispatch` from the linked engine's own
+// sslm_build_identity; item 14's CheckLinkedEngine; and, only once that check has passed, the dispatched
+// tier and the cell verdict open computes (certification::DispatchedTier and ProcessVerdict). When the check
+// refuses, open would refuse before the tier probe runs, so no tier is read and no cell is decided here
+// either: both lines name the check's status, and the engine line says what the engine needs and the host
+// lacks. The build line still prints, so a forced engine above the host reports its forced dispatch.
+int PrintVersion() {
+  namespace cert = semb::certification;
+  namespace link = semb::engine_link;
+  const cert::Descriptor& d = cert::ThisBuild();
+  const link::Verdict check = link::CheckLinkedEngine();
+  const std::string status = semb_status_name(check.status);
+  std::cout << "semb " << superembedder::Version() << " (engine pin " << SEMB_ENGINE_PIN_TAG << " @ "
+            << SEMB_ENGINE_PIN_COMMIT << ", engine_path_sha=" << SEMB_ENGINE_PATH_SHA << ")\n"
+            << "build: os=" << SEMB_BUILD_OS << " arch=" << SEMB_BUILD_ARCH << " compiler=" << SEMB_BUILD_COMPILER_ID
+            << "/" << SEMB_BUILD_COMPILER_VERSION << " frontend=" << SEMB_BUILD_COMPILER_FRONTEND
+            << " configuration=" << SEMB_BUILD_CONFIGURATION << " buildSystem=cmake\n"
+            << "descriptor: os=" << d.os << " isa=" << d.isa << " toolchain=" << Quoted(d.toolchain)
+            << " stdlib=" << Quoted(d.stdlib) << " configuration=" << d.configuration
+            << " buildSystem=" << d.build_system << " dispatch=" << d.dispatch
+            << " compileFlags=" << d.compile_flags << " engineFlags=" << d.engine_flags
+            << " engineToolchain=" << Quoted(SEMB_ENGINE_TOOLCHAIN) << " engineStdlib=" << Quoted(SEMB_ENGINE_STDLIB)
+            << "\n";
+  if (check.status == SEMB_OK) {
+    const cert::Verdict& verdict = cert::ProcessVerdict();
+    std::cout << "tier: " << cert::DispatchedTier() << "\n"
+              << "cell: " << verdict.cell << " epoch=" << HexOf(verdict.epoch) << "\n";
+  } else {
+    std::cout << "tier: refused " << status << "\n"
+              << "cell: refused " << status << "\n";
+  }
+  std::cout << "certification: line=" << cert::IdentityLine() << " identity_sha256=" << HexOf(cert::IdentitySha256())
+            << " certified_builds_sha256=" << HexOf(cert::CompiledListSha256()) << "\n"
+            << "engine: build_record=" << link::LinkedBuildRecord() << " expected=" << SEMB_ENGINE_BUILD_RECORD
+            << " forced_tier=" << link::LinkedDispatch() << " required_isa="
+            << (check.identity ? link::IsaNames(check.identity->required_isa) : std::string("unreadable"))
+            << " check=" << status;
+  if (check.missing_isa != 0) std::cout << " missing_isa=" << link::IsaNames(check.missing_isa);
+  std::cout << "\n";
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -909,20 +971,7 @@ int main(int argc, char** argv) {
     return 0;
   }
   const std::string command = argv[1];
-  if (command == "--version" && argc == 2) {
-    // U2-1: the version, the engine pin, and the build descriptor's fields the
-    // build system records today. The rest of the descriptor U2-3 defines
-    // (the dispatched CPU tier, the cell verdict, the flag digests, the
-    // standard library, the linked engine's own report) is not printed until
-    // U2-3 builds it, so this line claims no certification.
-    std::cout << "semb " << superembedder::Version() << " (engine pin " << SEMB_ENGINE_PIN_TAG
-              << " @ " << SEMB_ENGINE_PIN_COMMIT << ", engine_path_sha=" << SEMB_ENGINE_PATH_SHA << ")\n"
-              << "build: os=" << SEMB_BUILD_OS << " arch=" << SEMB_BUILD_ARCH
-              << " compiler=" << SEMB_BUILD_COMPILER_ID << "/" << SEMB_BUILD_COMPILER_VERSION
-              << " frontend=" << SEMB_BUILD_COMPILER_FRONTEND << " configuration=" << SEMB_BUILD_CONFIGURATION
-              << " buildSystem=cmake\n";
-    return 0;
-  }
+  if (command == "--version" && argc == 2) return PrintVersion();
   std::vector<std::string> args;
   for (int i = 2; i < argc; ++i) args.emplace_back(argv[i]);
   if (command == "bake") return Bake(args);

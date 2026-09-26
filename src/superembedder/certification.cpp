@@ -188,4 +188,20 @@ const std::array<uint8_t, 32>& CompiledListSha256() {
   return digest;
 }
 
+std::string IdentityLine() {
+  try {
+    const json::Value identity =
+        json::Parse(std::string(Bytes(kCertificationIdentity, kCertificationIdentitySize)));
+    const json::Value* line = identity.IsObject() ? identity.Find("line") : nullptr;
+    return line && line->kind == json::Kind::kInt ? std::to_string(line->as_int) : std::string();
+  } catch (const std::exception&) {
+    return std::string();
+  }
+}
+
+const std::array<uint8_t, 32>& IdentitySha256() {
+  static const std::array<uint8_t, 32> digest = Sha256Of(kCertificationIdentity, kCertificationIdentitySize);
+  return digest;
+}
+
 }  // namespace semb::certification
