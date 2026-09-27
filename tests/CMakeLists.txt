@@ -1305,6 +1305,11 @@ endforeach()
 add_executable(u2_9_c62_reader_floor_test u2_9_c62_reader_floor_test.cpp)
 target_link_libraries(u2_9_c62_reader_floor_test PRIVATE u2_9_c62_reader)
 add_test(NAME u2_9_c62_reader_floor COMMAND u2_9_c62_reader_floor_test)
+# C62's steady reading (P:2737-2738) at the comparison level, every platform:
+# steady subtracts the ballast's measured charge on each counter, not its bytes.
+add_executable(u2_9_c62_reader_steady_test u2_9_c62_reader_steady_test.cpp)
+target_link_libraries(u2_9_c62_reader_steady_test PRIVATE u2_9_c62_reader)
+add_test(NAME u2_9_c62_reader_steady COMMAND u2_9_c62_reader_steady_test)
 # C62's committed texts are the ones the manifest hashes (no tokenizer, no network).
 add_test(
 	NAME u2_9_c62_texts_check
