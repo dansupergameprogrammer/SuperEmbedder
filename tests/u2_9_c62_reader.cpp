@@ -174,13 +174,19 @@ void EndExcursion(Ballast* b, const Counters& base, bool action_ok, LegReading* 
     r.nonresident_pages = NonResidentPages(b->base, b->bytes);
     r.resident_ok = r.nonresident_pages == 0;
     // Step 3.
-    for (int c = 0; c < kCounters; ++c) {
-      r.excursion_mib[c] = MiB(after.peak[c]) - MiB(b->raised.current[c]);
-      r.steady_mib[c] = MiB(after.current[c]) - MiB(b->bytes) - MiB(base.current[c]);
-    }
+    ComputeStep3(&r);
   }
   Release(b->base);
   b->base = nullptr;
+}
+
+void ComputeStep3(LegReading* r) {
+  for (int c = 0; c < kCounters; ++c) {
+    // The ballast's size on this counter, as step 1 read it in this run.
+    r->ballast_charge_mib[c] = MiB(r->raised.current[c]) - MiB(r->before.current[c]);
+    r->excursion_mib[c] = MiB(r->after.peak[c]) - MiB(r->raised.current[c]);
+    r->steady_mib[c] = MiB(r->after.current[c]) - r->ballast_charge_mib[c] - MiB(r->base.current[c]);
+  }
 }
 
 Grade GradeAtMost(double reading_mib, double bound_mib, bool preconditions_hold) {
@@ -233,6 +239,12 @@ void PrintLeg(std::FILE* out, const char* cell, const LegReading& leg) {
     std::fprintf(out, "  %-22s %.1f MiB (%llu B) committed and touched\n", "ballast", MiB(leg.ballast_bytes),
                  static_cast<unsigned long long>(leg.ballast_bytes));
     PrintCounters(out, "step 1, raised floor", leg.raised);
+    for (int c = 0; c < kCounters; ++c) {
+      const double excess = leg.ballast_charge_mib[c] - MiB(leg.ballast_bytes);
+      std::fprintf(out, "  %-22s ballast charge %.2f MiB (bytes %+.2f MiB, 1/%.0f of them): what steady subtracts\n",
+                   CounterName(static_cast<Counter>(c)), leg.ballast_charge_mib[c], excess,
+                   excess > 0 && leg.ballast_bytes ? MiB(leg.ballast_bytes) / excess : 0.0);
+    }
   }
   PrintCounters(out, "after", leg.after);
   for (int c = 0; c < kCounters; ++c) {

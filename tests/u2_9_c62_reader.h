@@ -46,7 +46,27 @@
 //   2. Run the action, then read both peaks and both current values.
 //   3. Excursion = each peak (after) - its pre-action value (the raised
 //      floor). Steady = each current value (after) - the ballast's size -
-//      the base ("post-open") reading's current value.
+//      the base ("post-open") reading's current value, where the ballast's
+//      size is taken ON EACH COUNTER, as step 1's two readings measure it in
+//      this run: raised.current - before.current. The ballast is the
+//      instrument, the raised floor (P:2731-2732, P:2736-2738), not the
+//      product, so what holding it costs is
+//      subtracted whole. On Windows that is more than its bytes: private
+//      bytes also carry the ballast's own page tables, about 1/512 of it
+//      (the dev box read a kept 64 MiB block as 65.4 MiB of private bytes
+//      under a 654.3 MiB ballast when steady subtracted only the bytes, and
+//      64.0 of working set). A constant would be a fudge; the charge is read
+//      per run, per counter, from the readings step 1 already takes.
+//      Algebraically steady = (after - raised) + (before - base): the growth
+//      across the action plus anything the product retained between the
+//      base reading and the ballast step (mc 1's 5-token encode). The
+//      product's own page tables are not subtracted: they are footprint.
+//      Between `before` and `raised` this code commits nothing but the
+//      ballast and the action has not started, so the subtraction takes
+//      none of the product's growth unless a product thread commits memory
+//      while no call is in progress (none is expected; not measured). The
+//      charge and its excess over the ballast's bytes are printed with each
+//      leg, so an excess far from 1/512 is visible in the log.
 //   4. PRECONDITION: every ballast page is still resident after the action
 //      (QueryWorkingSetEx, every page Valid); otherwise no verdict.
 //
@@ -105,7 +125,7 @@ uint64_t PageSize();
 // ---- one leg ----
 struct Ballast {
   void* base = nullptr;
-  uint64_t bytes = 0;      // committed and touched; what steady subtracts
+  uint64_t bytes = 0;      // committed and touched (steady subtracts what it costs, step 3)
   Counters before;         // step 1's first reading
   Counters raised;         // step 1's second reading: the pre-action values
   bool floor_ok = false;   // precondition 1: FloorAboveEarlierPeaks(before, raised)
@@ -148,6 +168,10 @@ struct LegReading {
   uint64_t floor_gap_bytes[kCounters]{};
   uint64_t nonresident_pages = 0;
   // Step 3, in MiB, per counter. Excursion is defined only on ballasted legs.
+  // ballast_charge_mib: what the ballast step raised each counter by,
+  // raised.current - before.current, measured in this run; steady subtracts
+  // it (see step 3 in the header comment).
+  double ballast_charge_mib[kCounters]{};
   double steady_mib[kCounters]{};
   double excursion_mib[kCounters]{};
   bool preconditions_hold() const {
@@ -161,6 +185,12 @@ bool BeginExcursion(Ballast* b);
 // releases the ballast. `b` may be one whose BeginExcursion failed: the leg
 // then reads ballast_committed = false and emits no verdict.
 void EndExcursion(Ballast* b, const Counters& base, bool action_ok, LegReading* out);
+
+// Step 3 alone, on a ballasted leg's raw readings: fills ballast_charge_mib,
+// excursion_mib and steady_mib from base, before, raised and after. No
+// platform call, so the comparison-level tests drive it on every platform;
+// EndExcursion calls it and nothing else computes step 3.
+void ComputeStep3(LegReading* r);
 
 // Steps 1-4 around `action` (any callable returning bool; no heap use).
 template <class Action>
