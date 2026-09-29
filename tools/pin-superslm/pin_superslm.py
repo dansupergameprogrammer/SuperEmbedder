@@ -10,7 +10,8 @@ WHAT THIS TOOL DOES, IN ORDER
      D:\\SuperSLM in place) — with core.autocrlf=false and core.eol=lf, so the
      digest below is checkout-invariant (§1.3: "every digested source byte is
      checkout-invariant").
-  3. Configures and builds ONLY the `superslm` static-library target (Ninja +
+  3. Configures and builds ONLY the `superslm` static-library target (plus
+     `superslm_gpu` under --with-gpu, step 8c) (Ninja +
      whatever C++ compiler is already on PATH — the caller is responsible for
      having a working compiler environment active, e.g. having run VsDevCmd.bat
      on Windows or simply being on a Unix box with a system compiler).
@@ -48,6 +49,14 @@ WHAT THIS TOOL DOES, IN ORDER
      compiler, flagsSha}. Refuses SEMB_PIN_AMBIENT_COMPILER_INPUT <variable>
      when CL, _CL_ or CCC_OVERRIDE_OPTIONS is set, because they reach the
      compiler without appearing on any compile line.
+  8c. (U3, --with-gpu) Configures the engine with -DSUPERSLM_BUILD_GPU=ON,
+     builds `superslm` and `superslm_gpu`, and installs both, with the GPU
+     shader set under share/superslm/gpu-shaders. Nothing else changes: the
+     compile closure, the flag record (`flagsSha`) and the build record stay
+     scoped to the `superslm` target, whose compile lines do not depend on
+     the engine's GPU flag, and `.cso` joins the excluded install suffixes,
+     so a GPU install and a CPU-only install of one tag give one `tree=`.
+     One invocation writes both the build record and the GPU install.
   9. Updates superslm.lock's `commit=` and `tree=` fields to match what was just
      computed (the `tag=` field is the only one a person edits; this tool
      derives the other two — D-SLM3893).
@@ -56,7 +65,12 @@ USAGE
   python tools/pin-superslm/pin_superslm.py \\
       --lock superslm.lock --prefix build/_engine_install [--source <path-or-url>] \\
       [--workdir build/_engine_src] [--cmake <path>] [--ninja <path>] [--generator Ninja] \\
-      [--keep-workdir] [--fresh-build] [--force-tier {sse2,avx2,avx512}]
+      [--keep-workdir] [--fresh-build] [--force-tier {sse2,avx2,avx512}] [--with-gpu]
+
+  --with-gpu: (U3) also build and install the engine's GPU library and its
+      shaders (Windows only; the engine's configure refuses the option
+      elsewhere). The lock's tree= and the build record are the same as a
+      CPU-only install's of the same tag.
 
   --force-tier: (U2-3 item 5) configure the engine with SUPERSLM_FORCE_<TIER>_MATMUL,
       delivered through CXXFLAGS so it reaches every `superslm` translation unit
@@ -315,7 +329,8 @@ def _validate_reuse_clone(clone: Path, tag: str) -> None:
 
 
 def configure_engine(clone: Path, build: Path, cmake: str, ninja: str, generator: str,
-                      fresh_build: bool = False, force_tier: str | None = None) -> None:
+                      fresh_build: bool = False, force_tier: str | None = None,
+                      with_gpu: bool = False) -> None:
     # TE-73 R-1 (Critical): this used to be a bare `if build.exists():
     # rmtree(build)` -- no guard, no marker check, no depth check, the ONE
     # of the tool's three deletion sites its own N-11 comment enumerated
@@ -359,6 +374,11 @@ def configure_engine(clone: Path, build: Path, cmake: str, ninja: str, generator
         cmd.append("-DCMAKE_POSITION_INDEPENDENT_CODE=ON")
     if generator == "Ninja" and ninja:
         cmd.append(f"-DCMAKE_MAKE_PROGRAM={ninja}")
+    # U3 (--with-gpu): the engine's GPU option only adds targets (superslm_gpu
+    # and its shaders); the `superslm` target's sources and compile lines do not
+    # depend on it, so the compile closure and flagsSha below are unchanged.
+    if with_gpu:
+        cmd.append("-DSUPERSLM_BUILD_GPU=ON")
     # U2-3 item 5: --force-tier delivers SUPERSLM_FORCE_<T>_MATMUL through the
     # engine build's CMAKE_CXX_FLAGS, the one channel that reaches every
     # `superslm` translation unit without editing the engine. It is passed as
@@ -375,8 +395,8 @@ def configure_engine(clone: Path, build: Path, cmake: str, ninja: str, generator
     run(cmd, env=env)
 
 
-def build_engine_library(build: Path, cmake: str, target: str = "superslm") -> None:
-    run([cmake, "--build", str(build), "--target", target])
+def build_engine_library(build: Path, cmake: str, targets: tuple[str, ...] = ("superslm",)) -> None:
+    run([cmake, "--build", str(build), "--target", *targets])
 
 
 def _assert_safe_to_wipe(path: Path, markers: tuple[str, ...], what: str, error_code: str = "SEMB_PIN_UNSAFE_PREFIX") -> None:
@@ -566,7 +586,13 @@ def derive_compile_closure(clone: Path, build: Path, ninja: str) -> set[Path]:
 # proves compiled-arithmetic identity by RUNNING the code, the only layer
 # that can meaningfully absorb a non-deterministic archiver. So the installed
 # closure here covers headers and CMake package files only.
-_EXCLUDED_INSTALL_SUFFIXES = {".lib", ".a", ".so", ".dylib", ".dll", ".exe", ".obj", ".o", ".pdb"}
+#
+# U3: `.cso` (the GPU install's compiled shaders, share/superslm/gpu-shaders) is
+# excluded for the reason `.lib` is: a compiled artifact, not source identity.
+# The `superslm` target's compile closure does not depend on the engine's GPU
+# flag, so with this exclusion a --with-gpu install and a CPU-only install of
+# one tag give the same tree=; without it no lock could serve both builds.
+_EXCLUDED_INSTALL_SUFFIXES = {".lib", ".a", ".so", ".dylib", ".dll", ".exe", ".obj", ".o", ".pdb", ".cso"}
 
 # CMake's install(EXPORT ...) generates a base "<name>Targets.cmake" plus one
 # per-config variant "<name>Targets-<config>.cmake" (e.g.
@@ -1048,6 +1074,10 @@ def main() -> int:
                      help="do not abort when the clone carries an uncommitted edit inside the compile "
                           "closure — still records clean=false in the provenance manifest so a "
                           "downstream configure refuses it (used to construct C33 leg (e) on purpose)")
+    ap.add_argument("--with-gpu", action="store_true",
+                     help="U3: configure the engine with SUPERSLM_BUILD_GPU=ON, build superslm and superslm_gpu, "
+                          "and install both with the GPU shaders (Windows only). tree= and the build record's "
+                          "flagsSha stay scoped to the superslm target, so they equal a CPU-only install's.")
     args = ap.parse_args()
 
     refuse_ambient_compiler_input()
@@ -1073,8 +1103,8 @@ def main() -> int:
 
     build = workdir / "build"
     configure_engine(clone, build, args.cmake, args.ninja, args.generator, fresh_build=args.fresh_build,
-                     force_tier=args.force_tier)
-    build_engine_library(build, args.cmake)
+                     force_tier=args.force_tier, with_gpu=args.with_gpu)
+    build_engine_library(build, args.cmake, ("superslm", "superslm_gpu") if args.with_gpu else ("superslm",))
 
     prefix = args.prefix.resolve()
     install_engine(build, args.cmake, prefix)
