@@ -198,6 +198,17 @@ Seam& S() {
   return *seam;
 }
 
+// The seam's storage is created before main, with its first log and last-read
+// buffers, so no seam allocation is live-counted after a test's baseline:
+// C64-GPU (c)'s close-all check requires the live count to return to its value
+// before the handles opened. A later growth replaces a buffer (net zero).
+const bool kSeamCreatedBeforeMain = [] {
+  Seam& s = S();
+  s.log.reserve(256);
+  s.last_read_codes.reserve(64);
+  return true;
+}();
+
 bool VerbByName(const char* name, Verb* out) {
   if (!name) return false;
   for (size_t i = 0; i < kVerbCount; ++i) {
