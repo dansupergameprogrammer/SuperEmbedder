@@ -26,11 +26,16 @@ Every command's output is appended to build/_u3_logs/real_<leg>.log as it runs.
   g4096, g8192, gcap   (P:4168-4170) u3_gpu_cells_test --cell c10g at 4,096,
             8,192 and 32,767 content tokens (the cap row: two GPU runs, no CPU
             half, D-SLM7722). ~2 min, ~6 min + 2.1 h CPU, ~2 x 78 min.
-  h         (P:4171) K1-Run-2's three lean corpora re-baked --device gpu, each row
-            byte-equal to the CPU bank of the same pin. The corpora and CPU banks
-            the plan names (out-root D:/_k1run3) no longer exist (TE-439): MISSING
-            PREREQUISITE unless --corpora-root names a replacement holding
-            <name>.jsonl and <name>-cpu bank stems (a PENDING planner decision).
+  h         (P:4171 as restated by the planner's U3 ruling 3) fiqa-long80
+            (D-SLM7873; --c10h-corpus, SEMB_U3_C10H_CORPUS), 80 documents:
+            `semb bake --device gpu` and `--device cpu` (the CLI's default of 8
+            workers), both from this tree, and the pairwise instrument finds the
+            two row-digests.tsv equal on 80/80 rows. K1-Run-2's corpora are
+            deleted and unrecoverable (TE-439), so the leg is reduced to this one
+            population. The input's sha256 is checked FIRST, on any host, and a
+            mismatch is refused before anything runs. Must-reject: C10 (e) 3's
+            one-byte edit, applied to one row of the GPU run's row-digests.tsv,
+            is REFUSED by the same instrument.
   i_verify  (P:4174) `semb verify` over (a)'s GPU bank exits 0; its must-reject,
             one byte of a copy's row file edited, is refused.
   i_install (P:4175) `cmake --install` to a scratch prefix, then that prefix's
@@ -52,6 +57,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
 import u3_cells_check as cells  # noqa: E402
 import u3_row_digest_pair as pair  # noqa: E402
+
+sys.path.insert(0, str(ROOT / "tests" / "fixtures" / "u3"))
+import fiqa_sets  # noqa: E402
 
 CORPUS = ROOT / "tests" / "fixtures" / "c12b" / "corpus-239.jsonl"
 WQ = ROOT / "tests" / "fixtures" / "wq" / "wq-queries.jsonl"
@@ -117,10 +125,18 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--real-model", default="")
     ap.add_argument("--real-tokenizer", default="")
     ap.add_argument("--off-build-dir", default="")
-    ap.add_argument("--corpora-root", default="")
+    ap.add_argument("--c10h-corpus", default="")
     args = ap.parse_args(argv)
     build = Path(args.build_dir).resolve()
     leg = args.leg
+    if leg == "h":
+        # Ruling 3: the input's sha256 first, before anything runs, on any host.
+        st, detail = fiqa_sets.check_long80(args.c10h_corpus)
+        if st == "MISSING":
+            return cells.missing(f"C10 (h): {detail} (SEMB_U3_C10H_CORPUS)")
+        print(f"[{st}] C10 (h) input is fiqa-long80: {detail}", flush=True)
+        if st != "PASS":
+            return 1
     if platform.system() != "Windows":
         return cells.missing(f"C10 {leg}: GPU execution needs Windows and D3D12 (this host is {platform.system()})")
     if cells.cache_value(build, "SEMB_BUILD_GPU").upper() not in ("ON", "TRUE", "1", "YES"):
@@ -226,26 +242,34 @@ def main(argv: list[str]) -> int:
         if r.returncode:
             emit("FAIL", f"C10 (g) {n} tokens", f"the cell exited {r.returncode}")
     elif leg == "h":
-        root = Path(args.corpora_root) if args.corpora_root else None
-        if not root or not root.is_dir():
-            return cells.missing("C10 (h): K1-Run-2's lean corpora and CPU banks (D:/_k1run3) are deleted and "
-                                 "unrecoverable (TE-439); a replacement population is a PENDING planner decision. "
-                                 "Pass --corpora-root with <name>.jsonl and <name>-cpu bank stems to run it.")
-        names = sorted(p.stem for p in root.glob("*.jsonl"))
-        for name in names:
-            cpu = root / f"{name}-cpu"
-            gpu = work / "h" / f"{name}-gpu"
-            if not complete(cpu):
-                emit("FAIL", f"C10 (h) {name}", f"no complete CPU bank at {cpu}")
-                continue
-            if not bake(semb, root / f"{name}.jsonl", gpu, "gpu", base):
-                emit("FAIL", f"C10 (h) {name}", "the GPU bake failed")
-                continue
+        corpus = Path(args.c10h_corpus)
+        gpu, cpu = work / "h" / "fiqa-long80-gpu", work / "h" / "fiqa-long80-cpu"
+        ok_g, ok_c = bake(semb, corpus, gpu, "gpu", base), bake(semb, corpus, cpu, "cpu", base)
+        if not (ok_g and ok_c):
+            emit("FAIL", "C10 (h) the two bakes of fiqa-long80",
+                 f"gpu {'ok' if ok_g else 'FAILED'}, cpu {'ok' if ok_c else 'FAILED'}")
+        else:
+            tg, tc = pair.derive(str(gpu)), pair.derive(str(cpu))
+            (work / "h" / "gpu-row-digests.tsv").write_bytes(tg)
+            (work / "h" / "cpu-row-digests.tsv").write_bytes(tc)
             try:
-                emit("PASS", f"C10 (h) {name} GPU rows byte-equal to the CPU bank (P:4171)",
-                     pair.compare(pair.derive(str(gpu)), pair.derive(str(cpu))))
+                got = pair.compare(tg, tc, "gpu", "cpu")
+                want = f"{fiqa_sets.FIQA_LONG80_ROWS}/{fiqa_sets.FIQA_LONG80_ROWS} rows identical"
+                emit("PASS" if got == want else "FAIL",
+                     "C10 (h) fiqa-long80: GPU rows byte-equal to this build's CPU bake on 80/80 (P:4171)", got)
             except pair.Refused as ex:
-                emit("FAIL", f"C10 (h) {name} GPU rows byte-equal to the CPU bank (P:4171)", str(ex))
+                emit("FAIL", "C10 (h) fiqa-long80: GPU rows byte-equal to this build's CPU bake on 80/80 (P:4171)",
+                     str(ex))
+            edited = bytearray(tg)
+            pos = edited.index(b"\t") + 1 + 10  # one hex digit of row 0's digest
+            edited[pos] = ord("0") if edited[pos] != ord("0") else ord("1")
+            try:
+                got = pair.compare(bytes(edited), tc, "gpu-edited", "cpu")
+                emit("FAIL", "C10 (h) must-reject: C10 (e) 3's one-byte edit of one fiqa-long80 row is refused",
+                     f"ACCEPTED ({got})")
+            except pair.Refused as ex:
+                emit("PASS", "C10 (h) must-reject: C10 (e) 3's one-byte edit of one fiqa-long80 row is refused",
+                     f"REFUSED ({ex})")
     elif leg == "i_verify":
         if not complete(a_gpu):
             return cells.missing("C10 (i) verify: run leg a first (its GPU bank is the input)")

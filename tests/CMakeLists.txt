@@ -1979,17 +1979,33 @@ set_tests_properties(
 # ---------------------------------------------------------------------------
 set(SEMB_U3_SHADER_TO_REMOVE "" CACHE FILEPATH "U3 C10 (d)/row 5 (d): one installed .cso the must-reject renames away")
 set(SEMB_U3_OFF_BUILD_DIR "" CACHE PATH "U3 C10 (b): a SEMB_BUILD_GPU=OFF build tree of the same commit")
-set(SEMB_U3_CORPORA_ROOT "" CACHE PATH "U3 C10 (h): <name>.jsonl and <name>-cpu bank stems (PENDING population)")
-set(SEMB_U3_FIQA_CORPUS "" CACHE FILEPATH "U3 C11: the FiQA document slice (jsonl)")
-set(SEMB_U3_FIQA_QUERIES "" CACHE FILEPATH "U3 C11: 100 FiQA queries (jsonl)")
+# fiqa-long80 (D-SLM7873) is C10 (h)'s population and C11's FiQA documents
+# (the planner's U3 rulings 3-4); it lives in the records repository, and its
+# sha256 is checked by tests/fixtures/u3/fiqa_sets.py before either leg runs.
+set(SEMB_U3_C10H_CORPUS "" CACHE FILEPATH "U3 C10 (h): fiqa-long80.jsonl (records repo Claude/Brunel/te439-runs/fiqa-long80/, sha256 831cf2ed...)")
+set(SEMB_U3_FIQA_CORPUS "" CACHE FILEPATH "U3 C11: FiQA documents; empty = SEMB_U3_C10H_CORPUS (fiqa-long80)")
+set(SEMB_U3_FIQA_QUERIES "" CACHE FILEPATH "U3 C11: the minted 100 FiQA queries (tests/fixtures/u3/fiqa_sets.py mint)")
 set(SEMB_U3_GPU_ENGINE_PREFIX "" CACHE PATH "U3 row 8: a --with-gpu pin install, for the ON/OFF compileFlags leg")
 option(SEMB_U3_COMMISSION_TREE "U3 row 5 (d): this tree links the must-reject engine (v1.7.1); register the commissioning legs" OFF)
-if(SEMB_BUILD_GPU)
-	set(_semb_u3_gpu 1)
-else()
-	set(_semb_u3_gpu 0)
-endif()
-set(_semb_u3_real_args --real-model "${SEMB_C12B_MODEL}" --real-tokenizer "${SEMB_U1_TOKENIZER}")
+# The U3 locals, derived from cache variables only. A macro, because
+# semb_add_u3_seam_tests runs deferred in the ROOT directory's scope, where this
+# file's ordinary variables do not exist: it calls the macro again. The
+# real-artifact arguments take the --opt=value form, so an unset path stays one
+# empty argument instead of vanishing from the command line.
+macro(semb_u3_locals)
+	if(SEMB_BUILD_GPU)
+		set(_semb_u3_gpu 1)
+	else()
+		set(_semb_u3_gpu 0)
+	endif()
+	set(_semb_u3_real_args "--real-model=${SEMB_C12B_MODEL}" "--real-tokenizer=${SEMB_U1_TOKENIZER}")
+	if(SEMB_U3_FIQA_CORPUS STREQUAL "")
+		set(_semb_u3_fiqa_corpus "${SEMB_U3_C10H_CORPUS}")
+	else()
+		set(_semb_u3_fiqa_corpus "${SEMB_U3_FIQA_CORPUS}")
+	endif()
+endmacro()
+semb_u3_locals()
 
 # J9 and the device ABI (P:4022-4027): links the shipped target.
 add_executable(u3_abi_test EXCLUDE_FROM_ALL u3_abi_test.cpp)
@@ -2037,8 +2053,13 @@ add_test(NAME u3_pin_tool_gpu_check
 add_test(NAME u3_row_digest_pair_selftest
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u3_row_digest_pair.py" selftest
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# C10 (h) and C11's FiQA inputs (rulings 3-4): the query mint's commissioning
+# and both sha256 checks' must-rejects.
+add_test(NAME u3_fiqa_sets_selftest
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/u3/fiqa_sets.py" selftest
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set_tests_properties(u3_abi_check u3_guard_fixture_check u3_cli_device_check u3_configure_legs_check
-	u3_pin_tool_gpu_check u3_row_digest_pair_selftest PROPERTIES LABELS "u3" SKIP_RETURN_CODE 77 TIMEOUT 3600)
+	u3_pin_tool_gpu_check u3_row_digest_pair_selftest u3_fiqa_sets_selftest PROPERTIES LABELS "u3" SKIP_RETURN_CODE 77 TIMEOUT 3600)
 # Each driver builds its target in this tree: never two at once. The CLI check
 # may mint the cap-512 pair (build/_scratch/te222_c17_pair), a multi-GB mint.
 set_tests_properties(u3_abi_check u3_guard_fixture_check PROPERTIES RESOURCE_LOCK semb_u3_build)
@@ -2066,6 +2087,7 @@ function(semb_add_u3_seam_tests)
 	if(NOT TARGET superembedder_testseam)
 		return()
 	endif()
+	semb_u3_locals()
 	set(_d "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
 	set(_drv "${Python3_EXECUTABLE}" "${_d}/u3_cells_check.py" --build-dir "${CMAKE_BINARY_DIR}"
 		--cmake-executable "${CMAKE_COMMAND}")
@@ -2162,7 +2184,7 @@ function(semb_add_u3_seam_tests)
 		add_test(NAME u3_gpu_real_${_leg}
 			COMMAND "${Python3_EXECUTABLE}" "${_d}/u3_gpu_real_check.py" --build-dir "${CMAKE_BINARY_DIR}"
 				--cmake-executable "${CMAKE_COMMAND}" --leg ${_leg} ${_semb_u3_real_args}
-				--off-build-dir "${SEMB_U3_OFF_BUILD_DIR}" --corpora-root "${SEMB_U3_CORPORA_ROOT}"
+				--off-build-dir "${SEMB_U3_OFF_BUILD_DIR}" --c10h-corpus "${SEMB_U3_C10H_CORPUS}"
 			WORKING_DIRECTORY "${_d}/..")
 		list(APPEND _gpu_tests u3_gpu_real_${_leg})
 	endforeach()
@@ -2176,7 +2198,7 @@ function(semb_add_u3_seam_tests)
 			add_test(NAME u3_c11_${_leg}_${_p}
 				COMMAND "${Python3_EXECUTABLE}" "${_d}/u3_c11_measure.py" --build-dir "${CMAKE_BINARY_DIR}"
 					--cmake-executable "${CMAKE_COMMAND}" --leg ${_leg} ${_pa} ${_semb_u3_real_args}
-					--fiqa-corpus "${SEMB_U3_FIQA_CORPUS}" --fiqa-queries "${SEMB_U3_FIQA_QUERIES}"
+					--fiqa-corpus "${_semb_u3_fiqa_corpus}" --fiqa-queries "${SEMB_U3_FIQA_QUERIES}"
 				WORKING_DIRECTORY "${_d}/..")
 			list(APPEND _gpu_tests u3_c11_${_leg}_${_p})
 		endforeach()
