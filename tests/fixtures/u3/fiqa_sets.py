@@ -42,6 +42,7 @@ import argparse
 import gzip
 import hashlib
 import json
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -201,9 +202,11 @@ def selftest() -> int:
         verdict(st == "FAIL", "check-long80 must-reject: a file that is not fiqa-long80", d[:80])
         st, _ = check_long80(None)
         verdict(st == "MISSING", "check-long80: an unset path is MISSING PREREQUISITE", st)
-    verdict(len(FIQA_LONG80_SHA256) == 64 and len(QUERIES_REVISION) == 40, "the recorded identifiers are whole",
-            f"long80 {FIQA_LONG80_SHA256[:8]}, revision {QUERIES_REVISION[:8]}, queries slot "
-            f"{QUERIES100_SHA256 or '(unfilled)'}")
+    hexd = re.compile(r"[0-9a-f]{64}")
+    verdict(bool(hexd.fullmatch(FIQA_LONG80_SHA256)) and bool(re.fullmatch(r"[0-9a-f]{40}", QUERIES_REVISION)),
+            "the recorded identifiers are whole", f"long80 {FIQA_LONG80_SHA256[:8]}, revision {QUERIES_REVISION[:8]}")
+    verdict(bool(hexd.fullmatch(QUERIES100_SHA256)), "the minted query set's sha256 is recorded (64 hex digits)",
+            QUERIES100_SHA256 or "(unfilled)")
     return 0 if ok else 1
 
 
