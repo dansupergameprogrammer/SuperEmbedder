@@ -7,7 +7,7 @@
 # docs/INTEGRATION.md section 1 calls non-negotiable:
 #   GCC/Clang: -ffp-contract=off everywhere, -msse4.2 on kernels.cpp (x86);
 #              the AVX2 TU needs nothing (target attributes).
-#   MSVC:      /fp:precise everywhere, /arch:AVX2 on kernels_avx2.cpp.
+#   MSVC:      /fp:precise everywhere, /arch:AVX2 on kernels_avx2.cpp (x64/X86).
 #   clang-cl:  the MSVC flags, plus /clang:-ffp-contract=off everywhere and
 #              /clang:-msse4.2 on kernels.cpp (x64/X86). CMake sets MSVC for
 #              clang-cl too, so it is told apart by compiler ID Clang with the
@@ -38,10 +38,14 @@ endif()
 
 if(MSVC)
 	target_compile_options(sf_roundtrip PRIVATE /fp:precise)
-	set_source_files_properties("${SUPERFAISS_SOURCE}/src/kernels_avx2.cpp" PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
 	if(SEMB_SF_CLANG_CL)
 		target_compile_options(sf_roundtrip PRIVATE /clang:-ffp-contract=off)
-		if(CMAKE_CXX_COMPILER_ARCHITECTURE_ID MATCHES "^(x64|X86)$")
+	endif()
+	# Keyed on the target architecture, as SuperFAISS 3.4.3 keys them: neither
+	# option exists for an ARM64 target.
+	if(CMAKE_CXX_COMPILER_ARCHITECTURE_ID MATCHES "^(x64|X86)$")
+		set_source_files_properties("${SUPERFAISS_SOURCE}/src/kernels_avx2.cpp" PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+		if(SEMB_SF_CLANG_CL)
 			set_source_files_properties("${SUPERFAISS_SOURCE}/src/kernels.cpp" PROPERTIES COMPILE_OPTIONS "/clang:-msse4.2")
 		endif()
 	endif()

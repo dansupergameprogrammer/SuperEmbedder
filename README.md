@@ -213,7 +213,7 @@ hex) and:
    vector on another machine.
 
 The round-trip harness (`tests/superfaiss_roundtrip/`) runs exactly these
-steps against SuperFAISS v3.3.0, the release `superfaiss.lock` pins. Over the
+steps against SuperFAISS v3.4.3, the release `superfaiss.lock` pins. Over the
 239-document proof corpus it checks that SuperFAISS's float32 top-10 equals an
 independent float64 cosine top-10, and that `semb query --top 10`, an exact
 diagnostic scan and not the search engine, equals the same list; it also

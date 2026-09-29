@@ -12,7 +12,7 @@ src/*.cpp with INTEGRATION.md section 1's flags; it links no SuperEmbedder
 code and compiles nothing from docs/.
 
 The query rule it executes is the README's ("Using a bank with SuperFAISS"),
-read at SuperFAISS v3.3.0 source: each vector `semb query` emits is passed as
+read at SuperFAISS v3.4.3 source: each vector `semb query` emits is passed as
 emitted, zero-padded to the bank's paddedDims (PaddedDims(dims, quantization));
 it is NOT normalized first. A cosine bank's rows are unit-normed at bake
 (NormalizeRows) and query-time cosine is a plain dot product (FORMAT.md section
