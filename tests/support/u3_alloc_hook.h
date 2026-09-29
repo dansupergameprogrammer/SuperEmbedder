@@ -59,6 +59,19 @@ struct HostState {
   std::atomic<uint64_t> fired_call_count{0};
   std::atomic<uint32_t> fired_occupancy{0};
   std::atomic<int64_t> live{0};  // live allocations, whole process
+  // Segmentation (C64's GPU-open site plan): while `segmenting`, each counted
+  // allocation is keyed by (inside an engine call?, the running call count),
+  // and maximal runs of one key are recorded in fixed storage -- no
+  // allocation inside the hook. A key is one engine call, or U3's own frames
+  // between two engine calls.
+  static constexpr int kMaxSegments = 1 << 16;
+  std::atomic<int> segmenting{0};
+  int nseg = 0;
+  bool seg_overflow = false;
+  uint64_t seg_first[kMaxSegments];
+  uint64_t seg_last[kMaxSegments];
+  uint64_t seg_call[kMaxSegments];
+  bool seg_engine[kMaxSegments];
 };
 inline HostState& Host() {
   static HostState s;
@@ -66,8 +79,11 @@ inline HostState& Host() {
 }
 inline thread_local int t_reentry = 0;
 
-inline void Count() {
+inline void Count(bool segment = false) {
   HostState& h = Host();
+  h.nseg = 0;
+  h.seg_overflow = false;
+  h.segmenting = segment ? 1 : 0;
   h.target = 0;
   h.fired = 0;
   h.seen = 0;
@@ -75,6 +91,7 @@ inline void Count() {
 }
 inline void Arm(uint64_t k, int fault) {
   HostState& h = Host();
+  h.segmenting = 0;
   h.fired = 0;
   h.seen = 0;
   h.fault = fault;
@@ -84,6 +101,7 @@ inline void Arm(uint64_t k, int fault) {
 inline uint64_t Disarm() {
   HostState& h = Host();
   h.counting = 0;
+  h.segmenting = 0;
   h.target = 0;
   return h.seen.load();
 }
@@ -93,6 +111,20 @@ inline void OnAllocate() {
   HostState& h = Host();
   if (!h.counting.load(std::memory_order_relaxed) || t_reentry) return;
   const uint64_t n = h.seen.fetch_add(1) + 1;
+  if (h.segmenting.load(std::memory_order_relaxed)) {
+    const bool eng = semb_test_seam_gpu_occupancy_now() > 0;
+    const uint64_t call = semb_test_seam_gpu_call_count();
+    if (h.nseg > 0 && h.seg_engine[h.nseg - 1] == eng && h.seg_call[h.nseg - 1] == call) {
+      h.seg_last[h.nseg - 1] = n;
+    } else if (h.nseg < HostState::kMaxSegments) {
+      h.seg_first[h.nseg] = h.seg_last[h.nseg] = n;
+      h.seg_engine[h.nseg] = eng;
+      h.seg_call[h.nseg] = call;
+      ++h.nseg;
+    } else {
+      h.seg_overflow = true;
+    }
+  }
   if (n != h.target.load()) return;
   t_reentry = 1;
   h.fired_call_count = semb_test_seam_gpu_call_count();
