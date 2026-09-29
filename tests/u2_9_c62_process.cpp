@@ -220,16 +220,18 @@ int RunProcess(const ProcessOptions& o, const Hooks& hooks) {
     }
   }
   const char* long_cell = mc == 1 ? "C62 (b) mc=1, 1,111-token encode," : "C62 (c) mc=4, four-document batch,";
-  const double steady_bound = mc == 1 ? kLongSteadyBoundMiB : kBatchSteadyBoundMiB;
   const double excursion_bound = mc == 1 ? kLongExcursionBoundMiB : kBatchExcursionBoundMiB;
   if (long_status != SEMB_OK) {
     std::fprintf(out, "[FAIL] %s the encode returned %s\n", long_cell, Name(long_status));
     tally.Add(Verdict::kFail);
   } else {
     const bool pre = long_leg.preconditions_hold() && long_shape;
-    for (int c = 0; c < kCounters; ++c)
-      tally.Add(Report(out, long_cell, static_cast<Counter>(c), "steady (above post-open, less the ballast)",
+    for (int c = 0; c < kCounters; ++c) {
+      const Counter k = static_cast<Counter>(c);
+      const double steady_bound = mc == 1 ? kLongSteadyBoundMiB : BatchSteadyBoundMiB(k);
+      tally.Add(Report(out, long_cell, k, "steady (above post-open, less the ballast)",
                        GradeAtMost(long_leg.steady_mib[c], steady_bound, pre)));
+    }
     for (int c = 0; c < kCounters; ++c)
       tally.Add(Report(out, long_cell, static_cast<Counter>(c), "excursion (above the raised floor)",
                        GradeAtMost(long_leg.excursion_mib[c], excursion_bound, pre)));

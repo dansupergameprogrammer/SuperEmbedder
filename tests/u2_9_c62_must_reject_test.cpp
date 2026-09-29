@@ -26,7 +26,8 @@
 //       (P:2804). EXPECTED: the leg's STEADY is refused on both counters.
 //       --leg short (mc 1): held after the 5-token encode (steady bound
 //       11.5 MiB); --leg long (mc 1: the 1,111-token encode, 120 MiB;
-//       mc 4: the four-document batch, 456 MiB). One process each, so no
+//       mc 4: the four-document batch, 456 MiB working set and 479.3 MiB
+//       private bytes). One process each, so no
 //       held block enters another leg's reading.
 //
 // Exit: 0 the construction's refusals all fired (C62 refuses what it must);

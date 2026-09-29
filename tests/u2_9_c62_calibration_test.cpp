@@ -40,8 +40,11 @@
 //          steady comparison's accept and refuse sides are calibrated here
 //          too.) The action commits, touches and KEEPS a block: a 64 MiB
 //          block must read 64 MiB of steady within 1 MiB on both counters;
-//          blocks 16 MiB under and over the steady bounds 120 and 456 (the
-//          ballasted legs) are accepted and refused; the short leg's steady
+//          blocks 16 MiB under and over the steady bounds 120 and, at mc 4,
+//          456 on the working set and 479.3 on private bytes (the ballasted
+//          legs; the private-bytes bound moved on an independent reading,
+//          P:2817-2819, see the reader) are accepted and refused, each graded
+//          on the counter its bound is stated for; the short leg's steady
 //          bound, 11.5 MiB (a steady-only leg, MeasureSteadyLeg), accepts a
 //          3.5 MiB block (the design figure; 16 MiB under is negative) and
 //          refuses 27.5 MiB (16 MiB over).
@@ -135,22 +138,29 @@ void ComparisonLegs() {
     Check(GradeOpen(bad, b.mc, b.c).verdict == Verdict::kNoVerdict,
           "(a) mc=" + std::to_string(b.mc) + " " + CounterName(b.c) + ": a failed reading emits no verdict");
   }
-  // (b), (c): steady and excursion bounds (P:2770-2785).
-  const struct { const char* name; double bound; bool steady; bool ballasted; } per_doc[] = {
-      {"(b) 5-token steady", kShortSteadyBoundMiB, true, false},
-      {"(b) 1,111-token steady", kLongSteadyBoundMiB, true, true},
-      {"(b) 1,111-token excursion", kLongExcursionBoundMiB, false, true},
-      {"(c) batch steady", kBatchSteadyBoundMiB, true, true},
-      {"(c) batch excursion", kBatchExcursionBoundMiB, false, true}};
-  const double plan_bounds[] = {11.5, 120.0, 189.5, 456.0, 734.0};
+  // (b), (c): steady and excursion bounds (P:2770-2785), each row graded on
+  // the counters it is stated for (all < 0: both). The (c) steady bound is
+  // per counter: private bytes moved on an independent reading (P:2817-2819).
+  const struct { const char* name; double bound; bool steady; bool ballasted; int only; } per_doc[] = {
+      {"(b) 5-token steady", kShortSteadyBoundMiB, true, false, -1},
+      {"(b) 1,111-token steady", kLongSteadyBoundMiB, true, true, -1},
+      {"(b) 1,111-token excursion", kLongExcursionBoundMiB, false, true, -1},
+      {"(c) batch steady", BatchSteadyBoundMiB(kWorkingSet), true, true, kWorkingSet},
+      {"(c) batch steady", BatchSteadyBoundMiB(kPrivateBytes), true, true, kPrivateBytes},
+      {"(c) batch excursion", kBatchExcursionBoundMiB, false, true, -1}};
+  // The plan's figures, and the private-bytes (c) steady bound derived from
+  // the pin-step build's readings: 448 + 0.875 + 4 x 7.6 = 479.275 -> 479.3.
+  const double plan_bounds[] = {11.5, 120.0, 189.5, 456.0, 479.3, 734.0};
   for (size_t i = 0; i < sizeof(per_doc) / sizeof(per_doc[0]); ++i) {
     const auto& d = per_doc[i];
-    Check(d.bound == plan_bounds[i], std::string(d.name) + ": the bound reads the plan's " + F(plan_bounds[i]) +
-                                         " MiB (" + F(d.bound) + ")");
+    const std::string row =
+        std::string(d.name) + (d.only < 0 ? "" : std::string(" (") + CounterName(static_cast<Counter>(d.only)) + ")");
+    Check(d.bound == plan_bounds[i], row + ": the bound reads " + F(plan_bounds[i]) + " MiB (" + F(d.bound) + ")");
     for (int side = -1; side <= 1; side += 2) {
       const double reading = d.bound + side * kMargin;
       const LegReading leg = ConstructedLeg(d.ballasted, reading, reading);
       for (int c = 0; c < kCounters; ++c) {
+        if (d.only >= 0 && c != d.only) continue;
         const Counter k = static_cast<Counter>(c);
         const Grade g = d.steady ? GradeSteady(leg, k, d.bound) : GradeExcursion(leg, k, d.bound);
         const Verdict want = side < 0 ? Verdict::kPass : Verdict::kFail;
@@ -167,6 +177,7 @@ void ComparisonLegs() {
       trimmed.resident_ok = false;
       trimmed.nonresident_pages = 1;
       for (int c = 0; c < kCounters; ++c) {
+        if (d.only >= 0 && c != d.only) continue;
         const Counter k = static_cast<Counter>(c);
         const Grade gf = d.steady ? GradeSteady(floor, k, d.bound) : GradeExcursion(floor, k, d.bound);
         const Grade gt = d.steady ? GradeSteady(trimmed, k, d.bound) : GradeExcursion(trimmed, k, d.bound);
@@ -326,14 +337,18 @@ void PerDocumentCalibration() {
                   s.steady_mib[c] - kKnownBlockMiB, MiB(s.ballast_bytes) / 512.0);
   }
   // Accept and refuse, 16 MiB either side of each bound, on both counters.
-  struct Case { const char* name; double bound; bool steady; bool ballasted; double under; };
+  // `only` < 0: graded on both counters; otherwise on that counter alone (the
+  // (c) steady bound is per counter, P:2817-2819).
+  struct Case { const char* name; double bound; bool steady; bool ballasted; double under; int only; };
+  const double ws_c = BatchSteadyBoundMiB(kWorkingSet), pb_c = BatchSteadyBoundMiB(kPrivateBytes);
   const Case cases[] = {
-      {"(b) 1,111-token excursion", kLongExcursionBoundMiB, false, true, kLongExcursionBoundMiB - kMargin},
-      {"(c) batch excursion", kBatchExcursionBoundMiB, false, true, kBatchExcursionBoundMiB - kMargin},
-      {"(b) 1,111-token steady", kLongSteadyBoundMiB, true, true, kLongSteadyBoundMiB - kMargin},
-      {"(c) batch steady", kBatchSteadyBoundMiB, true, true, kBatchSteadyBoundMiB - kMargin},
+      {"(b) 1,111-token excursion", kLongExcursionBoundMiB, false, true, kLongExcursionBoundMiB - kMargin, -1},
+      {"(c) batch excursion", kBatchExcursionBoundMiB, false, true, kBatchExcursionBoundMiB - kMargin, -1},
+      {"(b) 1,111-token steady", kLongSteadyBoundMiB, true, true, kLongSteadyBoundMiB - kMargin, -1},
+      {"(c) batch steady, working set", ws_c, true, true, ws_c - kMargin, kWorkingSet},
+      {"(c) batch steady, private bytes", pb_c, true, true, pb_c - kMargin, kPrivateBytes},
       // 16 MiB under 11.5 is negative: the accept side holds the design's 3.5 MiB.
-      {"(b) 5-token steady", kShortSteadyBoundMiB, true, false, 3.5},
+      {"(b) 5-token steady", kShortSteadyBoundMiB, true, false, 3.5, -1},
   };
   for (const Case& k : cases) {
     const double sizes[2] = {k.under, k.bound + kMargin};
@@ -342,6 +357,7 @@ void PerDocumentCalibration() {
       const std::string cell = std::string("C62 ") + k.name + " calibration, a " + F(sizes[side]) + " MiB block";
       PrintLeg(stdout, cell.c_str(), leg);
       for (int c = 0; c < kCounters; ++c) {
+        if (k.only >= 0 && c != k.only) continue;
         const Counter ctr = static_cast<Counter>(c);
         const Grade g = k.steady ? GradeSteady(leg, ctr, k.bound) : GradeExcursion(leg, ctr, k.bound);
         const Verdict want = side == 0 ? Verdict::kPass : Verdict::kFail;

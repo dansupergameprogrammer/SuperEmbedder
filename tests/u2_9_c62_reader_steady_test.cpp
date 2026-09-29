@@ -106,19 +106,21 @@ int main() {
           "mc 4 shape: the working-set charge is the ballast's bytes, as the dev box reads it (+0.00)");
   }
 
-  // 2. Accept and refuse at the (c) bound, 456 MiB, on private bytes. A
-  //    product at 455.9 MiB under a 600.3 MiB ballast is accepted (the
-  //    bytes-only formula read 457.07 and refused it); a product at 456.1 is
-  //    refused (the correction takes none of the product's own footprint).
+  // 2. Accept and refuse at the (c) private-bytes bound, 479.3 MiB (moved on
+  //    an independent reading, P:2817-2819; see the reader). A product at
+  //    479.2 MiB under a 600.3 MiB ballast is accepted (the bytes-only
+  //    formula reads it about 1.17 MiB high and refuses it); a product at
+  //    479.4 is refused (the correction takes none of the product's own
+  //    footprint).
   {
-    const LegReading under = Leg(Pages(634.8), Pages(633.2), 0, Pages(600.3), 512.0, Pages(455.9), 0);
+    const LegReading under = Leg(Pages(634.8), Pages(633.2), 0, Pages(600.3), 512.0, Pages(479.2), 0);
     const Grade gu = GradeSteady(under, kPrivateBytes, kBatchSteadyBoundMiB);
-    Check(gu.verdict == Verdict::kPass, "(c) private bytes: a 455.9 MiB product under the ballast reads " +
-                                            F(gu.reading_mib, 2) + " and is " + V(gu.verdict) + " against 456.0 (expected accepted)");
-    const LegReading over = Leg(Pages(634.8), Pages(633.2), 0, Pages(600.3), 512.0, Pages(456.1), 0);
+    Check(gu.verdict == Verdict::kPass, "(c) private bytes: a 479.2 MiB product under the ballast reads " +
+                                            F(gu.reading_mib, 2) + " and is " + V(gu.verdict) + " against 479.3 (expected accepted)");
+    const LegReading over = Leg(Pages(634.8), Pages(633.2), 0, Pages(600.3), 512.0, Pages(479.4), 0);
     const Grade go = GradeSteady(over, kPrivateBytes, kBatchSteadyBoundMiB);
-    Check(go.verdict == Verdict::kFail, "(c) private bytes: a 456.1 MiB product under the ballast reads " +
-                                            F(go.reading_mib, 2) + " and is " + V(go.verdict) + " against 456.0 (expected refused)");
+    Check(go.verdict == Verdict::kFail, "(c) private bytes: a 479.4 MiB product under the ballast reads " +
+                                            F(go.reading_mib, 2) + " and is " + V(go.verdict) + " against 479.3 (expected refused)");
     // (b) at mc 1: 653 MiB ballast, bound 120.
     const LegReading b_under = Leg(Pages(640.0), Pages(645.0), 0, Pages(653.0), 512.0, Pages(119.9), 0);
     const Grade gbu = GradeSteady(b_under, kPrivateBytes, kLongSteadyBoundMiB);

@@ -100,7 +100,25 @@ constexpr double kShortSteadyBoundMiB = 3.5 + 8.0;
 constexpr double kLongSteadyBoundMiB = 112.0 + 8.0;
 constexpr double kLongExcursionBoundMiB = 112.0 + 69.5 + 8.0;  // 189.5
 // (c), mc 4: semb_encode_batch over four copies of the 1,111-token text.
-constexpr double kBatchSteadyBoundMiB = 448.0 + 8.0;
+// Steady, working set: the plan's 448 + 8 (P:2776-2777).
+constexpr double kBatchSteadyWorkingSetBoundMiB = 448.0 + 8.0;
+// Steady, private bytes: moved on an independent reading (P:2817-2819), as a
+// D-SLM7811 build-time item. The plan's 8 MiB allowance (P:2786-2787, 4 x
+// the largest measured drift) was never measured at mc 4; the tip read 6.7
+// to 9.6 MiB over 448. The residue was attributed to per-batch-encode heap
+// slack by the same leg on the pin-step build, which grows no slot buffer
+// (it holds full-cap slots from open) and is not the build under test
+// (P:2787-2788, P:2800-2802). Formula, fixed before the runs:
+//   448 + 0.875 (the grown slot buffers' page tables, 448 / 512)
+//       + 4 x max(pin-step mc 4 (c) private steady over four runs)
+// Pin-step readings, four runs, 2026-09-29: 5.7, 5.6, 7.6, 7.5 MiB; max 7.6.
+//   448 + 0.875 + 4 x 7.6 = 479.275, stated to one decimal (rounded up).
+constexpr double kBatchSteadyBoundMiB = 479.3;
+// The (c) steady bound for counter `c`: private bytes take the moved bound,
+// the working set keeps the plan's.
+constexpr double BatchSteadyBoundMiB(Counter c) {
+  return c == kPrivateBytes ? kBatchSteadyBoundMiB : kBatchSteadyWorkingSetBoundMiB;
+}
 constexpr double kBatchExcursionBoundMiB = 448.0 + 4.0 * 69.5 + 8.0;  // 734.0
 
 // ---- readings ----
