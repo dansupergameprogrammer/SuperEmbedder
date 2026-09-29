@@ -396,16 +396,30 @@ IDXGIAdapter1* SelectAdapter(IDXGIFactory6* factory, const std::string& index) {
 }
 #endif
 
+// The complete fallback set (sec 4.3, P:4212): every label "unknown" except
+// the index this open read. Never throws: "unknown" and "default" fit every
+// supported standard library's small-string buffer, and an index whose copy
+// cannot be allocated is itself "unknown".
+void SetFallbackLabels(const std::string& index, AdapterLabels* labels) noexcept {
+  labels->vendor_id = "unknown";
+  labels->device_id = "unknown";
+  labels->adapter_name = "unknown";
+  labels->driver_version = "unknown";
+  try {
+    labels->adapter_index = index.empty() ? "default" : index;
+  } catch (...) {
+    labels->adapter_index = "unknown";
+  }
+}
+
 // The manifest's gpu_* labels (sec 4.3), read through DXGI from the adapter
 // the engine's rule picks for the SSLM_GPU_ADAPTER_INDEX value this open
-// reads. A value that cannot be read is "unknown"; a label never refuses.
+// reads, into a local set that starts as the fallback set. A value that cannot
+// be read stays "unknown"; a label never refuses. May throw (an allocation):
+// the caller commits the result only once this returns.
 AdapterLabels ReadAdapterLabels(const std::string& index) {
   AdapterLabels labels;
-  labels.adapter_index = index.empty() ? "default" : index;
-  labels.vendor_id = "unknown";
-  labels.device_id = "unknown";
-  labels.adapter_name = "unknown";
-  labels.driver_version = "unknown";
+  SetFallbackLabels(index, &labels);
 #if defined(_WIN32)
   IDXGIFactory6* factory = nullptr;
   if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) return labels;
@@ -770,12 +784,22 @@ semb_status Open(const superslm::SslmModelView* view, int64_t context_cap, uint3
   }
   if (result != SEMB_OK) return result;
 
-  // The labels read DXGI, not the engine, and never refuse the open.
+  // The labels read DXGI, not the engine, and never refuse the open (P:4212,
+  // PD-1). The destination holds the complete fallback set before the probe
+  // runs; the probe's set replaces it through a no-throw swap only after the
+  // whole read returned, so an exception anywhere in it leaves the fallback
+  // set, never a partial one.
   if (labels) {
+    SetFallbackLabels(index, labels);
     try {
-      *labels = ReadAdapterLabels(index);
+      AdapterLabels probed = ReadAdapterLabels(index);
+      using std::swap;
+      swap(labels->adapter_index, probed.adapter_index);
+      swap(labels->vendor_id, probed.vendor_id);
+      swap(labels->device_id, probed.device_id);
+      swap(labels->adapter_name, probed.adapter_name);
+      swap(labels->driver_version, probed.driver_version);
     } catch (...) {
-      labels->adapter_index = index.empty() ? "default" : index;
     }
   }
   *out = enc.release();
