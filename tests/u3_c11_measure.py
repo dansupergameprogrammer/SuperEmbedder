@@ -99,8 +99,11 @@ def main(argv: list[str]) -> int:
     fiqa_state = "MISSING"
     if args.leg == "tokps":
         fiqa_state, detail = fiqa_sets.check_long80(args.fiqa_corpus)
-        if fiqa_state != "MISSING":
-            print(f"[{fiqa_state}] C11 FiQA documents are fiqa-long80: {detail}", flush=True)
+        if fiqa_state == "MISSING":
+            # Half of C11's tok/s population is absent: the leg skips, never measures the rest and passes
+            # (the U3 code review's C4).
+            return cells.missing(f"C11 tokps: {detail} (SEMB_U3_FIQA_CORPUS, defaulting to SEMB_U3_C10H_CORPUS)")
+        print(f"[{fiqa_state}] C11 FiQA documents are fiqa-long80: {detail}", flush=True)
         if fiqa_state == "FAIL":
             return 1
     elif args.leg == "query":
@@ -134,11 +137,7 @@ def main(argv: list[str]) -> int:
 
     if args.leg == "tokps":
         corpora = [("corpus239", CORPUS)]
-        if fiqa_state == "PASS":
-            corpora.append(("fiqa-long80", Path(args.fiqa_corpus)))
-        else:
-            print("[MISSING PREREQUISITE] C11 fiqa-long80: --fiqa-corpus (SEMB_U3_FIQA_CORPUS, defaulting to "
-                  "SEMB_U3_C10H_CORPUS) not given")
+        corpora.append(("fiqa-long80", Path(args.fiqa_corpus)))  # checked above, before any hardware work
         for label, path in corpora:
             rows = docs(path)[:n] if n else docs(path)
             sha = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
