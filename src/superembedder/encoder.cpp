@@ -1021,6 +1021,11 @@ static semb_status EncoderOpenBody(const semb_config* cfg, semb_encoder* out) {
   if (cfg->struct_size != sizeof(semb_config)) return SEMB_STRUCT_SIZE_MISMATCH;
   if ((!cfg->model_path && cfg->model_path_len > 0) ||
       (!cfg->tokenizer_path && cfg->tokenizer_path_len > 0)) return SEMB_NULL_ARGUMENT;
+  // U3 (te266 P:4024): an unknown `device` refuses before any artifact byte
+  // is read, and so does SEMB_DEVICE_GPU in a library built without the GPU
+  // path.
+  if (cfg->device != SEMB_DEVICE_CPU && cfg->device != SEMB_DEVICE_GPU) return SEMB_DEVICE_UNSUPPORTED;
+  if (cfg->device == SEMB_DEVICE_GPU) return SEMB_DEVICE_UNSUPPORTED;
   const auto read_file = [](const char* path, size_t path_len, std::vector<uint8_t>* bytes) {
     return ReadFileOnce(std::string_view(path ? path : "", path_len), bytes) ? SEMB_OK
                                                                             : SEMB_ARTIFACT_UNREADABLE;
