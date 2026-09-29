@@ -123,7 +123,7 @@ std::string WhereFired(uint64_t call_count_at_fault, uint32_t occupancy_at_fault
   std::vector<semb_test_seam_gpu_call> v(static_cast<size_t>(total));
   if (total) semb_test_seam_gpu_call_log(v.data(), 0, total);
   for (const auto& c : v) {
-    if (c.index == call_count_at_fault + 1) return std::string("engine:") + c.verb;
+    if (c.index == call_count_at_fault) return std::string("engine:") + c.verb;
   }
   return "engine:?";
 }

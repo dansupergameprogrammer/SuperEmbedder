@@ -10,7 +10,8 @@
 // At the moment it fires it records where k fell, read through the GPU seam
 // (semb_u3_gpu_seam.h): the running engine-call count and the number of
 // threads inside an engine call. "Inside an engine call" is that number being
-// nonzero; the call is the log record with index call_count + 1.
+// nonzero; the call is the log record whose index equals that call count
+// (the seam counts a call as it enters, so the count already includes it).
 //
 // Device hook (d2-d4, Windows only): ID3D12Device::CreateCommittedResource,
 // vtable slot 27, which every device the D3D12 runtime creates shares (as
