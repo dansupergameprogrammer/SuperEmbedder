@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -102,7 +103,23 @@ def done_dir(build: Path) -> Path:
     return d
 
 
+def restore_hidden_shaders(tree: Path) -> None:
+    """c10d_refused_after_creation renames one staged .cso to <name>.cso.removed and back. A crash between
+    the two leaves every later GPU step without that shader, and the stamped staging will not copy it
+    again. Before each step, put back any renamed-away shader whose original is absent (the cell does the
+    same at its own start)."""
+    for dirpath, _dirs, files in os.walk(tree):
+        for f in files:
+            if f.endswith(".cso.removed"):
+                moved = Path(dirpath) / f
+                orig = moved.with_name(f[: -len(".removed")])
+                if not orig.exists():
+                    moved.rename(orig)
+                    print(f"restored {orig} (left renamed by an interrupted c10d_refused_after_creation)")
+
+
 def run_step(step: str, tree: Path, marks: Path) -> int:
+    restore_hidden_shaders(tree)
     log = marks / f"{step}.ctest.log"
     cmd = ["ctest", "--test-dir", str(tree), "-R", f"^{step}$", "--output-on-failure", "--output-log", str(log)]
     print("$ " + " ".join(cmd), flush=True)
