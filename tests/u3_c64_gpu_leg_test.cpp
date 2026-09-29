@@ -216,6 +216,10 @@ int main(int argc, char** argv) {
   const size_t dims = ref.size();
   Driver drv;
   drv.Prepare(dims);
+  // `where` keeps one buffer for the whole sweep, reserved before the base is
+  // read, so its label is never a live allocation of the harness's own.
+  std::string where;
+  where.reserve(128);
   const int64_t live_base = u3hook::Host().live.load();
 
   Handle h1, h2;
@@ -275,8 +279,10 @@ int main(int argc, char** argv) {
       break;
     }
     const bool in_engine = u3hook::Host().fired_occupancy.load() > 0;
-    const std::string where =
-        in_engine ? "engine:" + VerbAt(u3hook::Host().fired_call_count.load() + 1) : std::string("u3");
+    {
+      const std::string w = in_engine ? "engine:" + VerbAt(u3hook::Host().fired_call_count.load()) : std::string("u3");
+      where.assign(w.data(), std::min<size_t>(w.size(), 127));  // within the reserved capacity: no allocation
+    }
     const bool trylock = semb_test_seam_gpu_try_lock() == 1;
     int32_t want;
     if (fault == u3hook::kForeign) {
@@ -320,6 +326,11 @@ int main(int argc, char** argv) {
     bool live_ok;
     if (released || poisoned || is_open) {
       const semb_status c1 = semb_encoder_close(h1.enc), c2 = semb_encoder_close(h2.enc);
+      // The base was read before any handle existed, so the harness's own row
+      // buffers (allocated after it) are freed before the live count is read.
+      std::vector<float>().swap(h1.row);
+      std::vector<float>().swap(h2.row);
+      std::vector<float>().swap(h3.row);
       const int64_t contexts = semb_test_seam_gpu_context_count();
       const int64_t live_closed = u3hook::Host().live.load();
       live_ok = c1 == SEMB_OK && c2 == SEMB_OK && contexts == 0 && live_closed == live_base;
