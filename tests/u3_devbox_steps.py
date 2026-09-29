@@ -20,6 +20,21 @@ staged <u3_gpu_cells_test dir>/shaders/down_proj_gemm_site.cso, the plan's
 measured construction (te266 P:1496, T-2842 F1). Set it only to name another
 shader the prefill dispatches; one it never dispatches (attention_score_site.cso
 on the pair) leaves every call SSLM_OK and the cell red for the wrong reason.
+Tree A also needs -DSEMB_U3_CPU_ENGINE_PREFIX=<a v1.8.0 pin install made
+WITHOUT --with-gpu> (U2's CPU-only install serves): G10-win configures ON
+against it and must be refused SEMB_ENGINE_GPU_MISSING. Without it
+u3_configure_legs_check skips (77) on Windows instead of passing.
+
+RE-RUN after the U3 code review's test fixes (C1-C4): delete the .done marker
+of each step below (or `--run` it), and for the C64 open steps also delete
+build/_u3_logs/c64gpu_semb_encoder_open_<arm>.sweep.log, whose sites were
+numbered by the old exhaustive population:
+  u3_configure_legs_check            (C1: G10-win's own CPU-only prefix)
+  u3_c64_gpu_*                       (C2: warm open-and-close before the close-all
+                                      base; semb_encoder_open now sweeps a finite
+                                      site plan -- delete every c64gpu_* sweep log)
+  u3_fiqa_sets_selftest              (C3: the recorded query digest is required)
+  u3_c11_tokps_pilot, u3_c11_tokps_full   (C4: skips when fiqa-long80 is absent)
 
 Commissioning steps (row 5 (d), P:4215) run in a SECOND tree (tree B)
 configured against the engine at v1.7.1 with -DSEMB_U3_COMMISSION_TREE=ON; pass
