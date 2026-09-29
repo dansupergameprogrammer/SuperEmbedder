@@ -101,6 +101,11 @@ struct semb_encoder_s {
   // written; read with acquire ordering by every lookup, so a caller that
   // observes ready == true also observes every field written before it.
   std::atomic<bool> ready{false};
+  // U3 (te266 sec 4.1-4.3): the forward this handle's encodes run on
+  // (semb_config.device), and, on a GPU handle, the adapter's labels for the
+  // manifest. A CPU handle writes no gpu_* label.
+  uint32_t device = SEMB_DEVICE_CPU;
+  semb::gpu::AdapterLabels gpu_labels;
 
   ~semb_encoder_s() {
     if (interim) semb_interim_encoder_close(interim);
@@ -826,7 +831,7 @@ semb_status CopySpan(const uint8_t* bytes, size_t len, std::vector<uint8_t>* out
 // `source`, the way the bytes arrive; everything checked and derived here
 // runs on the encoder's own copies.
 static semb_status OpenEncoder(const ArtifactSource& source, uint32_t requested_max_concurrency,
-                               semb_encoder* out) {
+                               uint32_t device, semb_encoder* out) {
   // U2-3 item 14: the linked engine's identity, before `source` reads or copies any artifact byte and before
   // any engine code runs. Both public open verbs reach it here, by construction.
   const semb::engine_link::Verdict link = semb::engine_link::CheckLinkedEngine();
@@ -935,6 +940,7 @@ static semb_status OpenEncoder(const ArtifactSource& source, uint32_t requested_
     handle->vocab_size = geometry.vocab_size;
     handle->context_cap = geometry.context_cap;
     handle->chunk_budget = 0;
+    handle->device = device;
     semb_encoder cookie = nullptr;
     semb_encoder_s* const h = handle.get();
     {
@@ -1037,7 +1043,7 @@ static semb_status EncoderOpenBody(const semb_config* cfg, semb_encoder* out) {
         return read_file(cfg->tokenizer_path, cfg->tokenizer_path_len, bytes);
       },
       [&](std::vector<uint8_t>* bytes) { return read_file(cfg->model_path, cfg->model_path_len, bytes); }};
-  return OpenEncoder(source, cfg->max_concurrency, out);
+  return OpenEncoder(source, cfg->max_concurrency, cfg->device, out);
 }
 
 extern "C" semb_status semb_encoder_open(const semb_config* cfg, semb_encoder* out) {
@@ -1061,7 +1067,9 @@ static semb_status EncoderOpenMemoryBody(const semb_memory_config* cfg, semb_enc
       OpenRoute::kMemory,
       [&](std::vector<uint8_t>* bytes) { return CopySpan(cfg->tokenizer_bytes, cfg->tokenizer_len, bytes); },
       [&](std::vector<uint8_t>* bytes) { return CopySpan(cfg->model_bytes, cfg->model_len, bytes); }};
-  return OpenEncoder(source, cfg->max_concurrency, out);
+  // U3 ruling 5: semb_memory_config has no `device`; a memory open always
+  // runs on the CPU.
+  return OpenEncoder(source, cfg->max_concurrency, SEMB_DEVICE_CPU, out);
 }
 
 extern "C" semb_status semb_encoder_open_memory(const semb_memory_config* cfg, semb_encoder* out) {
@@ -1819,6 +1827,17 @@ static semb_status BakeToPathBody(semb_encoder enc, const semb_document* docs, s
     manifest.Set("row_digest", js::Value::MakeString(Hex(row_digest.data(), 32)));
     manifest.Set("corpus_digest", js::Value::MakeString(Hex(corpus_digest.data(), 32)));
     manifest.Set("machine_tier", js::Value::MakeString(semb::certification::DispatchedTier()));
+    // U3 (te266 sec 4.3; docs/FORMAT.md): labels only, never fingerprint or
+    // verdict inputs. `device` names the forward that emitted the rows; a GPU
+    // bake adds the adapter it ran on, and a CPU bake writes no gpu_* label.
+    manifest.Set("device", js::Value::MakeString(h->device == SEMB_DEVICE_GPU ? "gpu" : "cpu"));
+    if (h->device == SEMB_DEVICE_GPU) {
+      manifest.Set("gpu_adapter_index", js::Value::MakeString(h->gpu_labels.adapter_index));
+      manifest.Set("gpu_vendor_id", js::Value::MakeString(h->gpu_labels.vendor_id));
+      manifest.Set("gpu_device_id", js::Value::MakeString(h->gpu_labels.device_id));
+      manifest.Set("gpu_adapter_name", js::Value::MakeString(h->gpu_labels.adapter_name));
+      manifest.Set("gpu_driver_version", js::Value::MakeString(h->gpu_labels.driver_version));
+    }
     manifest.Set("token_id_digest", js::Value::MakeString(Hex(token_id_digest.data(), 32)));
     js::Value token_counts = js::Value::MakeArray();
     for (size_t i = 0; i < n; ++i) token_counts.as_array.push_back(js::Value::MakeInt(per_row_token_counts[i]));
