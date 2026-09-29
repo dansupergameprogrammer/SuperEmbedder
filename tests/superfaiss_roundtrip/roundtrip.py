@@ -60,6 +60,17 @@ because a synthetic model's class-match and digests certify nothing.
 Qwen3-Embedding-0.6B pair) and grades all four; invoked with either empty it
 reports MISSING PREREQUISITE and exits 0.
 
+Prebuilt mode (the certification package, plan U2-6): `--program` names a prebuilt
+sf_roundtrip and `--wvbank` SuperFAISS's tools/wvbank.py, both taken from the tree
+superfaiss.lock pins when the package was built, so neither the lock, git, CMake
+nor a compiler is needed on the host; `--semb` names the member's prebuilt semb
+in place of building it from --build-dir, which then only holds the scratch
+directory; and `--bank` names the stem of a corpus-239 bank that `--semb` already
+baked from the committed corpus, which is read in place of a second bake. With
+`--artifact synthetic`, --model and --tokenizer, when given, name the synthetic
+pair in place of minting it. The cells, the comparisons and the output are the
+same in either mode.
+
 Exit codes: 0 every graded cell PASS (or MISSING PREREQUISITE); 1 any FAIL.
 """
 from __future__ import annotations
@@ -201,8 +212,8 @@ def synthetic_pair(pair_dir: Path) -> tuple[str, str]:
     return str(model), str(tokenizer)
 
 
-def load_wvbank(tree: Path):
-    spec = importlib.util.spec_from_file_location("superfaiss_wvbank", tree / "tools" / "wvbank.py")
+def load_wvbank(path: Path):
+    spec = importlib.util.spec_from_file_location("superfaiss_wvbank", path)
     if spec is None or spec.loader is None:
         raise RuntimeError("cannot load SuperFAISS tools/wvbank.py")
     module = importlib.util.module_from_spec(spec)
@@ -257,7 +268,8 @@ def read_hits(path: Path, queries: int) -> list[list[tuple[int, float]]]:
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--build-dir", type=Path, required=True)
-    ap.add_argument("--cmake-executable", required=True)
+    ap.add_argument("--cmake-executable", default="",
+                    help="required unless --program and --semb name prebuilt programs")
     ap.add_argument("--cxx-compiler", default="")
     ap.add_argument("--artifact", choices=("synthetic", "real"), required=True)
     ap.add_argument("--model", default=None)
@@ -266,7 +278,18 @@ def main(argv: list[str]) -> int:
                     help="a SuperFAISS git clone or remote; default SEMB_SUPERFAISS_SOURCE, then the public remote")
     ap.add_argument("--pair-dir", type=Path, default=ROOT / "build" / "_scratch" / "te222_c17_pair")
     ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--semb", type=Path, default=None, help="a prebuilt semb, used in place of building one")
+    ap.add_argument("--program", type=Path, default=None, help="a prebuilt sf_roundtrip (needs --wvbank)")
+    ap.add_argument("--wvbank", type=Path, default=None, help="SuperFAISS's tools/wvbank.py at the pinned commit")
+    ap.add_argument("--bank", type=Path, default=None,
+                    help="stem of a corpus-239 bank --semb baked from the committed corpus; read, not re-baked")
     args = ap.parse_args(argv)
+    if (args.program is None) != (args.wvbank is None):
+        ap.error("--program and --wvbank are given together")
+    if args.bank is not None and args.semb is None:
+        ap.error("--bank needs --semb, the program that baked it")
+    if not args.cmake_executable and (args.program is None or args.semb is None):
+        ap.error("--cmake-executable is required unless --program, --wvbank and --semb are given")
     report = Report()
     real = args.artifact == "real"
 
@@ -285,32 +308,50 @@ def main(argv: list[str]) -> int:
 
     # --- the pin -----------------------------------------------------------
     lock_path = ROOT / "superfaiss.lock"
-    if not lock_path.is_file():
+    if args.program is not None:
+        try:
+            if not args.program.is_file() or not args.wvbank.is_file():
+                raise RuntimeError(f"prebuilt mode needs {args.program} and {args.wvbank}")
+            program = args.program
+            wvbank = load_wvbank(args.wvbank)
+            report.add("PASS", "SuperFAISS program", f"prebuilt {program.name}; reader {args.wvbank}")
+            import numpy as np
+        except Exception as exc:  # noqa: BLE001 -- every apparatus failure is a named FAIL
+            report.add("FAIL", "apparatus", f"{type(exc).__name__}: {exc}")
+            return 1
+    elif not lock_path.is_file():
         report.add("FAIL", "superfaiss.lock", f"{lock_path} is absent")
         return 1
-    try:
-        lock = read_lock(lock_path)
-        source = args.superfaiss_source or os.environ.get("SEMB_SUPERFAISS_SOURCE") or DEFAULT_SUPERFAISS_REMOTE
-        tree = export_superfaiss(lock, source, scratch)
-        report.add("PASS", "superfaiss.lock", f"tag {lock['tag']} resolves to the pinned commit {lock['commit']}")
-        program = build_program(tree, scratch, args.cmake_executable, args.cxx_compiler or None)
-        report.add("PASS", "SuperFAISS program", f"compiled from {tree.name}/src/*.cpp with INTEGRATION.md sec 1 flags")
-        wvbank = load_wvbank(tree)
-        import numpy as np
-    except Exception as exc:  # noqa: BLE001 -- every apparatus failure is a named FAIL
-        report.add("FAIL", "apparatus", f"{type(exc).__name__}: {exc}")
-        return 1
+    else:
+        try:
+            lock = read_lock(lock_path)
+            source = args.superfaiss_source or os.environ.get("SEMB_SUPERFAISS_SOURCE") or DEFAULT_SUPERFAISS_REMOTE
+            tree = export_superfaiss(lock, source, scratch)
+            report.add("PASS", "superfaiss.lock", f"tag {lock['tag']} resolves to the pinned commit {lock['commit']}")
+            program = build_program(tree, scratch, args.cmake_executable, args.cxx_compiler or None)
+            report.add("PASS", "SuperFAISS program",
+                       f"compiled from {tree.name}/src/*.cpp with INTEGRATION.md sec 1 flags")
+            wvbank = load_wvbank(tree / "tools" / "wvbank.py")
+            import numpy as np
+        except Exception as exc:  # noqa: BLE001 -- every apparatus failure is a named FAIL
+            report.add("FAIL", "apparatus", f"{type(exc).__name__}: {exc}")
+            return 1
 
     # --- the bake ----------------------------------------------------------
     try:
-        if real:
-            model, tokenizer = args.model, args.tokenizer
+        if real or (args.model and args.tokenizer):
+            model, tokenizer = args.model, args.tokenizer  # the synthetic pair may be named too (prebuilt mode)
         else:
             model, tokenizer = synthetic_pair(args.pair_dir)
-        built = run([args.cmake_executable, "--build", str(args.build_dir), "--target", "semb"], timeout=1800)
-        semb = find_semb(args.build_dir)
-        if built.returncode or semb is None:
-            raise RuntimeError(f"semb unavailable: {text(built)[-600:]}")
+        if args.semb is not None:
+            semb = args.semb if args.semb.is_file() else None
+            if semb is None:
+                raise RuntimeError(f"semb unavailable: {args.semb} is not a file")
+        else:
+            built = run([args.cmake_executable, "--build", str(args.build_dir), "--target", "semb"], timeout=1800)
+            semb = find_semb(args.build_dir)
+            if built.returncode or semb is None:
+                raise RuntimeError(f"semb unavailable: {text(built)[-600:]}")
     except Exception as exc:  # noqa: BLE001
         report.add("FAIL", "apparatus", f"{type(exc).__name__}: {exc}")
         return 1
@@ -325,11 +366,15 @@ def main(argv: list[str]) -> int:
     corpus = scratch / "rt-corpus.jsonl"
     corpus.write_text("".join(json.dumps({"id": row["label"], "text": row["text"]}) + "\n" for row in rows),
                       encoding="utf-8", newline="\n")
-    stem = scratch / "rt"
-    bake = run([str(semb), "bake", str(corpus), "--out", str(stem), *base], timeout=7200)
-    if bake.returncode:
-        report.add("FAIL", "semb bake", f"exit {bake.returncode}: {text(bake)[-600:]}")
-        return 1
+    if args.bank is not None:
+        stem = args.bank
+        report.add("PASS", "semb bake", f"read {stem}, baked by {semb.name} from the committed corpus")
+    else:
+        stem = scratch / "rt"
+        bake = run([str(semb), "bake", str(corpus), "--out", str(stem), *base], timeout=7200)
+        if bake.returncode:
+            report.add("FAIL", "semb bake", f"exit {bake.returncode}: {text(bake)[-600:]}")
+            return 1
 
     # --- RT-1 --------------------------------------------------------------
     header_path = Path(str(stem) + ".wvbank.json")
