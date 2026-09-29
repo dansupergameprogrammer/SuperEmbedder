@@ -1,0 +1,5 @@
+{
+  "schemaVersion": 1,
+  "about": "GPU mode's other legs (te267 U2-6 GPU mode; te266 sec 4.5): C10(c), C10(g) and C11's cells, GPU and CPU, for the host whose tier each names. U3 fills this list before REL-4 step 3; until then GPU mode runs only the proof-corpus bake. Each leg is one bake, filed under gpu/<runId>/ with the file set of U2-3 item 12. Fields: name (unique), hostTier (sse2, avx2, avx512 or any), binary (a bin/ folder: msvc19.33-auto-gpu or a member), corpus (a package-relative JSONL of {id, text}), args (extra semb bake arguments, e.g. [\"--device\", \"gpu\"]), device (gpu requires the manifest's device to be gpu).",
+  "legs": []
+}
