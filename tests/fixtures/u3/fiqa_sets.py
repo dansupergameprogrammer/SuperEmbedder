@@ -51,8 +51,9 @@ FIQA_LONG80_ROWS = 80
 QUERIES_DATASET = "mteb/fiqa"
 QUERIES_REVISION = "5e59eeb3a7df6b85882112b747008547c21587ea"
 QUERIES_COUNT = 100
-# The recorded sha256 of the minted fiqa-queries100.jsonl. EMPTY = not yet minted.
-QUERIES100_SHA256 = ""
+# The recorded sha256 of the minted fiqa-queries100.jsonl (minted twice on the dev box with
+# --from-hub, byte-identical). EMPTY would mean not yet minted.
+QUERIES100_SHA256 = "6e14d9c710438c598f2cb27496e4e388c199f9e79f706b4b3c2586ceab6b7acd"
 
 
 class Refused(Exception):
