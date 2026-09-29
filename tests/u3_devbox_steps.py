@@ -14,6 +14,13 @@ its own [PASS]/[FAIL]/[RED-UNIMPLEMENTED] lines into build/_u3_logs/.
   python tests/u3_devbox_steps.py --build-dir <tree> --run <step>  (that step again)
   python tests/u3_devbox_steps.py --build-dir <tree> --status
 
+Tree A (--build-dir) is the SEMB_BUILD_GPU=ON tree at the v1.8.0 pin. Leave
+SEMB_U3_SHADER_TO_REMOVE empty: c10d_refused_after_creation then hides the
+staged <u3_gpu_cells_test dir>/shaders/down_proj_gemm_site.cso, the plan's
+measured construction (te266 P:1496, T-2842 F1). Set it only to name another
+shader the prefill dispatches; one it never dispatches (attention_score_site.cso
+on the pair) leaves every call SSLM_OK and the cell red for the wrong reason.
+
 Commissioning steps (row 5 (d), P:4215) run in a SECOND tree (tree B)
 configured against the engine at v1.7.1 with -DSEMB_U3_COMMISSION_TREE=ON; pass
 that tree as --commission-build-dir. They come before any decision-bearing (d)

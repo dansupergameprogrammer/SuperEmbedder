@@ -108,8 +108,10 @@
 //                         unset, a second open succeeds with CPU rows.
 //   c10d_after_success    P:4158 -- unset open succeeds and bakes; the out-of-range index
 //                         then refuses a second open; unset, a third open succeeds.
-//   c10d_refused_after_creation  P:4159 -- run from a scratch copy of the executable with
-//                         --remove-shader <one .cso>: the open refuses
+//   c10d_refused_after_creation  P:4159 -- --remove-shader <one .cso the engine loads>,
+//                         by default the staged <exe dir>/shaders/down_proj_gemm_site.cso
+//                         (te266 P:1496, T-2842 F1's measured construction; SETUP fails
+//                         if it is absent), renamed away and restored: the open refuses
 //                         SEMB_DEVICE_UNAVAILABLE during its agreement check, the log shows
 //                         context create and model map SSLM_OK before the refusing call,
 //                         and the context count is 0; the file restored, a second open
@@ -1011,6 +1013,12 @@ void CellC10dRefusedAfterCreation() {
   if (g.remove_shader.empty()) { u3::Missing(g.cell, "--remove-shader (the driver prepares a scratch copy)"); return; }
   const std::string moved = g.remove_shader + ".removed";
   if (!fs::exists(g.remove_shader) && fs::exists(moved)) fs::rename(moved, g.remove_shader);  // resume after a crash
+  if (!fs::exists(g.remove_shader)) {
+    // SETUP: the construction needs a shader the engine loads and the prefill dispatches (P:1496).
+    u3::Verdict(false, "c10d_refused_after_creation SETUP the shader to hide exists where the engine loads it",
+                g.remove_shader + " is absent (the engine reads <executable dir>/shaders; see SEMB_U3_SHADER_TO_REMOVE)");
+    return;
+  }
   for (const auto& x : kShortDocs) CpuRow(g.model, g.tokenizer, x);
   fs::rename(g.remove_shader, moved);
   ResetLog();

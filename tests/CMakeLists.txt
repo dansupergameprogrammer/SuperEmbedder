@@ -1977,7 +1977,13 @@ set_tests_properties(
 # PREREQUISITE (exit 77, skipped) anywhere but a Windows tree configured with
 # SEMB_BUILD_GPU=ON; tests/u3_devbox_steps.py runs them one ctest per step.
 # ---------------------------------------------------------------------------
-set(SEMB_U3_SHADER_TO_REMOVE "" CACHE FILEPATH "U3 C10 (d)/row 5 (d): one installed .cso the must-reject renames away")
+# Empty = the plan's measured construction (te266 P:1496, T-2842 F1): hide
+# down_proj_gemm_site.cso, which every prefill dispatches, from the copy the
+# engine actually loads -- the shaders/ directory staged beside
+# u3_gpu_cells_test (the engine reads <executable dir>/shaders). A shader the
+# pair's prefill never dispatches (e.g. attention_score_site.cso) leaves every
+# call SSLM_OK and the cell red for the wrong reason.
+set(SEMB_U3_SHADER_TO_REMOVE "" CACHE FILEPATH "U3 C10 (d)/row 5 (d): the .cso the must-reject renames away (empty = the staged down_proj_gemm_site.cso, P:1496)")
 set(SEMB_U3_OFF_BUILD_DIR "" CACHE PATH "U3 C10 (b): a SEMB_BUILD_GPU=OFF build tree of the same commit")
 # fiqa-long80 (D-SLM7873) is C10 (h)'s population and C11's FiQA documents
 # (the planner's U3 rulings 3-4); it lives in the records repository, and its
@@ -2150,9 +2156,16 @@ function(semb_add_u3_seam_tests)
 			WORKING_DIRECTORY "${_d}/..")
 		list(APPEND _gpu_tests u3_gpu_cell_c10d_refused_then_corrected_${_v})
 	endforeach()
+	if(SEMB_U3_SHADER_TO_REMOVE STREQUAL "" AND NOT TARGET u3_gpu_cells_test)
+		set(_semb_u3_shader_to_remove "")  # no GPU binary here: the driver reports MISSING PREREQUISITE first
+	elseif(SEMB_U3_SHADER_TO_REMOVE STREQUAL "")
+		set(_semb_u3_shader_to_remove "$<TARGET_FILE_DIR:u3_gpu_cells_test>/shaders/down_proj_gemm_site.cso")
+	else()
+		set(_semb_u3_shader_to_remove "${SEMB_U3_SHADER_TO_REMOVE}")
+	endif()
 	add_test(NAME u3_gpu_cell_c10d_refused_after_creation
 		COMMAND ${_drv} --target u3_gpu_cells_test --gpu --fixtures u1 --log-name gpu_cell_c10d_refused_after_creation
-			-- --cell c10d_refused_after_creation --remove-shader "${SEMB_U3_SHADER_TO_REMOVE}"
+			-- --cell c10d_refused_after_creation --remove-shader "${_semb_u3_shader_to_remove}"
 			--scratch "${CMAKE_BINARY_DIR}/_scratch/u3_gpu_cells/c10d_rac"
 		WORKING_DIRECTORY "${_d}/..")
 	list(APPEND _gpu_tests u3_gpu_cell_c10d_refused_after_creation)
