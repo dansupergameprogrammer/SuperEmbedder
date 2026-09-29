@@ -14,6 +14,7 @@
 #include "superembedder/manifest_labels_abi.h"
 #include "superembedder/version.h"
 #include "encoder_open_internal.h"
+#include "engine_adapter_gpu.h"
 #include "certification.h"
 #include "query_internal.h"
 #include "wb_corpus.h"
@@ -1025,7 +1026,7 @@ static semb_status EncoderOpenBody(const semb_config* cfg, semb_encoder* out) {
   // is read, and so does SEMB_DEVICE_GPU in a library built without the GPU
   // path.
   if (cfg->device != SEMB_DEVICE_CPU && cfg->device != SEMB_DEVICE_GPU) return SEMB_DEVICE_UNSUPPORTED;
-  if (cfg->device == SEMB_DEVICE_GPU) return SEMB_DEVICE_UNSUPPORTED;
+  if (cfg->device == SEMB_DEVICE_GPU && !semb::gpu::Built()) return SEMB_DEVICE_UNSUPPORTED;
   const auto read_file = [](const char* path, size_t path_len, std::vector<uint8_t>* bytes) {
     return ReadFileOnce(std::string_view(path ? path : "", path_len), bytes) ? SEMB_OK
                                                                             : SEMB_ARTIFACT_UNREADABLE;
