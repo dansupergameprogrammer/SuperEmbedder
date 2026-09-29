@@ -50,6 +50,32 @@
 //   SEMB_DEVICE_UNAVAILABLE", is u3_gpu_cells_test --cell
 //   c10d_refused_after_creation, which constructs exactly that.)
 //
+// POPULATION (planned; the dev box's reading at v1.8.0 on the real model).
+// One armed call counts every replaced operator new in the process: for one
+// encode of --text that was host=164,574 (dev=24), and for one GPU open
+// host=13,893,260 (dev=1,931), against the plan's 674 host and 120 D3D12 sites
+// (te266 P:4215's cost line, from the engine plan te421 sec 4.3 and its sec 2.2
+// probe). The plan's figures are ENGINE sites: sec 2.2's probe armed the
+// engine's own per-document loop (reset, prompt prefill, read) for a 40-id
+// document, with no SuperEmbedder frame in the window, and row 5(d) says so:
+// "the fault is a real allocation failing inside the engine". The product's
+// encode adds its own frames around those calls (tokenization, U3 staging, and
+// the CPU work on the read triple), and the open adds U2's whole CPU open and
+// witness forward; those frames are C64's population (J12, and U2-10's CPU
+// rows), not row 5(d)'s. So each leg now sweeps a planned site set, derived
+// from a counting run in the sweep's own frame (the call log emptied first, so
+// its reservation cannot shift k), and every armed site checks that k fell
+// where the plan put it (same in-call state, same call offset; DRIFTED = FAIL):
+//   d1   every host allocation made INSIDE an engine call of the encode (the
+//        plan's population, exhaustively), plus the first and last allocation
+//        of the first run of each U3-frame class (U3's frames between two
+//        engine calls), graded by the same oracle;
+//   d3h  every host allocation made inside sslm_gpu_model_map during the open
+//        ("(d1) and (d2) at the model map");
+//   d3d  every D3D12 creation made inside sslm_gpu_model_map during the open;
+//   d2   every D3D12 creation of the encode (24 at v1.8.0), unchanged.
+// The count leg prints the breakdown (CLASS lines) that shows where K goes.
+//
 // COMMISSIONED before its first decision-bearing run (P:4215): against the
 // engine at v1.7.1 the same legs read 530 non-conforming d1 sites (50 + 480),
 // 120 d2 sites and a permanent loss at d4 [M, the plan]. A (d) that passes at
@@ -163,14 +189,172 @@ bool RowIs(const Encoder& e, const std::vector<float>& ref) {
   return e.row.size() == ref.size() && std::memcmp(e.row.data(), ref.data(), ref.size() * sizeof(float)) == 0;
 }
 
+// ---- the planned site population ---------------------------------------------
+struct Site {
+  uint64_t k = 0;
+  bool engine = false;
+  uint64_t rel_call = 0;  // the running call count at k, minus the count before the armed call
+  std::string cls;
+};
+
+std::string VerbOf(uint64_t index) {
+  const uint64_t total = semb_test_seam_gpu_call_log(nullptr, 0, 0);
+  std::vector<semb_test_seam_gpu_call> v(static_cast<size_t>(total));
+  if (total) semb_test_seam_gpu_call_log(v.data(), 0, total);
+  for (const auto& c : v) {
+    if (c.index == index) return c.verb;
+  }
+  return "?";
+}
+
+void ResetCallLog() {
+  if (semb_test_seam_gpu_call_log_reset() != 1) std::fprintf(stderr, "call log reset refused\n");
+}
+
+// From the host hook's segments of the counting run just made (call counts c0
+// before it, c_end after it): the planned sites and a per-class breakdown.
+// map_only: only allocations inside sslm_gpu_model_map, every one.
+// Otherwise: every allocation inside any engine call, and the first and last
+// allocation of the first run of each U3-frame class.
+bool DeriveHostPlan(uint64_t c0, uint64_t c_end, bool map_only, std::vector<Site>* plan, std::string* why,
+                    bool print_classes) {
+  u3hook::HostState& h = u3hook::Host();
+  if (h.seg_overflow) {
+    *why = "more than " + u3::S(u3hook::HostState::kMaxSegments) + " allocation runs";
+    return false;
+  }
+  struct Tally {
+    std::string cls;
+    uint64_t allocs = 0, runs = 0, swept = 0;
+  };
+  std::vector<Tally> tallies;
+  auto tally = [&](const std::string& cls) -> Tally& {
+    for (auto& t : tallies) {
+      if (t.cls == cls) return t;
+    }
+    tallies.push_back(Tally{cls});
+    return tallies.back();
+  };
+  std::vector<std::string> sampled;
+  std::vector<std::string> verbs;  // verb per relative call index, read once
+  for (uint64_t c = c0 + 1; c <= c_end; ++c) verbs.push_back(VerbOf(c));
+  auto verb = [&](uint64_t c) { return c > c0 && c <= c_end ? verbs[c - c0 - 1] : std::string("?"); };
+  for (int i = 0; i < h.nseg; ++i) {
+    Site f;
+    f.engine = h.seg_engine[i];
+    f.rel_call = h.seg_call[i] - c0;
+    if (f.engine) {
+      f.cls = "engine:" + verb(h.seg_call[i]);
+    } else {
+      f.cls = "u3:" + (h.seg_call[i] == c0 ? std::string("start") : verb(h.seg_call[i])) + "->" +
+              (h.seg_call[i] >= c_end ? std::string("end") : verb(h.seg_call[i] + 1));
+    }
+    Tally& t = tally(f.cls);
+    t.allocs += h.seg_last[i] - h.seg_first[i] + 1;
+    t.runs += 1;
+    if (map_only) {
+      if (f.cls != "engine:sslm_gpu_model_map") continue;
+    } else if (!f.engine) {
+      if (std::find(sampled.begin(), sampled.end(), f.cls) != sampled.end()) continue;
+      sampled.push_back(f.cls);
+      f.k = h.seg_first[i];
+      plan->push_back(f);
+      t.swept += 1;
+      if (h.seg_last[i] != h.seg_first[i]) {
+        f.k = h.seg_last[i];
+        plan->push_back(f);
+        t.swept += 1;
+      }
+      continue;
+    }
+    for (uint64_t k = h.seg_first[i]; k <= h.seg_last[i]; ++k) {
+      f.k = k;
+      plan->push_back(f);
+    }
+    t.swept += h.seg_last[i] - h.seg_first[i] + 1;
+  }
+  if (print_classes) {
+    for (const auto& t : tallies) {
+      Line("CLASS " + a.leg + " " + t.cls + " allocations=" + u3::S(t.allocs) + " runs=" + u3::S(t.runs) +
+           " swept=" + u3::S(t.swept));
+    }
+  }
+  std::sort(plan->begin(), plan->end(), [](const Site& x, const Site& y) { return x.k < y.k; });
+  if (plan->empty()) {
+    *why = map_only ? "no counted allocation inside sslm_gpu_model_map" : "no counted allocation";
+    return false;
+  }
+  return true;
+}
+
+#if defined(_WIN32)
+bool DeriveDevicePlan(uint64_t c0, uint64_t c_end, uint64_t n, std::vector<Site>* plan, std::string* why) {
+  u3hook::DeviceState& d = u3hook::Dev();
+  if (n > static_cast<uint64_t>(u3hook::kMaxLabels)) {
+    *why = "more than " + u3::S(u3hook::kMaxLabels) + " creations";
+    return false;
+  }
+  for (uint64_t i = 0; i < n; ++i) {
+    if (!d.engine_at[i] || d.call_at[i] <= c0 || d.call_at[i] > c_end) continue;
+    if (VerbOf(d.call_at[i]) != "sslm_gpu_model_map") continue;
+    Site f;
+    f.k = i + 1;
+    f.engine = true;
+    f.rel_call = d.call_at[i] - c0;
+    f.cls = "engine:sslm_gpu_model_map";
+    plan->push_back(f);
+  }
+  if (plan->empty()) {
+    *why = "no D3D12 creation inside sslm_gpu_model_map";
+    return false;
+  }
+  return true;
+}
+#endif
+
+// Iterates a plan from --first (resume), writing END when it is exhausted.
+const Site* NextSite(const std::vector<Site>& plan, size_t* pi, uint64_t K) {
+  while (*pi < plan.size() && plan[*pi].k < a.first) ++*pi;
+  if (*pi == plan.size() || (a.last != 0 && plan[*pi].k > a.last)) {
+    Line("END " + a.leg + " k=" + u3::S(K + 1) + " (past the planned sites)");
+    return nullptr;
+  }
+  return &plan[(*pi)++];
+}
+
 // d1 / d2: one armed encode per site.
 void SweepEncode(bool device) {
   Encoder e1, e2;
   std::vector<float> ref;
   if (!Setup(&e1, &e2, &ref)) return;
-  for (uint64_t k = a.first; a.last == 0 || k <= a.last; ++k) {
+  std::vector<Site> plan;
+  uint64_t K = 0;
+  if (!device) {  // d1: the counting run, in the sweep's frame (a clean encode, then the counted one)
+    e1.Encode(a.text);
+    ResetCallLog();
+    const uint64_t c0 = semb_test_seam_gpu_call_count();
+    u3hook::Count(true);
+    e1.Encode(a.text);
+    K = u3hook::Disarm();
+    std::string why;
+    if (!DeriveHostPlan(c0, semb_test_seam_gpu_call_count(), false, &plan, &why, true)) {
+      u3::Verdict(false, "d1 site plan", why);
+      return;
+    }
+    Line("PLAN d1 K=" + u3::S(K) + " sites=" + u3::S(plan.size()));
+  }
+  size_t pi = 0;
+  for (uint64_t k = a.first; a.last == 0 || k <= a.last || !device; ++k) {
+    const Site* site = nullptr;
+    if (!device) {
+      site = NextSite(plan, &pi, K);
+      if (!site) break;
+      k = site->k;
+    }
     Line("BEGIN " + a.leg + " k=" + u3::S(k));
     const bool clean = e1.Encode(a.text) == SEMB_OK && RowIs(e1, ref);
+    if (!device) ResetCallLog();
+    const uint64_t c_before = semb_test_seam_gpu_call_count();
     semb_status s;
     int fired = 0;
     uint64_t cc = 0;
@@ -197,16 +381,23 @@ void SweepEncode(bool device) {
 #endif
     }
     if (!fired) {
+      if (site) {
+        Line("SITE " + a.leg + " k=" + u3::S(k) + " class=" + site->cls + " NOT-REACHED FAIL");
+        u3::Verdict(false, a.leg + " k=" + u3::S(k), "planned site not reached");
+        continue;
+      }
       Line("END " + a.leg + " k=" + u3::S(k) + " (past K: the arm did not fire)");
       break;
     }
+    const bool on_plan = !site || ((occ > 0) == site->engine && cc - c_before == site->rel_call);
     const std::string where = WhereFired(cc, occ);
     const uint64_t c0 = semb_test_seam_gpu_call_count();
     const bool follow = e1.Encode(a.text) == SEMB_OK && RowIs(e1, ref);
     const bool moved = semb_test_seam_gpu_call_count() > c0;
     const bool second = e2.Encode(a.text) == SEMB_OK && RowIs(e2, ref);
-    const bool ok = clean && s == SEMB_ALLOCATION_FAILED && follow && moved && second;
-    Line("SITE " + a.leg + " k=" + u3::S(k) + " kind=" + kind + " where=" + where + " status=" + u3::Name(s) +
+    const bool ok = clean && s == SEMB_ALLOCATION_FAILED && follow && moved && second && on_plan;
+    Line("SITE " + a.leg + " k=" + u3::S(k) + " kind=" + kind + (site ? " class=" + site->cls : std::string()) +
+         (on_plan ? "" : " DRIFTED") + " where=" + where + " status=" + u3::Name(s) +
          " want=SEMB_ALLOCATION_FAILED follow=" + (follow ? "1" : "0") + " moved=" + (moved ? "1" : "0") +
          " second=" + (second ? "1" : "0") + " clean_before=" + (clean ? "1" : "0") + (ok ? " PASS" : " FAIL"));
     u3::Verdict(ok, a.leg + " k=" + u3::S(k), u3::Name(s));
@@ -218,9 +409,52 @@ void SweepEncode(bool device) {
 // d3h / d3d: one armed open per site.
 void SweepOpen(bool device) {
   const std::vector<float> ref = CpuReference(a.text);
-  for (uint64_t k = a.first; a.last == 0 || k <= a.last; ++k) {
+  {  // warm: the process's first GPU open sets up what later opens reuse
+    semb_encoder w = nullptr;
+    if (OpenGpu(&w) == SEMB_OK) semb_encoder_close(w);
+  }
+  // The counting run, in the sweep's frame: the call log emptied, the config made, then the open.
+  std::vector<Site> plan;
+  uint64_t K = 0;
+  {
+    ResetCallLog();
+    const uint64_t c0 = semb_test_seam_gpu_call_count();
+    const u3::Config c = u3::MakeConfig(a.model, a.tokenizer, 1, u3::kDeviceGpu);
+    semb_encoder e = nullptr;
+    std::string why;
+    bool ok = false;
+    if (!device) {
+      u3hook::Count(true);
+      const semb_status s = u3::Open(c, &e);
+      K = u3hook::Disarm();
+      ok = s == SEMB_OK && DeriveHostPlan(c0, semb_test_seam_gpu_call_count(), true, &plan, &why, true);
+      if (s != SEMB_OK) why = std::string("the counting open returned ") + u3::Name(s);
+    } else {
+#if defined(_WIN32)
+      u3hook::DeviceCount();
+      const semb_status s = u3::Open(c, &e);
+      K = u3hook::DeviceDisarm();
+      ok = s == SEMB_OK && DeriveDevicePlan(c0, semb_test_seam_gpu_call_count(), K, &plan, &why);
+      if (s != SEMB_OK) why = std::string("the counting open returned ") + u3::Name(s);
+#else
+      why = "Windows/D3D12 only";
+#endif
+    }
+    if (e) semb_encoder_close(e);
+    if (!ok) {
+      u3::Verdict(false, a.leg + " site plan", why);
+      return;
+    }
+    Line("PLAN " + a.leg + " K=" + u3::S(K) + " sites=" + u3::S(plan.size()) + " (inside sslm_gpu_model_map)");
+  }
+  size_t pi = 0;
+  for (;;) {
+    const Site* site = NextSite(plan, &pi, K);
+    if (!site) break;
+    const uint64_t k = site->k;
     Line("BEGIN " + a.leg + " k=" + u3::S(k));
-    semb_test_seam_gpu_call_log_reset();
+    ResetCallLog();
+    const uint64_t c_before = semb_test_seam_gpu_call_count();
     semb_encoder e = reinterpret_cast<semb_encoder>(static_cast<uintptr_t>(1));
     semb_status s;
     int fired = 0;
@@ -250,11 +484,13 @@ void SweepOpen(bool device) {
     }
     if (!fired) {
       if (s == SEMB_OK && e) semb_encoder_close(e);
-      Line("END " + a.leg + " k=" + u3::S(k) + " (past K: the arm did not fire)");
-      break;
+      Line("SITE " + a.leg + " k=" + u3::S(k) + " kind=" + kind + " NOT-REACHED FAIL");
+      u3::Verdict(false, a.leg + " k=" + u3::S(k), "planned site not reached");
+      continue;
     }
     const std::string where = WhereFired(cc, occ);
     if (s == SEMB_OK && e) semb_encoder_close(e);
+    const bool on_plan = occ > 0 && cc - c_before == site->rel_call;
     const bool in_map = where == "engine:sslm_gpu_model_map";
     const bool null_out = s != SEMB_OK && e == nullptr;
     const int64_t contexts = semb_test_seam_gpu_context_count();
@@ -266,11 +502,11 @@ void SweepOpen(bool device) {
       second = again.Encode(a.text) == SEMB_OK && RowIs(again, ref);
       semb_encoder_close(again.enc);
     }
-    const bool ok = s == SEMB_ALLOCATION_FAILED && null_out && contexts == 0 && second;
-    Line("SITE " + a.leg + " k=" + u3::S(k) + " kind=" + kind + " where=" + where + " status=" + u3::Name(s) +
-         " want=SEMB_ALLOCATION_FAILED contexts=" + std::to_string(contexts) + " second=" + (second ? "1" : "0") +
-         (in_map ? (ok ? " PASS" : " FAIL") : " OUTSIDE-MAP"));
-    if (in_map) u3::Verdict(ok, a.leg + " k=" + u3::S(k), u3::Name(s));
+    const bool ok = s == SEMB_ALLOCATION_FAILED && null_out && contexts == 0 && second && on_plan && in_map;
+    Line("SITE " + a.leg + " k=" + u3::S(k) + " kind=" + kind + (on_plan && in_map ? "" : " DRIFTED") +
+         " where=" + where + " status=" + u3::Name(s) + " want=SEMB_ALLOCATION_FAILED contexts=" +
+         std::to_string(contexts) + " second=" + (second ? "1" : "0") + (ok ? " PASS" : " FAIL"));
+    u3::Verdict(ok, a.leg + " k=" + u3::S(k), u3::Name(s));
   }
 }
 
@@ -278,12 +514,23 @@ void LegCount() {
   Encoder e1;
   std::vector<float> ref;
   if (!Setup(&e1, nullptr, &ref)) return;
-  u3hook::Count();
+  e1.Encode(a.text);  // the sweep's frame: a clean encode, then the counted one
+  ResetCallLog();
+  const uint64_t ec0 = semb_test_seam_gpu_call_count();
+  u3hook::Count(true);
 #if defined(_WIN32)
   u3hook::DeviceCount();
 #endif
   e1.Encode(a.text);
   const uint64_t host = u3hook::Disarm();
+  {
+    std::vector<Site> plan;
+    std::string why;
+    a.leg = "count-encode";
+    DeriveHostPlan(ec0, semb_test_seam_gpu_call_count(), false, &plan, &why, true);
+    Line("PLAN d1 sites=" + u3::S(plan.size()));
+    a.leg = "count";
+  }
   uint64_t dev = 0;
 #if defined(_WIN32)
   dev = u3hook::DeviceDisarm();
@@ -294,12 +541,22 @@ void LegCount() {
   Line("K encode host=" + u3::S(host) + " dev=" + u3::S(dev));
   semb_encoder_close(e1.enc);
   semb_encoder e = nullptr;
-  u3hook::Count();
+  ResetCallLog();
+  const uint64_t oc0 = semb_test_seam_gpu_call_count();
+  u3hook::Count(true);
 #if defined(_WIN32)
   u3hook::DeviceCount();
 #endif
   const semb_status s = OpenGpu(&e);
   const uint64_t ohost = u3hook::Disarm();
+  {
+    std::vector<Site> plan;
+    std::string why;
+    a.leg = "count-open";
+    DeriveHostPlan(oc0, semb_test_seam_gpu_call_count(), true, &plan, &why, true);
+    Line("PLAN d3h sites=" + u3::S(plan.size()));
+    a.leg = "count";
+  }
   uint64_t odev = 0;
 #if defined(_WIN32)
   odev = u3hook::DeviceDisarm();

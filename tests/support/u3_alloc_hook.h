@@ -182,6 +182,8 @@ struct DeviceState {
   std::atomic<uint64_t> fired_call_count{0};
   std::atomic<uint32_t> fired_occupancy{0};
   int heap_type[kMaxLabels] = {};  // heap type of creation i (1-based index i-1)
+  uint64_t call_at[kMaxLabels] = {};  // the running engine-call count at creation i
+  bool engine_at[kMaxLabels] = {};    // creation i was made inside an engine call
 };
 inline DeviceState& Dev() {
   static DeviceState s;
@@ -205,7 +207,11 @@ inline HRESULT STDMETHODCALLTYPE HookedCreateCommittedResource(ID3D12Device* sel
   DeviceState& d = Dev();
   if (d.counting.load()) {
     const uint64_t n = d.seen.fetch_add(1) + 1;
-    if (n <= static_cast<uint64_t>(kMaxLabels)) d.heap_type[n - 1] = hp ? static_cast<int>(hp->Type) : -1;
+    if (n <= static_cast<uint64_t>(kMaxLabels)) {
+      d.heap_type[n - 1] = hp ? static_cast<int>(hp->Type) : -1;
+      d.call_at[n - 1] = semb_test_seam_gpu_call_count();
+      d.engine_at[n - 1] = semb_test_seam_gpu_occupancy_now() > 0;
+    }
     if (n == d.target.load()) {
       d.fired_call_count = semb_test_seam_gpu_call_count();
       d.fired_occupancy = semb_test_seam_gpu_occupancy_now();

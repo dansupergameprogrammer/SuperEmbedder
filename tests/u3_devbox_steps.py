@@ -35,6 +35,16 @@ numbered by the old exhaustive population:
                                       site plan -- delete every c64gpu_* sweep log)
   u3_fiqa_sets_selftest              (C3: the recorded query digest is required)
   u3_c11_tokps_pilot, u3_c11_tokps_full   (C4: skips when fiqa-long80 is absent)
+  u3_gpu_alloc_count, u3_gpu_alloc_d1, u3_gpu_alloc_d3h, u3_gpu_alloc_d3d (and the
+                                     d1 commissioning step in tree B): row 5(d) now sweeps
+                                     a planned population -- d1 every host allocation
+                                     inside an engine call of the encode plus a sample of
+                                     U3's frames, d3h/d3d every allocation / creation
+                                     inside sslm_gpu_model_map -- instead of every counted
+                                     allocation (164,574 / 13,893,260 at v1.8.0). Delete
+                                     build/_u3_logs/alloc_{d1,d3h,d3d}*.sweep.log first:
+                                     their sites were numbered by the old population. The
+                                     count step's CLASS lines show where K goes.
 
 Commissioning steps (row 5 (d), P:4215) run in a SECOND tree (tree B)
 configured against the engine at v1.7.1 with -DSEMB_U3_COMMISSION_TREE=ON; pass
