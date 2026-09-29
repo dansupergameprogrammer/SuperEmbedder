@@ -2039,8 +2039,27 @@ add_test(NAME u3_row_digest_pair_selftest
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
 set_tests_properties(u3_abi_check u3_guard_fixture_check u3_cli_device_check u3_configure_legs_check
 	u3_pin_tool_gpu_check u3_row_digest_pair_selftest PROPERTIES LABELS "u3" SKIP_RETURN_CODE 77 TIMEOUT 3600)
-# Each driver builds its target in this tree: never two at once.
-set_tests_properties(u3_abi_check u3_guard_fixture_check u3_cli_device_check PROPERTIES RESOURCE_LOCK semb_u3_build)
+# Each driver builds its target in this tree: never two at once. The CLI check
+# may mint the cap-512 pair (build/_scratch/te222_c17_pair), a multi-GB mint.
+set_tests_properties(u3_abi_check u3_guard_fixture_check PROPERTIES RESOURCE_LOCK semb_u3_build)
+set_tests_properties(u3_cli_device_check PROPERTIES RESOURCE_LOCK "semb_u3_build;semb_multi_gb_mint")
+
+# U2-0 item 1's interpreter gate: every U3 test whose driver can run a fixture
+# regenerator requires it (tests/u2_0_python_gate_check.py (3)). Applied here,
+# in the directory that registers each test, because the root's deferred
+# semb_require_python_gate runs before this file's deferred U3 registration.
+function(semb_u3_require_python_gate)
+	get_property(_fixture GLOBAL PROPERTY SEMB_PYTHON_GATE_FIXTURE)
+	if(_fixture STREQUAL "")
+		return()
+	endif()
+	foreach(_test IN LISTS ARGN)
+		if(TEST ${_test})
+			set_property(TEST ${_test} APPEND PROPERTY FIXTURES_REQUIRED ${_fixture})
+		endif()
+	endforeach()
+endfunction()
+semb_u3_require_python_gate(u3_abi_check u3_guard_fixture_check u3_cli_device_check)
 
 # The seam-linked binaries: after superembedder_testseam exists.
 function(semb_add_u3_seam_tests)
@@ -2164,6 +2183,7 @@ function(semb_add_u3_seam_tests)
 	endforeach()
 	set_tests_properties(${_gpu_tests} PROPERTIES LABELS "u3;u3_devbox" SKIP_RETURN_CODE 77 RUN_SERIAL TRUE
 		TIMEOUT 36000)
+	semb_u3_require_python_gate(u3_cpu_seam_check ${_gpu_tests})
 endfunction()
 if(DEFINED SEMB_LIBRARY_SOURCES)
 	cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_u3_seam_tests)

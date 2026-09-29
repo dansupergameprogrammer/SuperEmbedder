@@ -37,7 +37,9 @@ FIXTURES = REPO_ROOT / "tests" / "fixtures"
 SCRATCH = REPO_ROOT / "build" / "_scratch"
 
 PAIRS = {
-    "u1": ("u1_pair", "regenerate_tokenizer_pair_fixture.py"),
+    # The U1 pair, minted into U3's own directory: build/_scratch/u1_pair belongs to
+    # u1_raw_text_cells_check's fixture (semb_u1_pair), and a second writer would race it.
+    "u1": ("u3_u1_pair", "regenerate_tokenizer_pair_fixture.py"),
     "min5k": ("u2_9_min_pair", "regenerate_u2_9_minimal_cap5000_pair_fixture.py"),
     "guard": ("u3_guard_pair", "regenerate_u3_guard_pair_fixture.py"),
     "guardmain": ("u3_guard_pair", "regenerate_u3_guard_pair_fixture.py"),
