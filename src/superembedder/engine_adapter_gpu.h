@@ -79,3 +79,10 @@ uint64_t SlotBound(const Encoder* encoder) noexcept;
 #endif
 
 }  // namespace semb::gpu
+
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+namespace semb::test_seam {
+// encoder.cpp: the GPU encoder of a public handle, or null.
+semb::gpu::Encoder* GpuEncoderOf(const void* enc);
+}  // namespace semb::test_seam
+#endif

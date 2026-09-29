@@ -106,8 +106,19 @@ struct semb_encoder_s {
   // manifest. A CPU handle writes no gpu_* label.
   uint32_t device = SEMB_DEVICE_CPU;
   semb::gpu::AdapterLabels gpu_labels;
+  // The id the composition appends to every document and query (the
+  // tokenizer's <|endoftext|>), for the GPU path's composed ids.
+  int32_t appended_token_id = 0;
+  // A GPU handle's encoder, set once its open-time agreement check passed.
+  semb::gpu::Encoder* gpu = nullptr;
+  // Non-null only while a GPU open's CPU witness runs: W-B and W-Q append
+  // each sequence's composed ids and CPU triple here for the agreement check
+  // (T388-11). A CPU open never sets it and computes no triple.
+  std::vector<semb::gpu::WitnessSequence>* witness_capture = nullptr;
 
   ~semb_encoder_s() {
+    // The GPU handles first (te266 sec 4.2): sequences, map, context.
+    if (gpu) semb::gpu::Close(gpu);
     if (interim) semb_interim_encoder_close(interim);
   }
 };
@@ -380,6 +391,48 @@ std::string ComposeDocumentInput(std::string_view text) {
   return out;
 }
 
+// U3 (te266 sec 4.2, "Encode"): a GPU triple goes into the existing PS-N
+// dequantize (P5), mapped exactly as the CPU path maps the same refusal.
+semb_status DequantizeTriple(const semb::gpu::Triple& t, size_t hidden, float* out) {
+  if (t.codes.size() != hidden) return SEMB_ENGINE_REFUSED;
+  const SembWaPoolStatus dq = semb_ps_n_dequantize(t.codes.data(), t.m, t.e, hidden, out);
+  if (dq == kSembOk) return SEMB_OK;
+  if (dq == kSembWaPoolAllocationFailed) return SEMB_ALLOCATION_FAILED;
+  if (dq == kSembWaPoolInternalFailure) return SEMB_ENGINE_REFUSED;
+  return MapInterimStatus(kSembInterimDequantizeRefused, dq);
+}
+
+// Runs `content_ids` (each without its terminator) on the handle's GPU
+// encoder, one after another on one slot, and writes each row. The callers
+// stage `out_vectors`, so a refusal at any document reaches no caller buffer.
+semb_status ComposeBatchGpu(semb_encoder_s* h, const std::vector<std::vector<int32_t>>& content_ids,
+                            float* out_vectors, size_t out_capacity_bytes,
+                            size_t* out_required_bytes) {
+  const size_t n = content_ids.size();
+  const size_t hidden = h->dims;
+  const size_t required = n * hidden * sizeof(float);
+  if (out_required_bytes) *out_required_bytes = required;
+  if (out_capacity_bytes < required) return SEMB_BUFFER_TOO_SMALL;
+  if (!out_vectors) return SEMB_NULL_ARGUMENT;
+  std::vector<std::vector<int32_t>> composed(content_ids.begin(), content_ids.end());
+  std::vector<const int32_t*> ptrs(n);
+  std::vector<size_t> lens(n);
+  for (size_t i = 0; i < n; ++i) {
+    composed[i].push_back(h->appended_token_id);
+    ptrs[i] = composed[i].data();
+    lens[i] = composed[i].size();
+  }
+  std::vector<semb::gpu::Triple> triples;
+  const semb_status st = semb::gpu::EncodeSequences(h->gpu, ptrs.data(), lens.data(), n, &triples);
+  if (st != SEMB_OK) return st;
+  if (triples.size() != n) return SEMB_ENGINE_REFUSED;
+  for (size_t i = 0; i < n; ++i) {
+    const semb_status dq = DequantizeTriple(triples[i], hidden, out_vectors + i * hidden);
+    if (dq != SEMB_OK) return dq;
+  }
+  return SEMB_OK;
+}
+
 // TE-165 (D-SLM6390, the conductor's ruling re-opening D-SLM6354 on
 // TE-161's own measurement, N-3/D-SLM6385): ONE internal batch
 // composition -- everything semb_encode_batch does after validating the
@@ -403,7 +456,8 @@ std::string ComposeDocumentInput(std::string_view text) {
 semb_status ComposeBatch(semb_encoder_s* h, const std::string_view* texts, size_t n,
                          float* out_vectors, size_t out_capacity_bytes,
                          size_t* out_required_bytes, uint8_t* out_seam_stream,
-                         size_t out_seam_stream_capacity, size_t* out_seam_stream_len) {
+                         size_t out_seam_stream_capacity, size_t* out_seam_stream_len,
+                         std::vector<std::vector<int32_t>>* out_composed_ids = nullptr) {
   // Per-document tokenization, with the document frame applied through
   // ComposeDocumentInput (TE-184, N-8, D-SLM6406 -- the empty byte string
   // under PS-N, D-SLM4726, concatenated at the ONE point named above, so a
@@ -427,11 +481,23 @@ semb_status ComposeBatch(semb_encoder_s* h, const std::string_view* texts, size_
     if (content_ids[i].size() >= h->context_cap) return SEMB_CONTEXT_CAP_EXCEEDED;
   }
 
+  // U3: a GPU handle's documents run on the GPU (sec 4.2, "Encode"). The
+  // seam tap (W-B at open) is CPU-only by construction: the GPU encoder has
+  // no per-position seam.
+  if (h->gpu && !out_seam_stream) {
+    return ComposeBatchGpu(h, content_ids, out_vectors, out_capacity_bytes, out_required_bytes);
+  }
+
   std::vector<const int32_t*> doc_ptrs(n);
   std::vector<size_t> doc_lens(n);
   for (size_t i = 0; i < n; ++i) {
     doc_ptrs[i] = content_ids[i].data();
     doc_lens[i] = content_ids[i].size();
+  }
+  // U3 (T388-11): a GPU open's W-B sequences, as the GPU will be given them.
+  if (out_composed_ids) {
+    out_composed_ids->assign(content_ids.begin(), content_ids.end());
+    for (auto& ids : *out_composed_ids) ids.push_back(h->appended_token_id);
   }
 
   // The appended terminator, the workspace acquisition(s) (TE-350: at most
@@ -473,15 +539,42 @@ semb_status EncodeQueryComposedImpl(semb_encoder_s* h, std::string_view composed
 
   const size_t required = static_cast<size_t>(h->dims) * sizeof(float);
   std::vector<float> staged(h->dims);
+  // U3: a GPU handle's queries run on the GPU, composed exactly as on the CPU.
+  if (h->gpu && !h->witness_capture) {
+    std::vector<std::vector<int32_t>> one(1, std::move(ids));
+    const semb_status st = ComposeBatchGpu(h, one, staged.data(), required, nullptr);
+    if (st != SEMB_OK) return st;
+    *out_vector = std::move(staged);
+    return SEMB_OK;
+  }
   SembWaPoolStatus dequantize = kSembOk;
   const char* engine_status = nullptr;
   size_t interim_required = 0;
-  const SembInterimStatus status = semb_interim_encode_ps_n(
-      h->interim, ids.data(), ids.size(), h->chunk_budget, staged.data(), required,
-      &interim_required, &dequantize, &engine_status);
+  SembInterimStatus status;
+  semb::InterimTriple triple;
+  if (h->witness_capture) {
+    // A GPU open's W-Q sequence (T388-11): the witness's own query forward,
+    // which also hands back the triple it selected. No second forward runs.
+    status = semb::EncodePsNWithTriple(h->interim, ids.data(), ids.size(), h->chunk_budget,
+                                       staged.data(), required, &interim_required, &dequantize,
+                                       &engine_status, &triple);
+  } else {
+    status = semb_interim_encode_ps_n(h->interim, ids.data(), ids.size(), h->chunk_budget,
+                                      staged.data(), required, &interim_required, &dequantize,
+                                      &engine_status);
+  }
   (void)engine_status;
   const semb_status mapped = MapInterimStatus(status, dequantize);
   if (mapped != SEMB_OK) return mapped;
+  if (h->witness_capture) {
+    semb::gpu::WitnessSequence w;
+    w.ids = ids;
+    w.ids.push_back(h->appended_token_id);
+    w.cpu.codes = std::move(triple.codes);
+    w.cpu.m = triple.m;
+    w.cpu.e = triple.e;
+    h->witness_capture->push_back(std::move(w));
+  }
   *out_vector = std::move(staged);
   return SEMB_OK;
 }
@@ -595,6 +688,50 @@ std::string_view CutWbDocumentText(const superslm::TokenizerView& tokenizer,
 // the composition (including the composition's own >= context_cap refusal,
 // restoring M-3's removed guard -- see ComposeBatch's own comment), the same
 // status every other mid-open engine failure already uses.
+// U3 (te266 sec 4.2, T388-11), a GPU open only: each W-B document's CPU
+// triple is the last position of its slice of the seam the witness already
+// computed, selected through the C verb semb_interim_ps_n_select. The seam
+// is `u64 n, u64 hidden, n x (codes[hidden], u64 m, u64 e)` per document
+// (seam_serialize.cpp). A selection that refuses on a witness document
+// refuses the GPU open with SEMB_ENGINE_REFUSED: that document cannot be
+// graded.
+semb_status CaptureWbTriples(semb_encoder_s* h, const uint8_t* seam, size_t seam_len,
+                             const std::vector<std::vector<int32_t>>& composed_ids) {
+  auto get_u64 = [](const uint8_t* p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; ++i) v |= static_cast<uint64_t>(p[i]) << (8 * i);
+    return v;
+  };
+  size_t off = 0;
+  for (size_t doc = 0; doc < composed_ids.size(); ++doc) {
+    if (seam_len - off < 16) return SEMB_ENGINE_REFUSED;
+    const uint64_t n = get_u64(seam + off);
+    const uint64_t hidden = get_u64(seam + off + 8);
+    off += 16;
+    const uint64_t stride = hidden + 16;
+    if (n == 0 || hidden != h->dims || n != composed_ids[doc].size() ||
+        (seam_len - off) / stride < n) {
+      return SEMB_ENGINE_REFUSED;
+    }
+    const uint8_t* last = seam + off + (n - 1) * stride;
+    const int64_t m = static_cast<int64_t>(get_u64(last + hidden));
+    const int64_t e = static_cast<int64_t>(get_u64(last + hidden + 8));
+    semb::gpu::WitnessSequence w;
+    w.ids = composed_ids[doc];
+    w.cpu.codes.resize(hidden);
+    const char* engine_status = nullptr;
+    const SembInterimStatus st = semb_interim_ps_n_select(
+        h->interim, reinterpret_cast<const int8_t*>(last), &m, &e, 1, 0, w.cpu.codes.data(), &w.cpu.m,
+        &w.cpu.e, &engine_status);
+    (void)engine_status;
+    if (st == kSembInterimAllocationFailed) return SEMB_ALLOCATION_FAILED;
+    if (st != kSembInterimOk) return SEMB_ENGINE_REFUSED;
+    h->witness_capture->push_back(std::move(w));
+    off += n * stride;
+  }
+  return SEMB_OK;
+}
+
 semb_status ComputeWbDigest(semb_encoder_s* h, std::array<uint8_t, 32>* out_digest) {
   std::vector<std::string_view> texts(semb::kWbCorpusDocumentCount);
   for (size_t doc_i = 0; doc_i < semb::kWbCorpusDocumentCount; ++doc_i) {
@@ -619,12 +756,17 @@ semb_status ComputeWbDigest(semb_encoder_s* h, std::array<uint8_t, 32>* out_dige
 
   std::vector<uint8_t> seam_stream(seam_required);
   size_t seam_len = 0;
+  std::vector<std::vector<int32_t>> composed_ids;
   const semb_status status =
       ComposeBatch(h, texts.data(), texts.size(), /*out_vectors=*/nullptr,
                   /*out_capacity_bytes=*/0, &rows_required_ignored, seam_stream.data(),
-                  seam_stream.size(), &seam_len);
+                  seam_stream.size(), &seam_len, h->witness_capture ? &composed_ids : nullptr);
   if (status == SEMB_ALLOCATION_FAILED) return SEMB_ALLOCATION_FAILED;
   if (status != SEMB_OK) return SEMB_ENGINE_REFUSED;
+  if (h->witness_capture) {
+    const semb_status captured = CaptureWbTriples(h, seam_stream.data(), seam_len, composed_ids);
+    if (captured != SEMB_OK) return captured;
+  }
 
   std::vector<uint8_t> stream;
   stream.reserve(8 + seam_len);
@@ -894,8 +1036,12 @@ static semb_status OpenEncoder(const ArtifactSource& source, uint32_t requested_
     SembInterimEncoder* interim = nullptr;
     const char* engine_status = nullptr;
     bool vocab_mismatch = false;
+    // U3 (te266 sec 4.2 Open step 1): a GPU handle's CPU pool has one slot;
+    // its encodes never use a CPU workspace, and its CPU work (the witness and
+    // the agreement check's CPU side) runs on one worker.
+    const uint32_t cpu_slots = device == SEMB_DEVICE_GPU ? 1u : max_concurrency;
     const SembInterimStatus open_status = semb::OpenEncoderOwnedWithVocabJoin(
-        std::move(model_bytes), appended_token_id, max_concurrency,
+        std::move(model_bytes), appended_token_id, cpu_slots,
         static_cast<uint32_t>(tokenizer.VocabSize()), &interim,
         &engine_status, vocab_mismatch);
     (void)engine_status;
@@ -941,6 +1087,7 @@ static semb_status OpenEncoder(const ArtifactSource& source, uint32_t requested_
     handle->context_cap = geometry.context_cap;
     handle->chunk_budget = 0;
     handle->device = device;
+    handle->appended_token_id = appended_token_id;
     semb_encoder cookie = nullptr;
     semb_encoder_s* const h = handle.get();
     {
@@ -970,12 +1117,17 @@ static semb_status OpenEncoder(const ArtifactSource& source, uint32_t requested_
     // after every pre-existing failure mode, before the caller can ever
     // observe a cookie -- because insert_guard erases the not-yet-ready
     // entry on every exit until Disarm() is reached below.
+    // U3 (T388-11): on a GPU open only, the witness below also records each
+    // of its 22 sequences' composed ids and CPU triple for the agreement check.
+    std::vector<semb::gpu::WitnessSequence> witness;
+    if (device == SEMB_DEVICE_GPU) h->witness_capture = &witness;
     std::array<uint8_t, 32> wb_digest{};
     const semb_status wb_status = ComputeWbDigest(h, &wb_digest);
     if (wb_status != SEMB_OK) return wb_status;
 
     std::array<uint8_t, 32> wq_digest{};
     const semb_status wq_status = semb_compute_wq_digest(h, &wq_digest);
+    h->witness_capture = nullptr;
     if (wq_status != SEMB_OK) return wq_status;
     // U2-9 Builds item 2 (D-SLM7773): the witness encodes above grew slot
     // buffers; open returns holding none, so it reserves nothing in
@@ -1000,6 +1152,20 @@ static semb_status OpenEncoder(const ArtifactSource& source, uint32_t requested_
       h->manifest_witness_sha = mc.witness_sha;
       h->manifest_certification_epoch = mc.certification_epoch;
       h->fingerprint = mc.fingerprint;
+    }
+    // U3 (te266 sec 4.2 Open steps 2-5): from the same model view, the GPU
+    // context, the model map, the adapter labels and the agreement check over
+    // the witness's 22 sequences. A refused GPU open releases every engine
+    // handle it created; it never falls back to the CPU.
+    if (device == SEMB_DEVICE_GPU) {
+      semb::gpu::Encoder* gpu = nullptr;
+      semb::gpu::AdapterLabels labels;
+      const semb_status gpu_status = semb::gpu::Open(
+          semb::InterimModelView(h->interim), static_cast<int64_t>(h->context_cap), max_concurrency,
+          static_cast<uint64_t>(reinterpret_cast<uintptr_t>(cookie)), witness, &gpu, &labels);
+      if (gpu_status != SEMB_OK) return gpu_status;
+      h->gpu = gpu;
+      h->gpu_labels = std::move(labels);
     }
     // The handle is now complete. Publish it: ready first (release order,
     // so every field written above -- including fingerprint and wb_digest
@@ -1090,6 +1256,17 @@ extern "C" SembInterimEncoder* semb_test_seam_interim_of(const void* enc) {
   const auto found = FindReadyHandleLocked(reinterpret_cast<semb_encoder>(const_cast<void*>(enc)));
   return found == Registry().end() ? nullptr : found->second->interim;
 }
+
+// U3: the public handle's GPU encoder (null for a CPU handle), for the GPU
+// slot-record readers (tests/support/semb_u3_gpu_seam.h). Test-only.
+namespace semb::test_seam {
+semb::gpu::Encoder* GpuEncoderOf(const void* enc) {
+  if (!enc) return nullptr;
+  std::lock_guard<std::mutex> lock(RegistryMutex());
+  const auto found = FindReadyHandleLocked(reinterpret_cast<semb_encoder>(const_cast<void*>(enc)));
+  return found == Registry().end() ? nullptr : found->second->gpu;
+}
+}  // namespace semb::test_seam
 #endif
 
 static semb_status EncoderCloseBody(semb_encoder enc) {
