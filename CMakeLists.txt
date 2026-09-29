@@ -531,23 +531,17 @@ add_subdirectory(tests)
 # other target this file declares.
 add_subdirectory(tools/epoch-store)
 
-# U3 (te266 sec 4.2, "Shaders"): the engine loads its compiled shaders from
-# <directory of the host executable>/shaders (U3 passes GpuContextConfig{}).
-# The build stages the installed set beside semb and beside every GPU test
-# executable, and `cmake --install` places it beside the installed semb. The
-# U3 GPU test executables are registered by a deferred call in tests/ that
-# runs at the end of this directory, so the staging is deferred too: it is
-# registered after add_subdirectory(tests), and deferred calls run in the
-# order they were registered.
-function(semb_stage_gpu_shaders)
-	foreach(_t semb u3_gpu_cells_test u3_gpu_alloc_test u3_c64_gpu_leg_test)
-		if(TARGET ${_t})
-			superslm_deploy_gpu_shaders(${_t})
-		endif()
-	endforeach()
-endfunction()
+# U3 (te266 sec 4.2, "Shaders"): the build stages the installed shader set
+# beside semb and beside every GPU test executable, once per output directory
+# (cmake/GpuShaders.cmake), and `cmake --install` places it beside the
+# installed semb. The U3 GPU test executables are registered by a deferred call
+# in tests/ that runs at the end of this directory, so the staging is deferred
+# too: it is registered after add_subdirectory(tests), and deferred calls run
+# in the order they were registered.
 if(SEMB_BUILD_GPU)
-	cmake_language(DEFER CALL semb_stage_gpu_shaders)
+	include(GpuShaders)
+	cmake_language(DEFER CALL semb_stage_gpu_shaders "${superslm_GPU_SHADER_DIR}"
+		semb u3_gpu_cells_test u3_gpu_alloc_test u3_c64_gpu_leg_test)
 	install(DIRECTORY "${superslm_GPU_SHADER_DIR}/" DESTINATION "${CMAKE_INSTALL_BINDIR}/shaders"
 		FILES_MATCHING PATTERN "*.cso")
 endif()
