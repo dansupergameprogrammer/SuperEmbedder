@@ -1713,6 +1713,31 @@ if(SEMB_C12B_MODEL AND SEMB_U1_TOKENIZER)
 	)
 	set_tests_properties(superfaiss_roundtrip_real_artifact PROPERTIES LABELS "real_artifact" TIMEOUT 7200)
 endif()
+
+# U2 cloud build -- U2-6's certification package (te267 U2-6; sec 10 M6, M25):
+# the CPU probe (tools/certify/host_cpuid.cpp, which links no product or engine
+# code), build_package.py's refusals, and run_certify.ps1 run under PowerShell
+# in a constructed package. u2_6_fake_tool stands in for the binaries this host
+# cannot provide (the other members, the GPU binary, c63, wsl.exe). SEMB_PWSH
+# names the PowerShell; without one the script's legs report MISSING
+# PREREQUISITE. The real-semb leg bakes with the cap-512 synthetic pair (it
+# mints build/_scratch/te222_c17_pair when absent) and compiles SuperFAISS's
+# program from SEMB_SUPERFAISS_SOURCE for the round trip's prebuilt mode.
+find_program(SEMB_PWSH NAMES pwsh powershell DOC "PowerShell for the U2-6 package-script check")
+if(NOT SEMB_PWSH)
+	set(SEMB_PWSH "")
+endif()
+add_executable(u2_6_host_cpuid "${PROJECT_SOURCE_DIR}/tools/certify/host_cpuid.cpp")
+add_executable(u2_6_fake_tool u2_6_fake_tool.cpp)
+add_test(
+	NAME u2_6_package_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_6_package_check.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --probe "$<TARGET_FILE:u2_6_host_cpuid>"
+		--fake-tool "$<TARGET_FILE:u2_6_fake_tool>" --semb "$<TARGET_FILE:semb>" --pwsh "${SEMB_PWSH}"
+		--superfaiss-source "${SEMB_SUPERFAISS_SOURCE}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
+)
+set_tests_properties(u2_6_package_check PROPERTIES TIMEOUT 3600)
 # ---------------------------------------------------------------------------
 # TE-331 (U2-1/U2-3/U2-7 red suite, `Claude/Plans/te267-u2-release-plan.md`).
 # Links against symbols undefined at this branch's own base `fca421b`
@@ -1866,6 +1891,7 @@ set_property(GLOBAL PROPERTY SEMB_PYTHON_GATE_TESTS
 	u2_10_c66b_rlimit_sweep_check
 	u2_1_c56_so_check
 	u2_5_c19_check
+	u2_6_package_check
 	u2_7_c52d_c55_check
 	u2_9_c62_must_reject_a
 	u2_9_c62_must_reject_forced_mc1
@@ -1966,4 +1992,5 @@ set_tests_properties(
 	te194_query_check
 	te230_c4_zero_gain_check
 	te230_semb_cli_check
+	u2_6_package_check
 	PROPERTIES RESOURCE_LOCK semb_multi_gb_mint)
