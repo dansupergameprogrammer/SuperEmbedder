@@ -4,16 +4,16 @@ the real artifact); elsewhere MISSING PREREQUISITE, exit 77.
 
 Method (P:4196): --pilot runs every reading over 10 documents first.
 
---leg tokps    tok/s by length third, on the 239-document corpus and on the FiQA
-               slice (--fiqa-corpus; see below), for the CPU at one worker
+--leg tokps    tok/s by length third, on the 239-document corpus and on
+               fiqa-long80 (--fiqa-corpus; see below), for the CPU at one worker
                (--max-concurrency 1), the CPU at the CLI's default of 8, and the
                GPU. The corpus is split into thirds by each document's token
                count (read from a CPU bake's manifest, per_row_token_counts), and
                each third is baked and timed on its own; tok/s counts forward
                positions (tokens + 1 per row). Plus the long-document band
                (P:4203): the 4,096-token row on each device.
---leg query    query latency on an open handle over 100 FiQA queries
-               (--fiqa-queries), CPU and GPU: one `semb query --stdin` session
+--leg query    query latency on an open handle over the minted 100 FiQA
+               queries (--fiqa-queries; see below), CPU and GPU: one `semb query --stdin` session
                with 1 query and one with 101, latency = (t101 - t1) / 100; the
                one-shot `semb query` process end to end on each device (P:4192);
                open time per device (P:4193) = t1 - latency.
@@ -23,10 +23,18 @@ Method (P:4196): --pilot runs every reading over 10 documents first.
 
 Every reading is appended to build/_u3_logs/c11_<leg>.log as `READING ...` lines.
 
-THE FIQA SLICE: the plan's "80-document FiQA slice (sec 2.2)" was replaced by
-the fiqa-long80 cell (D-SLM7873); which population C11 reads is a PENDING
-planner decision. This driver reads whatever --fiqa-corpus names and records
-its SHA-256 beside every reading.
+THE FIQA INPUTS (the planner's U3 ruling 4; tests/fixtures/u3/fiqa_sets.py):
+  documents  the plan's "80-document FiQA slice" is fiqa-long80 (D-SLM7873),
+             the file C10 (h) reads; its sha256 is checked before the leg runs,
+             on any host, and a mismatch refuses the leg. The length thirds are
+             taken over fiqa-long80's own token counts (median 113, not the old
+             slice's ~33); C20's old 33-token figure is not carried over.
+  queries    the first 100 queries, in file order, of mteb/fiqa at revision
+             5e59eeb3, minted by fiqa_sets.py. Until its recorded sha256 slot is
+             filled (the mint needs Hugging Face, which the cloud build cannot
+             reach) the query leg is MISSING PREREQUISITE; once filled, a file
+             with any other sha256 is refused.
+Every reading records the SHA-256 of what it read.
 """
 from __future__ import annotations
 
@@ -42,6 +50,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
 import u3_cells_check as cells  # noqa: E402
+
+sys.path.insert(0, str(ROOT / "tests" / "fixtures" / "u3"))
+import fiqa_sets  # noqa: E402
 
 CORPUS = ROOT / "tests" / "fixtures" / "c12b" / "corpus-239.jsonl"
 LOG = None
@@ -84,6 +95,22 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--pilot", action="store_true")
     args = ap.parse_args(argv)
     build = Path(args.build_dir).resolve()
+    # Ruling 4: the FiQA inputs are checked first, before anything runs, on any host.
+    fiqa_state = "MISSING"
+    if args.leg == "tokps":
+        fiqa_state, detail = fiqa_sets.check_long80(args.fiqa_corpus)
+        if fiqa_state != "MISSING":
+            print(f"[{fiqa_state}] C11 FiQA documents are fiqa-long80: {detail}", flush=True)
+        if fiqa_state == "FAIL":
+            return 1
+    elif args.leg == "query":
+        st, detail = fiqa_sets.check_queries(args.fiqa_queries)
+        if st == "MISSING":
+            return cells.missing(f"C11 query: {detail} (SEMB_U3_FIQA_QUERIES)")
+        print(f"[{st}] C11 query set is the minted 100 (mteb/fiqa {fiqa_sets.QUERIES_REVISION[:8]}): {detail}",
+              flush=True)
+        if st != "PASS":
+            return 1
     if platform.system() != "Windows":
         return cells.missing(f"C11 {args.leg}: GPU measurement needs Windows and D3D12 (this host is {platform.system()})")
     if cells.cache_value(build, "SEMB_BUILD_GPU").upper() not in ("ON", "TRUE", "1", "YES"):
@@ -107,10 +134,11 @@ def main(argv: list[str]) -> int:
 
     if args.leg == "tokps":
         corpora = [("corpus239", CORPUS)]
-        if args.fiqa_corpus and Path(args.fiqa_corpus).is_file():
-            corpora.append(("fiqa", Path(args.fiqa_corpus)))
+        if fiqa_state == "PASS":
+            corpora.append(("fiqa-long80", Path(args.fiqa_corpus)))
         else:
-            print("[MISSING PREREQUISITE] C11 FiQA slice: --fiqa-corpus not given (PENDING: fiqa-long80, D-SLM7873)")
+            print("[MISSING PREREQUISITE] C11 fiqa-long80: --fiqa-corpus (SEMB_U3_FIQA_CORPUS, defaulting to "
+                  "SEMB_U3_C10H_CORPUS) not given")
         for label, path in corpora:
             rows = docs(path)[:n] if n else docs(path)
             sha = hashlib.sha256(path.read_bytes()).hexdigest()[:16]
@@ -142,9 +170,8 @@ def main(argv: list[str]) -> int:
             reading(f"{tag}tokps band=4096 device={dev} seconds={t:.2f} tok_per_s={4097 / t if t else 0:.2f} exit={rc}")
             failed |= rc != 0
     elif args.leg == "query":
-        qpath = Path(args.fiqa_queries) if args.fiqa_queries else None
-        if not qpath or not qpath.is_file():
-            return cells.missing("C11 query: --fiqa-queries (100 FiQA queries, jsonl) not given")
+        qpath = Path(args.fiqa_queries)
+        qsha = hashlib.sha256(qpath.read_bytes()).hexdigest()[:16]
         qs = [d["text"] for d in docs(qpath)][: (10 if args.pilot else 100)]
         stem = work / "qbank"
         if not Path(str(stem) + ".semb.json").is_file():
@@ -156,7 +183,7 @@ def main(argv: list[str]) -> int:
                                stdin=("\n".join([qs[0], *qs]) + "\n").encode())
             lat = (tn - t1) / len(qs)
             one, rco, _ = timed([semb, "query", str(stem), "--hex", "--device", dev, *base, "--", qs[0]])
-            reading(f"{tag}query device={dev} queries={len(qs)} latency_s={lat:.4f} open_s={t1 - lat:.2f} "
+            reading(f"{tag}query device={dev} queries={len(qs)} sha={qsha} latency_s={lat:.4f} open_s={t1 - lat:.2f} "
                     f"one_shot_process_s={one:.2f} exits={rc1},{rcn},{rco}")
             failed |= bool(rc1 or rcn or rco)
     else:

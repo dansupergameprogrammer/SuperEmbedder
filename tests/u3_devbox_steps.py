@@ -56,7 +56,7 @@ STEPS: list[tuple[str, str]] = [
                                                 "semb_encode_batch") for a in ("a", "a2", "b")],
     # The surface: CLI, configure, pin tool, in the ON tree.
     ("u3_cli_device_check", "main"), ("u3_configure_legs_check", "main"), ("u3_pin_tool_gpu_check", "main"),
-    ("u3_row_digest_pair_selftest", "main"),
+    ("u3_row_digest_pair_selftest", "main"), ("u3_fiqa_sets_selftest", "main"),
     # C10's real-artifact legs, shortest first; (a) before (b), (i) verify and (e) 2 which read its banks.
     ("u3_gpu_real_e2", "main"), ("u3_gpu_real_a", "main"), ("u3_gpu_real_b", "main"),
     ("u3_gpu_real_i_verify", "main"), ("u3_gpu_real_i_install", "main"), ("u3_gpu_real_g4096", "main"),
