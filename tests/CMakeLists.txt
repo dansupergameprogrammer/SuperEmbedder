@@ -1984,12 +1984,20 @@ set(SEMB_U3_FIQA_CORPUS "" CACHE FILEPATH "U3 C11: the FiQA document slice (json
 set(SEMB_U3_FIQA_QUERIES "" CACHE FILEPATH "U3 C11: 100 FiQA queries (jsonl)")
 set(SEMB_U3_GPU_ENGINE_PREFIX "" CACHE PATH "U3 row 8: a --with-gpu pin install, for the ON/OFF compileFlags leg")
 option(SEMB_U3_COMMISSION_TREE "U3 row 5 (d): this tree links the must-reject engine (v1.7.1); register the commissioning legs" OFF)
-if(SEMB_BUILD_GPU)
-	set(_semb_u3_gpu 1)
-else()
-	set(_semb_u3_gpu 0)
-endif()
-set(_semb_u3_real_args --real-model "${SEMB_C12B_MODEL}" --real-tokenizer "${SEMB_U1_TOKENIZER}")
+# The U3 locals, derived from cache variables only. A macro, because
+# semb_add_u3_seam_tests runs deferred in the ROOT directory's scope, where this
+# file's ordinary variables do not exist: it calls the macro again. The
+# real-artifact arguments take the --opt=value form, so an unset path stays one
+# empty argument instead of vanishing from the command line.
+macro(semb_u3_locals)
+	if(SEMB_BUILD_GPU)
+		set(_semb_u3_gpu 1)
+	else()
+		set(_semb_u3_gpu 0)
+	endif()
+	set(_semb_u3_real_args "--real-model=${SEMB_C12B_MODEL}" "--real-tokenizer=${SEMB_U1_TOKENIZER}")
+endmacro()
+semb_u3_locals()
 
 # J9 and the device ABI (P:4022-4027): links the shipped target.
 add_executable(u3_abi_test EXCLUDE_FROM_ALL u3_abi_test.cpp)
@@ -2066,6 +2074,7 @@ function(semb_add_u3_seam_tests)
 	if(NOT TARGET superembedder_testseam)
 		return()
 	endif()
+	semb_u3_locals()
 	set(_d "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
 	set(_drv "${Python3_EXECUTABLE}" "${_d}/u3_cells_check.py" --build-dir "${CMAKE_BINARY_DIR}"
 		--cmake-executable "${CMAKE_COMMAND}")
