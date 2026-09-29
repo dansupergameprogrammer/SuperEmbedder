@@ -1992,6 +1992,7 @@ set(SEMB_U3_C10H_CORPUS "" CACHE FILEPATH "U3 C10 (h): fiqa-long80.jsonl (record
 set(SEMB_U3_FIQA_CORPUS "" CACHE FILEPATH "U3 C11: FiQA documents; empty = SEMB_U3_C10H_CORPUS (fiqa-long80)")
 set(SEMB_U3_FIQA_QUERIES "" CACHE FILEPATH "U3 C11: the minted 100 FiQA queries (tests/fixtures/u3/fiqa_sets.py mint)")
 set(SEMB_U3_GPU_ENGINE_PREFIX "" CACHE PATH "U3 row 8: a --with-gpu pin install, for the ON/OFF compileFlags leg")
+set(SEMB_U3_CPU_ENGINE_PREFIX "" CACHE PATH "U3 G10-win: a CPU-only v1.8.0 pin install (no --with-gpu), distinct from this tree's engine")
 # Tree B: configure with -DSEMB_ENGINE_LOCK_FILE=<the v1.7.1 lock the pin tool wrote>
 # (EngineGuards' override); the checked-in lock pins 1.8.0 and refuses SEMB_ENGINE_PIN_MISMATCH.
 option(SEMB_U3_COMMISSION_TREE "U3 row 5 (d): this tree links the must-reject engine (v1.7.1); register the commissioning legs" OFF)
@@ -2045,7 +2046,7 @@ add_test(NAME u3_cli_device_check
 add_test(NAME u3_configure_legs_check
 	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u3_configure_legs_check.py"
 		--repo-root "${CMAKE_SOURCE_DIR}" --engine-prefix "${SEMB_ENGINE_PREFIX}"
-		--gpu-engine-prefix "${SEMB_U3_GPU_ENGINE_PREFIX}"
+		--gpu-engine-prefix "${SEMB_U3_GPU_ENGINE_PREFIX}" --cpu-engine-prefix "${SEMB_U3_CPU_ENGINE_PREFIX}"
 		--cmake-executable "${CMAKE_COMMAND}" --generator "${CMAKE_GENERATOR}"
 		--ninja-executable "${CMAKE_MAKE_PROGRAM}" --python-executable "${Python3_EXECUTABLE}"
 		--scratch "${CMAKE_BINARY_DIR}/_scratch/u3_configure_legs"

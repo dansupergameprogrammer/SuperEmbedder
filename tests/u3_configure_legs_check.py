@@ -16,8 +16,15 @@ Legs:
              the SEMB_ENGINE_GPU_MISSING guard); the leg asserts the name.
   G10-off'   must-accept of G10-off: the same copy, the option absent,
              configures (a configure that refuses everything cannot pass).
-  G10-win    WINDOWS ONLY: -DSEMB_BUILD_GPU=ON against the CPU-only pin install
-             fails and names SEMB_ENGINE_GPU_MISSING (P:4176).
+  G10-win    WINDOWS ONLY: -DSEMB_BUILD_GPU=ON against a CPU-only pin install
+             fails and names SEMB_ENGINE_GPU_MISSING (P:4176). The install is
+             its own prerequisite, --cpu-engine-prefix (SEMB_U3_CPU_ENGINE_PREFIX:
+             a v1.8.0 pin install made WITHOUT --with-gpu; the dev box has U2's).
+             It is never the tree's own --engine-prefix: a SEMB_BUILD_GPU=ON tree
+             configured only against a --with-gpu install, so that prefix
+             exports superslm_gpu and the nested configure succeeds (the U3
+             code review's C1). A prefix that ships gpu-shaders is refused as
+             SETUP, not graded.
   R8-accept  WINDOWS, a --with-gpu install: an ON and an OFF configure give equal
              compileFlags (P:4218 must-accept).
   R8-rej1    every platform: SEMB_BUILD_GPU added as a compile definition on the
@@ -49,13 +56,16 @@ import compile_flags  # noqa: E402
 import semb_build_step  # noqa: E402
 
 FAILED = False
+MISSING_ON_WINDOWS = False  # a dev-box leg without its prerequisite: the test skips (77), never passes
 TARGETS = ["superembedder", "semb", "semb_witness"]  # semb_build_step's --target list (CMakeLists.txt)
 
 
 def emit(state: str, leg: str, detail: str) -> None:
     global FAILED
+    global MISSING_ON_WINDOWS
     print(f"[{state}] {leg}: {detail}", flush=True)
     FAILED |= state in ("FAIL", "RED-UNIMPLEMENTED")
+    MISSING_ON_WINDOWS |= state == "MISSING PREREQUISITE" and platform.system() == "Windows"
 
 
 def tail(out: str, n: int = 6) -> str:
@@ -82,6 +92,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--repo-root", default=str(ROOT))
     ap.add_argument("--engine-prefix", required=True)
     ap.add_argument("--gpu-engine-prefix", default="", help="a --with-gpu pin install (dev box)")
+    ap.add_argument("--cpu-engine-prefix", default="", help="a CPU-only pin install, for G10-win (dev box)")
     ap.add_argument("--cmake-executable", required=True)
     ap.add_argument("--generator", default="Ninja")
     ap.add_argument("--ninja-executable", default="ninja")
@@ -111,11 +122,18 @@ def main(argv: list[str]) -> int:
                  f"returncode {rc}")
             off_build = scratch / "off_build"
         else:
-            rc, out = matrix.run_cmake_configure(src, scratch / "on_cpu_pin_build", matrix.ENGINE_PREFIX,
-                                                 {"SEMB_BUILD_GPU": "ON"})
-            emit("PASS" if rc != 0 and "SEMB_ENGINE_GPU_MISSING" in out else "FAIL",
-                 "G10-win -DSEMB_BUILD_GPU=ON against the CPU-only pin install names SEMB_ENGINE_GPU_MISSING (P:4176)",
-                 f"returncode {rc}; {tail(out)}")
+            leg = "G10-win -DSEMB_BUILD_GPU=ON against a CPU-only pin install names SEMB_ENGINE_GPU_MISSING (P:4176)"
+            cpu = Path(args.cpu_engine_prefix).resolve() if args.cpu_engine_prefix else None
+            if not cpu or not cpu.is_dir():
+                emit("MISSING PREREQUISITE", leg, "--cpu-engine-prefix (SEMB_U3_CPU_ENGINE_PREFIX): a v1.8.0 pin "
+                     "install made without --with-gpu")
+            elif (cpu / "share" / "superslm" / "gpu-shaders").is_dir():
+                emit("FAIL", leg, f"SETUP: {cpu} ships share/superslm/gpu-shaders, so it is a --with-gpu install, "
+                     "not the CPU-only one this leg needs")
+            else:
+                rc, out = matrix.run_cmake_configure(src, scratch / "on_cpu_pin_build", cpu, {"SEMB_BUILD_GPU": "ON"})
+                emit("PASS" if rc != 0 and "SEMB_ENGINE_GPU_MISSING" in out else "FAIL", leg,
+                     f"returncode {rc}; {tail(out)}")
             rc, out = matrix.run_cmake_configure(src, scratch / "off_build", matrix.ENGINE_PREFIX)
             off_build = scratch / "off_build"
         if windows and args.gpu_engine_prefix and Path(args.gpu_engine_prefix).is_dir():
@@ -155,7 +173,7 @@ def main(argv: list[str]) -> int:
     finally:
         if not args.scratch:
             matrix.rmtree(scratch)
-    return 1 if FAILED else 0
+    return 1 if FAILED else (77 if MISSING_ON_WINDOWS else 0)
 
 
 if __name__ == "__main__":
