@@ -39,7 +39,13 @@
 //                         release logged inside it); a 12-position encode on the same
 //                         slot then re-creates (C(n) 1,024 -> 64) and both rows equal CPU.
 //   row3_mc4              P:4213 -- four threads encode concurrently on a mc 4 GPU handle;
-//                         rows equal serial CPU rows; a fifth concurrent call is refused
+//                         rows equal serial CPU rows; a fifth concurrent call is refused.
+//                         The fifth call is made while all four slots are held, by
+//                         construction: worker 1 is parked inside an engine call
+//                         (holding the submission lock, see EnginePark below), workers
+//                         2-4 then acquire the other three slots and wait on that
+//                         lock, and the fifth call runs once the handle's slot-record
+//                         count reads the bound. No scheduling luck is involved.
 //                         SEMB_CONCURRENCY_EXCEEDED; occupancy max 1; no lock violation.
 //   row3_batch16          P:4213 -- a 16-document batch on an 8-slot GPU handle holds at
 //                         most one sequence at a time (creates minus releases <= 1).
@@ -161,6 +167,33 @@
 #include "support/semb_u2_memory_seam.h"
 #include "support/semb_u3_gpu_seam.h"
 #include "support/u3_common.h"
+
+// ---- EnginePark: row3_mc4's hold (test-only; replaces global operator new) ----
+// A thread that arms it parks at its first allocation made INSIDE an engine
+// call (semb_test_seam_gpu_occupancy_now() > 0; an engine call runs only under
+// the process-wide submission lock, so the parked thread holds that lock and
+// its slot) and waits there until released. Unarmed threads pay one
+// thread_local read. The park loop sleeps without allocating.
+namespace u3park {
+std::atomic<int> parked{0};
+std::atomic<int> released{0};
+thread_local bool t_armed = false;
+inline void Maybe() {
+  if (!t_armed) return;
+  if (semb_test_seam_gpu_occupancy_now() == 0) return;
+  t_armed = false;
+  parked.store(1);
+  while (!released.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
+}  // namespace u3park
+void* operator new(std::size_t n) {
+  u3park::Maybe();
+  void* p = std::malloc(n ? n : 1);
+  if (!p) throw std::bad_alloc();
+  return p;
+}
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 
 namespace fs = std::filesystem;
 
@@ -529,26 +562,100 @@ void CellRow3Mc4() {
   semb_encoder e = MustOpen(g.model, g.tokenizer, 4, u3::kDeviceGpu, "a GPU handle at max_concurrency 4");
   if (!e) return;
   ResetLog();
+  // (1) Four encoders, concurrently, many rounds: every row is the serial CPU
+  // row. Four callers at a bound of 4 are never refused, so a refusal is bad.
   std::atomic<int> bad{0};
-  std::atomic<bool> done{false};
-  int refused = 0, fifth_calls = 0;
-  std::thread runner([&] {
-    Threads(e, g.model, g.tokenizer, texts, 4, 40, &bad);
-    done = true;
-  });
-  while (!done) {
-    std::vector<float> row;
-    ++fifth_calls;
-    if (u3::EncodeRow(e, texts[0], &row) == SEMB_CONCURRENCY_EXCEEDED) ++refused;
+  {
+    std::vector<std::thread> ts;
+    for (int k = 0; k < 4; ++k) {
+      ts.emplace_back([&, k] {
+        for (int r = 0; r < 40; ++r) {
+          const std::string& x = texts[(k + r) % texts.size()];
+          std::vector<float> row;
+          if (u3::EncodeRow(e, x, &row) != SEMB_OK || !u3::SameBytes(row, g_cpu_rows.at(g.model + "\n" + x))) {
+            bad.fetch_add(1);
+          }
+        }
+      });
+    }
+    for (auto& th : ts) th.join();
   }
-  runner.join();
-  u3::Verdict(bad == 0, "row3_mc4 four concurrent encoders give their serial CPU rows", "bad rows " + std::to_string(bad));
-  u3::Verdict(refused > 0, "row3_mc4 a fifth concurrent call is refused SEMB_CONCURRENCY_EXCEEDED",
-              std::to_string(refused) + " of " + std::to_string(fifth_calls) + " fifth calls refused");
+  u3::Verdict(bad == 0, "row3_mc4 four concurrent encoders give their serial CPU rows",
+              "bad rows " + std::to_string(bad) + " of 160 (a refusal at 4 callers counts as bad)");
+
+  // (2) The fifth call, with all four slots held by construction.
+  semb_encoder f = MustOpen(g.model, g.tokenizer, 4, u3::kDeviceGpu, "a fresh GPU handle at max_concurrency 4");
+  if (!f) {
+    semb_encoder_close(e);
+    return;
+  }
+  const uint64_t bound = semb_test_seam_gpu_slot_bound(f);
+  u3park::parked = 0;
+  u3park::released = 0;
+  std::vector<semb_status> st(4, SEMB_OK);
+  std::vector<std::vector<float>> rows(4);
+  std::vector<std::thread> ws;
+  ws.emplace_back([&] {
+    u3park::t_armed = true;
+    st[0] = u3::EncodeRow(f, texts[0], &rows[0]);
+    u3park::t_armed = false;
+  });
+  auto wait_for = [](const std::function<bool()>& cond, int seconds) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+    while (!cond()) {
+      if (std::chrono::steady_clock::now() > deadline) return false;
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return true;
+  };
+  const bool w1 = wait_for([] { return u3park::parked.load() == 1; }, 120);
+  bool held = false;
+  semb_status fifth = SEMB_OK;
+  std::string why;
+  if (!w1) {
+    why = "apparatus: worker 1 made no allocation inside an engine call within 120 s, so no slot could be held "
+          "(the hold needs one; nothing was proven)";
+  } else {
+    for (int k = 1; k < 4; ++k) ws.emplace_back([&, k] { st[k] = u3::EncodeRow(f, texts[k], &rows[k]); });
+    held = wait_for([&] { return semb_test_seam_gpu_slot_record_count(f) == 4; }, 120);
+    if (!held) {
+      why = "apparatus: the handle's slot records reached " + u3::S(semb_test_seam_gpu_slot_record_count(f)) +
+            " of 4 while worker 1 held the lock";
+    } else {
+      // Every record is busy: none can be freed without the lock worker 1 holds.
+      std::vector<float> row;
+      std::atomic<int> done{0};
+      std::thread t5([&] {
+        fifth = u3::EncodeRow(f, texts[0], &row);
+        done = 1;
+      });
+      const bool returned = wait_for([&] { return done.load() == 1; }, 60);
+      if (!returned) {
+        u3park::released = 1;  // unblock so the thread can be joined; the verdict is already a failure
+        why = "the fifth call BLOCKED while all four slots were held (a refusal must not wait)";
+      }
+      t5.join();
+      if (returned) {
+        why = std::string("slot records ") + u3::S(semb_test_seam_gpu_slot_record_count(f)) + " (bound " +
+              u3::S(bound) + ") all held; the fifth call returned " + u3::Name(fifth);
+      }
+    }
+  }
+  u3park::released = 1;
+  for (auto& th : ws) th.join();
+  u3::Verdict(w1 && held && fifth == SEMB_CONCURRENCY_EXCEEDED && bound == 4,
+              "row3_mc4 a fifth concurrent call is refused SEMB_CONCURRENCY_EXCEEDED", why);
+  int held_bad = 0;
+  for (size_t k = 0; k < (w1 ? 4u : 1u); ++k) {
+    if (st[k] != SEMB_OK || !u3::SameBytes(rows[k], g_cpu_rows.at(g.model + "\n" + texts[k]))) ++held_bad;
+  }
+  u3::Verdict(held_bad == 0, "row3_mc4 the four holders then complete with their serial CPU rows",
+              std::to_string(held_bad) + " bad of " + std::to_string(w1 ? 4 : 1));
   u3::Verdict(semb_test_seam_gpu_occupancy_max() <= 1 && semb_test_seam_gpu_lock_violations() == 0,
               "row3_mc4 every engine call serialized under the lock",
               "occupancy max " + std::to_string(semb_test_seam_gpu_occupancy_max()) + ", lock violations " +
                   u3::S(semb_test_seam_gpu_lock_violations()));
+  semb_encoder_close(f);
   semb_encoder_close(e);
 }
 
