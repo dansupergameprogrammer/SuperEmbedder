@@ -25,19 +25,34 @@ run again; nothing a step writes is read back by the same step.
            superfaiss.lock's commit into harness/. The round trip's program is Z when given; otherwise it is
            compiled here, in the calling (MSVC 19.33) environment, by the round-trip harness's own export and
            build functions from the tree superfaiss.lock pins.
+    python-runtime --package P --embeddable-zip Z --numpy-wheel W [--embeddable-sha256 H] [--numpy-sha256 H]
+           Unpacks the package's own Python into python/ (D-SLM7811): Z is python.org's Windows embeddable
+           CPython 3.13.x amd64 zip (python-3.13.<n>-embed-amd64.zip), W the numpy wheel for it (a
+           numpy-<v>-cp313-cp313-win_amd64.whl, its WHEEL tag checked, not its name). The wheel is unpacked into
+           python/Lib/site-packages and python313._pth gains that path. The two files' SHA-256s are checked
+           against H when given (the digests python.org and PyPI publish) and recorded in python-runtime.json
+           beside python/, which `finish` copies into package.json. Resumable: a re-run whose inputs and
+           unpacked tree still match python-runtime.json does nothing; any other state is unpacked again from
+           the start, into python.partial/ and then moved into place.
     finish --package P --model M --tokenizer T [--repo R]
            Copies the artifacts, the corpus, C63's texts, the harness and readiness scripts, run_certify.ps1,
-           README.txt and gpu-legs.json, and writes package.json.
+           README.txt and gpu-legs.json, and writes package.json. Needs python-runtime first.
     receipts --package P --from <results dir>
            Copies the dev-box provisional receipts of the two forced cells host mode compares against
            (msvc19.33-sse2@sse2, msvc19.33-avx2@avx2) into receipts/.
 
 Refusals, each one line on stderr, exit 1, before anything is run or written:
-    SEMB-PACKAGE-BUILD-ENV-FLAGS <variable>   pin or build while CFLAGS, CXXFLAGS, LDFLAGS or
+    SEMB-PACKAGE-BUILD-ENV-FLAGS-SET <variable>
+                                              pin or build while CFLAGS, CXXFLAGS, LDFLAGS or
                                               CMAKE_TOOLCHAIN_FILE is set, so no member's flag record carries a
                                               flag a user following the README would not get
     SEMB-PACKAGE-GPU-ENGINE-MISMATCH          the GPU binary's engine build record is not msvc19.33-auto's
     SEMB-PACKAGE-UNKNOWN-MEMBER <name>        a member the plan does not rule
+    SEMB-PACKAGE-PYTHON-RUNTIME-MISMATCH <what>
+                                              python-runtime's zip is not an embeddable CPython 3.13 amd64, its
+                                              wheel is not numpy for cp313 win_amd64, or a file's SHA-256 is not
+                                              the one given
+    SEMB-PACKAGE-BINARY-MISSING python        finish before python-runtime
 """
 from __future__ import annotations
 
@@ -49,6 +64,7 @@ import re
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -64,6 +80,9 @@ C63_MEMBER = "msvc19.33-avx512"
 FORCED_CELLS = ("msvc19.33-sse2@sse2", "msvc19.33-avx2@avx2")
 ENV_FLAGS = ("CFLAGS", "CXXFLAGS", "LDFLAGS", "CMAKE_TOOLCHAIN_FILE")
 RUN_FILES = ("row-digests.tsv", "token-id-digest.txt")
+PYTHON_TAG = "cp313-cp313-win_amd64"
+PYTHON_PTH = "python313._pth"
+SITE_PACKAGES = "Lib/site-packages"
 
 
 class Refused(Exception):
@@ -91,7 +110,7 @@ def check_member(member: str, allow_gpu: bool = True) -> None:
 def refuse_env_flags(environ: dict) -> None:
     for name in ENV_FLAGS:
         if environ.get(name, "").strip():
-            raise Refused(f"SEMB-PACKAGE-BUILD-ENV-FLAGS {name}")
+            raise Refused(f"SEMB-PACKAGE-BUILD-ENV-FLAGS-SET {name}")
 
 
 def executable(directory: Path, stem: str) -> Path | None:
@@ -240,11 +259,91 @@ def cmd_tools(args, environ: dict) -> int:
     return 0
 
 
+def tree_sha256(root: Path) -> str:
+    """One digest over every file under root: its relative path and its bytes' SHA-256, in path order."""
+    lines = [f"{p.relative_to(root).as_posix()}\t{sha256_file(p)}\n" for p in sorted(root.rglob("*")) if p.is_file()]
+    return hashlib.sha256("".join(lines).encode("utf-8")).hexdigest()
+
+
+def read_runtime_record(pkg: Path) -> dict | None:
+    path = pkg / "python-runtime.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def cmd_python_runtime(args, environ: dict) -> int:
+    pkg, zpath, wpath = args.package, args.embeddable_zip, args.numpy_wheel
+    for path, label in ((zpath, "embeddable zip"), (wpath, "numpy wheel")):
+        if not path.is_file():
+            raise Refused(f"SEMB-PACKAGE-PYTHON-RUNTIME-MISMATCH {label} {path} does not exist")
+    zsha, wsha = sha256_file(zpath), sha256_file(wpath)
+    for got, want, label in ((zsha, args.embeddable_sha256, "embeddable zip"), (wsha, args.numpy_sha256, "numpy wheel")):
+        if want and got != want.strip().lower():
+            raise Refused(f"SEMB-PACKAGE-PYTHON-RUNTIME-MISMATCH {label} sha256 {got} is not the given {want}")
+    m = re.fullmatch(r"python-(3\.13\.\d+)-embed-amd64\.zip", zpath.name)
+    if not m:
+        raise Refused(f"SEMB-PACKAGE-PYTHON-RUNTIME-MISMATCH {zpath.name} is not python-3.13.<n>-embed-amd64.zip")
+    python_version = m.group(1)
+    with zipfile.ZipFile(zpath) as z:
+        names = set(z.namelist())
+    lacking = [n for n in ("python.exe", "python313.dll", "python313.zip", PYTHON_PTH) if n not in names]
+    if lacking:
+        raise Refused(f"SEMB-PACKAGE-PYTHON-RUNTIME-MISMATCH {zpath.name} lacks {', '.join(lacking)}")
+    with zipfile.ZipFile(wpath) as w:
+        wheel_meta = [n for n in w.namelist() if re.fullmatch(r"numpy-[^/]+\.dist-info/WHEEL", n)]
+        tags = set()
+        if len(wheel_meta) == 1:
+            tags = set(re.findall(r"^Tag:\s*(\S+)\s*$", w.read(wheel_meta[0]).decode("utf-8"), re.M))
+    if PYTHON_TAG not in tags:
+        raise Refused(f"SEMB-PACKAGE-PYTHON-RUNTIME-MISMATCH {wpath.name} is not a numpy wheel tagged {PYTHON_TAG}"
+                      f" (tags {sorted(tags) or 'none'})")
+    numpy_version = wheel_meta[0].split("/")[0][len("numpy-"):-len(".dist-info")]
+
+    target, partial = pkg / "python", pkg / "python.partial"
+    record = read_runtime_record(pkg)
+    if (record and target.is_dir() and record.get("embeddableZip", {}).get("sha256") == zsha
+            and record.get("numpyWheel", {}).get("sha256") == wsha and record.get("treeSha256") == tree_sha256(target)):
+        print(f"python-runtime: {target} already holds CPython {python_version} and numpy {numpy_version}; nothing to do")
+        return 0
+    # Anything else (no record, other inputs, a tree changed since, an interrupted attempt) is unpacked again.
+    (pkg / "python-runtime.json").unlink(missing_ok=True)
+    shutil.rmtree(partial, ignore_errors=True)
+    partial.mkdir(parents=True)
+    with zipfile.ZipFile(zpath) as z:
+        z.extractall(partial)
+    with zipfile.ZipFile(wpath) as w:
+        w.extractall(partial / SITE_PACKAGES)
+    pth = partial / PYTHON_PTH
+    lines = pth.read_text(encoding="utf-8").splitlines()
+    if SITE_PACKAGES.replace("/", "\\") not in lines:
+        at = lines.index(".") + 1 if "." in lines else len(lines)
+        lines.insert(at, SITE_PACKAGES.replace("/", "\\"))
+    pth.write_bytes(("\r\n".join(lines) + "\r\n").encode("utf-8"))
+    tree = tree_sha256(partial)
+    shutil.rmtree(target, ignore_errors=True)
+    os.replace(partial, target)
+    runtime = {"pythonVersion": python_version, "numpyVersion": numpy_version,
+               "embeddableZip": {"file": zpath.name, "sha256": zsha}, "numpyWheel": {"file": wpath.name, "sha256": wsha},
+               "interpreter": "python/python.exe", "treeSha256": tree}
+    write_json(pkg / "python-runtime.json", runtime)
+    if (pkg / "package.json").is_file():  # python-runtime re-run after finish: keep package.json in step
+        meta = json.loads((pkg / "package.json").read_text(encoding="utf-8"))
+        meta["pythonRuntime"] = runtime
+        write_json(pkg / "package.json", meta)
+    print(f"python-runtime: CPython {python_version} and numpy {numpy_version} unpacked into {target}")
+    return 0
+
+
 def cmd_finish(args, environ: dict) -> int:
+    pkg = args.package
+    runtime = read_runtime_record(pkg)
+    if runtime is None or not (pkg / "python" / "python.exe").is_file():
+        raise Refused("SEMB-PACKAGE-BINARY-MISSING python (run the python-runtime step first)")
     sys.path.insert(0, str(args.repo / "tests"))
     import c35_two_installation_harness as c35  # the one corpus conversion, checked against its manifest
 
-    pkg = args.package
     for sub in ("artifacts", "corpus", "c63"):
         (pkg / sub).mkdir(parents=True, exist_ok=True)
     model, tokenizer = Path(args.model), Path(args.tokenizer)
@@ -266,7 +365,7 @@ def cmd_finish(args, environ: dict) -> int:
         "members": list(MEMBERS), "gpuBinary": GPU_BINARY, "wslMember": WSL_MEMBER, "wslDistro": "Ubuntu-24.04",
         "model": {"file": model.name, "sha256": sha256_file(pkg / "artifacts" / model.name)},
         "tokenizer": {"file": tokenizer.name, "sha256": sha256_file(pkg / "artifacts" / tokenizer.name)},
-        "corpus": "corpus/corpus-239.idtext.jsonl", "certificationRelease": "1.0.0",
+        "corpus": "corpus/corpus-239.idtext.jsonl", "certificationRelease": "1.0.0", "pythonRuntime": runtime,
     })
     print(f"finished {pkg}")
     return 0
@@ -312,6 +411,12 @@ def main(argv: list[str], environ: dict | None = None) -> int:
     p.add_argument("--sf-roundtrip", type=Path, default=None)
     p.add_argument("--superfaiss-source", required=True)
     p.add_argument("--repo", type=Path, default=REPO)
+    p = sub.add_parser("python-runtime")
+    p.add_argument("--package", type=Path, required=True)
+    p.add_argument("--embeddable-zip", type=Path, required=True)
+    p.add_argument("--numpy-wheel", type=Path, required=True)
+    p.add_argument("--embeddable-sha256", default="")
+    p.add_argument("--numpy-sha256", default="")
     p = sub.add_parser("finish")
     p.add_argument("--package", type=Path, required=True)
     p.add_argument("--model", required=True)
@@ -323,7 +428,7 @@ def main(argv: list[str], environ: dict | None = None) -> int:
     args = ap.parse_args(argv)
     if args.step == "pin" and args.workdir is None:
         args.workdir = args.engine_prefix.with_name(args.engine_prefix.name + "-workdir")
-    steps = {"pin": cmd_pin, "build": cmd_build, "stage": cmd_stage, "tools": cmd_tools, "finish": cmd_finish,
+    steps = {"pin": cmd_pin, "build": cmd_build, "stage": cmd_stage, "tools": cmd_tools, "python-runtime": cmd_python_runtime, "finish": cmd_finish,
              "receipts": cmd_receipts}
     try:
         return steps[args.step](args, environ)

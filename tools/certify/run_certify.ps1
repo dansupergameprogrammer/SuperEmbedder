@@ -17,8 +17,9 @@
 #                                       with the dev-box receipts in receipts\
 #   .\run_certify.ps1 -Final -Members msvc19.33-auto,msvc19.33-avx512,...
 #                                       final mode: only the named members, under <cell id>\final\
-#   -Python <python.exe>                the Python 3 (with numpy) that runs the round trip and the readings;
-#                                       default: python on PATH, then py -3
+#   -Python <python.exe>                the Python that runs the round trip and the readings; default: the
+#                                       package's own python\python.exe (embeddable CPython 3.13 with numpy,
+#                                       D-SLM7811), so both hosts run the same interpreter and the same numpy
 #
 # MEMBERS THIS HOST RUNS (default). The CPU probe reads the host's best tier. A host with AVX-512F/BW (the work
 # machine) runs msvc19.33-avx512 and the four auto members; any other host (the dev box) runs msvc19.33-sse2,
@@ -36,7 +37,8 @@
 #   SEMB-PACKAGE-BINARY-MISSING <name>     a member's semb, the GPU binary, c63, a CPU probe, the round-trip
 #                                          binary, or Python with numpy, is absent
 #   SEMB-PACKAGE-WSL-DISTRO-MISSING        the Ubuntu-24.04 WSL distro is absent (the WSL member needs it)
-#   SEMB-PACKAGE-WSL-DISTRO-VERSION <v>    that distro's VERSION_ID is not 24.04
+#   SEMB-PACKAGE-WSL-DISTRO-VERSION-MISMATCH <v>
+#                                          that distro's VERSION_ID is not 24.04
 #   SEMB-PACKAGE-CPU-TIER-UNSUPPORTED <m>  a forced member whose tier this host's CPU lacks
 #   SEMB-PACKAGE-UNKNOWN-MEMBER <m>        -Members names a member the package does not carry
 #   SEMB-PACKAGE-USAGE <text>              an impossible combination of modes
@@ -318,26 +320,20 @@ foreach ($f in @($ModelPath, $TokenizerPath, $CorpusPath)) {
     if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { Add-Refusal "SEMB-PACKAGE-BINARY-MISSING artifact $f" }
 }
 
-# Python with numpy, for the round trip and U2-4's readings (msvc19.33-auto only).
+# Python with numpy, for the round trip and U2-4's readings (msvc19.33-auto only): the package's own python\
+# (D-SLM7811), never whatever is on PATH, so both hosts run the same interpreter and numpy.
 $PythonCmd = $null
 if ($runsAuto) {
-    $candidates = @()
-    if ($Python) { $candidates += , @($Python) }
-    foreach ($name in @("python.exe", "python", "python3")) {
-        $c = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($c) { $candidates += , @($c.Path) }
-    }
-    $py = Get-Command "py.exe" -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($py) { $candidates += , @($py.Path, "-3") }
-    foreach ($cand in $candidates) {
-        $pyArgs = @()
-        if ($cand.Count -gt 1) { $pyArgs = @($cand[1..($cand.Count - 1)]) }
-        $code = Invoke-Program $cand[0] ($pyArgs + @("-c", "import sys, numpy; assert sys.version_info >= (3, 9)")) `
+    $pyExe = $Python
+    if (-not $pyExe) { $pyExe = Join-Path (Join-Path $Root "python") "python.exe" }
+    if (-not (Test-Path -LiteralPath $pyExe -PathType Leaf)) {
+        Add-Refusal "SEMB-PACKAGE-BINARY-MISSING python ($pyExe)"
+    } else {
+        $code = Invoke-Program $pyExe @("-c", "import sys, numpy; assert sys.version_info >= (3, 9)") `
             (Join-Path $LogsDir "python-check.out") (Join-Path $LogsDir "python-check.err")
-        if ($code -eq 0) { $PythonCmd = $cand; break }
-        if ($Python) { break }
+        if ($code -eq 0) { $PythonCmd = @($pyExe) }
+        else { Add-Refusal "SEMB-PACKAGE-BINARY-MISSING python ($pyExe ran, exit $code, and could not import numpy)" }
     }
-    if ($null -eq $PythonCmd) { Add-Refusal "SEMB-PACKAGE-BINARY-MISSING python (Python 3.9+ with numpy; pass -Python)" }
 }
 
 # The WSL member runs as `wsl -d Ubuntu-24.04 -u root`, never through the default distro (D-SLM7285).
@@ -370,7 +366,7 @@ if ($runsWsl) {
             }
         }
         if ($version -ne "24.04") {
-            Add-Refusal "SEMB-PACKAGE-WSL-DISTRO-VERSION $version (the WSL member runs on Ubuntu 24.04)"
+            Add-Refusal "SEMB-PACKAGE-WSL-DISTRO-VERSION-MISMATCH $version (the WSL member runs on Ubuntu 24.04)"
         } else {
             $WslGuest = [ordered]@{ distro = $WslDistro; VERSION_ID = $version }
             foreach ($pkg in @("libc6", "libstdc++6")) {

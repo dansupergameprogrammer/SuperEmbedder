@@ -18,8 +18,9 @@ binary's runs.
 
 The host needs:
   - Windows PowerShell 5.1 or PowerShell 7 (either works; the script is ASCII-only).
-  - Python 3.9 or newer with numpy, for msvc19.33-auto's round trip and readings. The
-    script finds python, python3 or py -3 on PATH, or takes -Python <python.exe>.
+  - Nothing else for Python: the package carries its own (python\, the Windows embeddable
+    CPython 3.13 with numpy), which runs msvc19.33-auto's round trip and readings on both
+    hosts. Nothing on PATH is used. -Python <python.exe> overrides it (not for certification).
   - The Ubuntu-24.04 WSL distro, for the WSL member (runtime only; no compiler):
         wsl --install -d Ubuntu-24.04 --no-launch
         wsl -d Ubuntu-24.04 -u root          (once, to initialize it; then exit)
@@ -42,6 +43,9 @@ PACKAGE CONTENTS
   c63\                    C63's two texts
   harness\                the round trip and readiness scripts, SuperFAISS's wvbank.py
   receipts\               the dev-box receipts host mode compares against (sitting 1)
+  python\                 the embeddable CPython 3.13 (amd64) with numpy in Lib\site-packages
+  python-runtime.json     the two downloads' names and SHA-256s and the unpacked tree's digest
+                          (also in package.json under pythonRuntime)
   gpu-legs.json           GPU mode's other legs (U3 fills it; see GPU MODE)
   results\                created by the script; the only place it writes
 
@@ -80,9 +84,11 @@ commits; host-mode\, c63\, readings\, roundtrip\ and logs\ are the other evidenc
 REFUSALS (printed before anything runs; exit 1)
 -----------------------------------------------
   SEMB-PACKAGE-BINARY-MISSING <name>     a member's semb, the GPU binary, c63, a probe,
-                                         sf_roundtrip, an artifact, or Python with numpy
+                                         sf_roundtrip, an artifact, or python\python.exe (or it
+                                         cannot import numpy)
   SEMB-PACKAGE-WSL-DISTRO-MISSING        Ubuntu-24.04 is not installed
-  SEMB-PACKAGE-WSL-DISTRO-VERSION <v>    its VERSION_ID is not 24.04
+  SEMB-PACKAGE-WSL-DISTRO-VERSION-MISMATCH <v>
+                                         its VERSION_ID is not 24.04
   SEMB-PACKAGE-CPU-TIER-UNSUPPORTED <m>  a forced member above this CPU's tier
   SEMB-PACKAGE-UNKNOWN-MEMBER <m>        -Members names something the package lacks
   SEMB-PACKAGE-USAGE <text>              -Final with -Gpu or -Host, or without -Members
@@ -101,7 +107,7 @@ BUILDING THE PACKAGE (dev box)
 Each numbered step is one command, safe to re-run after a crash. Use a fresh
 checkout of the frozen tree (REL-4 step 1) at <repo>, the package folder <pkg>, a
 SuperSLM clone holding v1.8.0 at <slm>, and a SuperFAISS clone at <sf>. Pin and build
-refuse by name (SEMB-PACKAGE-BUILD-ENV-FLAGS) while CFLAGS, CXXFLAGS, LDFLAGS or
+refuse by name (SEMB-PACKAGE-BUILD-ENV-FLAGS-SET) while CFLAGS, CXXFLAGS, LDFLAGS or
 CMAKE_TOOLCHAIN_FILE is set.
 
 For each MSVC 19.33 member (auto, sse2, avx2, avx512) and clangcl18.1.8-auto, in a
@@ -121,6 +127,15 @@ Tools:
   6. In the WSL distro: g++ -O2 -o <t>/host_cpuid tools/certify/host_cpuid.cpp
   7. In the MSVC 19.33 shell (compiles sf_roundtrip.exe from the pinned SuperFAISS tree):
      python tools/certify/build_package.py tools --package <pkg> --probe-windows <t>\host_cpuid.exe --probe-linux <t>/host_cpuid --superfaiss-source <sf>
-  8. python tools/certify/build_package.py finish --package <pkg> --model <model.sslm> --tokenizer <tokenizer.sslm>
+Python (the package's own; download these two files, nothing else, on any machine):
+     a. https://www.python.org/downloads/windows/ -> the newest Python 3.13.x release ->
+        "Windows embeddable package (64-bit)": python-3.13.<n>-embed-amd64.zip
+     b. https://pypi.org/project/numpy/#files -> the newest numpy release's
+        numpy-<v>-cp313-cp313-win_amd64.whl, and the SHA-256 PyPI shows beside it
+  8. python tools/certify/build_package.py python-runtime --package <pkg> --embeddable-zip <a> --numpy-wheel <b> --numpy-sha256 <PyPI's SHA-256>
+     (refuses SEMB-PACKAGE-PYTHON-RUNTIME-MISMATCH naming what is wrong: another Python
+     version or architecture, a wheel not tagged cp313-cp313-win_amd64, or a SHA-256 that
+     differs; a re-run whose files still match does nothing)
+  9. python tools/certify/build_package.py finish --package <pkg> --model <model.sslm> --tokenizer <tokenizer.sslm>
 Before the work machine's first sitting, after the dev box's own run:
-  9. python tools/certify/build_package.py receipts --package <pkg> --from <pkg>\results
+  10. python tools/certify/build_package.py receipts --package <pkg> --from <pkg>\results
