@@ -11,8 +11,9 @@ Legs:
   G10-off    OFF WINDOWS ONLY (constructible here, though the plan could not
              construct it on the dev box and made it a code-review check,
              P:4176): -DSEMB_BUILD_GPU=ON fails configure, and the output names
-             SEMB_BUILD_GPU. The plan names no refusal token for this case
-             (a planner gap, PENDING); the leg asserts only the option's name.
+             SEMB_BUILD_GPU. No token is named (the planner's U3 ruling 2:
+             the refusal names the option and says it requires Windows, before
+             the SEMB_ENGINE_GPU_MISSING guard); the leg asserts the name.
   G10-off'   must-accept of G10-off: the same copy, the option absent,
              configures (a configure that refuses everything cannot pass).
   G10-win    WINDOWS ONLY: -DSEMB_BUILD_GPU=ON against the CPU-only pin install
