@@ -1,6 +1,6 @@
 """U2 cloud build, U2-6: the certification package's scripts and refusals (te267 U2-6; sec 10 M6, M25).
 
-Grades tools/certify/: the CPU probe, build_package.py's two build-time refusals, and run_certify.ps1's
+Grades tools/certify/: the CPU probe, build_package.py's build-time refusals and python-runtime step, and run_certify.ps1's
 refusals, run files, resumability and exit honesty. Every run_certify.ps1 leg runs the real script under the
 PowerShell --pwsh names (Windows PowerShell 5.1 or PowerShell 7 on the dev box; PowerShell 7 elsewhere), in a
 package this check constructs. Where the package carries a binary the host cannot provide here (the six other
@@ -11,20 +11,28 @@ Legs:
   P1 probe      the probe prints HOST_BRAND, HOST_BEST_TIER and HOST_FEATURES; on Linux its tier equals the
                 one /proc/cpuinfo's flags give (the kernel lists AVX-512 only when it saves that state), a
                 second producer; elsewhere OBSERVED.
-  P2 build      SEMB-PACKAGE-BUILD-ENV-FLAGS <var> for each of CFLAGS, CXXFLAGS, LDFLAGS and
+  P2 build      SEMB-PACKAGE-BUILD-ENV-FLAGS-SET <var> for each of CFLAGS, CXXFLAGS, LDFLAGS and
                 CMAKE_TOOLCHAIN_FILE, on `pin` and on `build`, before anything runs; SEMB-PACKAGE-GPU-ENGINE-
                 MISMATCH when the GPU binary's engine build record differs from msvc19.33-auto's, with nothing
-                staged, and the GPU binary staged (shaders included) when they are equal; `finish` writes the
-                package's files and package.json with this tree's derivation-input digest.
+                staged, and the GPU binary staged (shaders included) when they are equal; `python-runtime`
+                refuses SEMB-PACKAGE-PYTHON-RUNTIME-MISMATCH for another Python version, a wheel not tagged
+                cp313-cp313-win_amd64 and a SHA-256 other than the given one, writing nothing; unpacks a
+                constructed embeddable zip and wheel into python/ (numpy in Lib/site-packages, the ._pth
+                naming it) with both SHA-256s recorded; a re-run changes nothing; a file changed afterwards is
+                restored by the next run; `finish` refuses SEMB-PACKAGE-BINARY-MISSING python before it, and
+                after it writes the package's files and package.json with this tree's derivation-input digest
+                and the runtime record.
   P3 refusals   SEMB-PACKAGE-BINARY-MISSING for a member's semb, the GPU binary and c63; SEMB-PACKAGE-WSL-
-                DISTRO-MISSING; SEMB-PACKAGE-WSL-DISTRO-VERSION; SEMB-PACKAGE-CPU-TIER-UNSUPPORTED for the
-                forced AVX-512 member on an AVX2 host: each exits non-zero, prints the name, and runs nothing
-                (no results/docs, no stand-in invoked).
+                DISTRO-MISSING; SEMB-PACKAGE-WSL-DISTRO-VERSION-MISMATCH; SEMB-PACKAGE-CPU-TIER-UNSUPPORTED for
+                the forced AVX-512 member on an AVX2 host; SEMB-PACKAGE-BINARY-MISSING python for an absent
+                python/python.exe, for one that cannot import numpy, and for an absent -Python override: each
+                exits non-zero, prints the name, and runs nothing (no results/docs, no stand-in invoked).
   P4 dev box    the default run on an AVX2 host: the six dev-box cells' run directories, each with the file
                 set U2-3 item 12 fixes, row digests recomputed here from the bank the stand-in wrote, every
                 run.json copy equal to the manifest, run ids unique, msvc19.33-auto's query-digests.tsv
-                recomputed here from the session's own output bytes, rt4-digests.txt, readings; nothing
-                written outside results/; exit 0.
+                recomputed here from the session's own output bytes, rt4-digests.txt, readings, the round
+                trip and readings run by the package's own python/python.exe with nothing on PATH asked;
+                nothing written outside results/; exit 0.
   P5 resume     a member that crashes mid-bake: exit non-zero, every other member done; the next run bakes
                 only that member and exits 0; a third run bakes nothing; a run file edited afterwards makes
                 the next run redo exactly that member's bake and the steps that read it.
@@ -204,6 +212,27 @@ if script.is_file():
 sys.exit(subprocess.run(cmd, env=env).returncode)
 '''
 
+# python/python.exe: the package's own interpreter. It logs "python <what it runs>" and runs it under the
+# interpreter running this stand-in (SEMB_FAKE_PYTHON, which has numpy), passing stdio and the exit code through;
+# with CONFIG["python_no_numpy"] its import check fails, as an interpreter without numpy's would.
+FAKE_PYTHON = COMMON + r'''
+import subprocess
+args = sys.argv[1:]
+what = "-c" if args[:1] == ["-c"] else (Path(args[0]).name if args else "")
+log("python " + what)
+if what == "-c" and CONFIG.get("python_no_numpy") and "numpy" in args[1]:
+    print("ModuleNotFoundError: No module named 'numpy'", file=sys.stderr)
+    sys.exit(1)
+sys.exit(subprocess.run([sys.executable] + args).returncode)
+'''
+
+# A working Python with numpy on PATH (python, python3, python.exe, py.exe): the script must never ask it.
+FAKE_PATH_PYTHON = COMMON + r'''
+import subprocess
+log("PATH-python " + " ".join(sys.argv[1:2]))
+sys.exit(subprocess.run([sys.executable] + sys.argv[1:]).returncode)
+'''
+
 FAKE_ROUNDTRIP = r'''
 import sys
 from pathlib import Path
@@ -250,6 +279,7 @@ def build_fake_package(pkg: Path, fake_exe: Path, corpus_src: Path, model_bytes:
     stage_tool(fake_exe, pkg / "bin" / "tools" / "host_cpuid.exe", FAKE_PROBE)
     stage_tool(fake_exe, pkg / "bin" / "tools" / "host_cpuid", FAKE_PROBE)
     (pkg / "bin" / "tools" / "sf_roundtrip.exe").write_bytes(b"stand-in")
+    stage_tool(fake_exe, pkg / "python" / "python.exe", FAKE_PYTHON)
     (pkg / "artifacts").mkdir()
     (pkg / "artifacts" / "model.sslm").write_bytes(b"M" * model_bytes)
     (pkg / "artifacts" / "tokenizer.sslm").write_bytes(b"T" * 100)
@@ -289,14 +319,15 @@ class Runner:
         log.unlink(missing_ok=True)
         return lines
 
-    def run(self, pkg: Path, *script_args: str, with_wsl: bool = True) -> subprocess.CompletedProcess[str]:
+    def run(self, pkg: Path, *script_args: str, with_wsl: bool = True,
+            python_arg: str | None = None) -> subprocess.CompletedProcess[str]:
         env = dict(os.environ, SEMB_FAKE_PYTHON=self.python, SEMB_FAKE_CONFIG=str(self.work / "config.json"))
         path = env.get("PATH", "")
         if with_wsl:
             path = str(self.fake_bin) + os.pathsep + path
         env["PATH"] = path
         cmd = self.pwsh + ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(pkg / "run_certify.ps1"),
-                           *script_args, "-Python", self.python]
+                           *script_args] + (["-Python", python_arg] if python_arg is not None else [])
         return subprocess.run(cmd, capture_output=True, text=True, errors="replace", env=env, timeout=1800)
 
 
@@ -377,7 +408,7 @@ def leg_build(report: Report, work: Path) -> None:
             env[var] = "/arch:AVX2" if var != "CMAKE_TOOLCHAIN_FILE" else "x.cmake"
             proc = subprocess.run([sys.executable, str(CERTIFY / "build_package.py"), *argv], capture_output=True,
                                   text=True, env=env)
-            report.check(proc.returncode == 1 and proc.stderr.strip() == f"SEMB-PACKAGE-BUILD-ENV-FLAGS {var}"
+            report.check(proc.returncode == 1 and proc.stderr.strip() == f"SEMB-PACKAGE-BUILD-ENV-FLAGS-SET {var}"
                          and "+ " not in proc.stdout and not (root / "no-build").exists(),
                          f"P2 {step} refuses {var}", f"exit {proc.returncode}: {proc.stderr.strip()}")
     proc = subprocess.run([sys.executable, str(CERTIFY / "build_package.py"), "build", "--member", "msvc19.33-avx1024",
@@ -422,6 +453,7 @@ def leg_build(report: Report, work: Path) -> None:
     report.check(rc == 0 and (pkg / "bin" / GPU / "shaders" / "k.cso").is_file()
                  and json.loads((pkg / "bin" / GPU / "member.json").read_text())["engineBuildRecord"] == "rec-A",
                  "P2 GPU binary staged on the auto member's engine record", f"exit {rc}")
+    leg_python_runtime(report, root, pkg)
     # `finish`: the package's own files, and the tree's commit and derivation-input digest in package.json.
     import derivation_inputs
     model, tokenizer = root / "m.sslm", root / "t.sslm"
@@ -436,16 +468,85 @@ def leg_build(report: Report, work: Path) -> None:
     report.check(rc == 0 and meta.get("derivationInputsSha256") == derivation_inputs.digest(REPO) and len(rows) == 239
                  and meta.get("model", {}).get("sha256") == sha(b"model") and same
                  and (pkg / "harness" / "tests" / "superfaiss_roundtrip" / "roundtrip.py").is_file()
-                 and (pkg / "harness" / "tools" / "readiness" / "readiness.py").is_file(),
+                 and (pkg / "harness" / "tools" / "readiness" / "readiness.py").is_file()
+                 and meta.get("pythonRuntime") == json.loads((pkg / "python-runtime.json").read_text()),
                  "P2 finish writes the package's files and package.json",
                  f"exit {rc}; {len(rows)} corpus rows; derivation digest {meta.get('derivationInputsSha256')}")
 
 
+def leg_python_runtime(report: Report, root: Path, pkg: Path) -> None:
+    """build_package.py python-runtime over a constructed embeddable zip and numpy wheel (D-SLM7811)."""
+    import zipfile
+
+    def build_py(*argv: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, str(CERTIFY / "build_package.py"), *argv], capture_output=True,
+                              text=True)
+
+    def make_zip(path: Path, members: dict[str, bytes]) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(path, "w") as z:
+            for name, data in members.items():
+                z.writestr(name, data)
+        return path
+
+    pth = b"python313.zip\r\n.\r\n\r\n# Uncomment to run site.main() automatically\r\n#import site\r\n"
+    embed = {"python.exe": b"MZ python", "python313.dll": b"MZ dll", "python313.zip": b"PK stdlib",
+             "python313._pth": pth}
+    dl = root / "downloads"
+    good_zip = make_zip(dl / "python-3.13.7-embed-amd64.zip", embed)
+    old_zip = make_zip(dl / "python-3.12.10-embed-amd64.zip", embed)
+
+    def wheel(tag: str) -> Path:
+        return make_zip(dl / tag / f"numpy-2.3.3-{tag}.whl", {
+            "numpy/__init__.py": b"__version__ = '2.3.3'\n",
+            "numpy-2.3.3.dist-info/WHEEL": f"Wheel-Version: 1.0\nRoot-Is-Purelib: false\nTag: {tag}\n".encode()})
+
+    good_whl, old_whl = wheel("cp313-cp313-win_amd64"), wheel("cp312-cp312-win_amd64")
+    finish = build_py("finish", "--package", str(pkg), "--model", "m", "--tokenizer", "t", "--repo", str(REPO))
+    report.check(finish.returncode == 1 and finish.stderr.startswith("SEMB-PACKAGE-BINARY-MISSING python")
+                 and not (pkg / "package.json").exists(), "P2 finish before python-runtime refused",
+                 f"exit {finish.returncode}: {finish.stderr.strip()[:120]}")
+    for label, argv, needle in (
+            ("another Python version", ["--embeddable-zip", str(old_zip), "--numpy-wheel", str(good_whl)], "3.12.10"),
+            ("a cp312 wheel", ["--embeddable-zip", str(good_zip), "--numpy-wheel", str(old_whl)], "cp313-cp313-win_amd64"),
+            ("a SHA-256 other than the given", ["--embeddable-zip", str(good_zip), "--numpy-wheel", str(good_whl),
+                                                "--numpy-sha256", "0" * 64], "sha256")):
+        proc = build_py("python-runtime", "--package", str(pkg), *argv)
+        report.check(proc.returncode == 1 and proc.stderr.startswith("SEMB-PACKAGE-PYTHON-RUNTIME-MISMATCH")
+                     and needle in proc.stderr and not (pkg / "python").exists()
+                     and not (pkg / "python-runtime.json").exists(), f"P2 python-runtime refuses {label}",
+                     f"exit {proc.returncode}: {proc.stderr.strip()[:140]}")
+    args = ["python-runtime", "--package", str(pkg), "--embeddable-zip", str(good_zip), "--numpy-wheel", str(good_whl),
+            "--numpy-sha256", sha(good_whl.read_bytes()).upper()]
+    proc = build_py(*args)
+    py = pkg / "python"
+    rec = json.loads((pkg / "python-runtime.json").read_text()) if (pkg / "python-runtime.json").is_file() else {}
+    pth_lines = (py / "python313._pth").read_bytes().split(b"\r\n") if (py / "python313._pth").is_file() else []
+    report.check(proc.returncode == 0 and (py / "python.exe").read_bytes() == b"MZ python"
+                 and (py / "Lib" / "site-packages" / "numpy" / "__init__.py").is_file()
+                 and pth_lines[:3] == [b"python313.zip", b".", b"Lib\\site-packages"] and b"#import site" in pth_lines
+                 and rec.get("embeddableZip", {}).get("sha256") == sha(good_zip.read_bytes())
+                 and rec.get("numpyWheel", {}).get("sha256") == sha(good_whl.read_bytes())
+                 and rec.get("pythonVersion") == "3.13.7" and rec.get("numpyVersion") == "2.3.3"
+                 and not (pkg / "python.partial").exists(), "P2 python-runtime unpacks and records",
+                 f"exit {proc.returncode}; record {sorted(rec)}; ._pth {pth_lines[:3]}")
+    before = {str(q.relative_to(pkg)): (q.stat().st_mtime_ns, q.read_bytes()) for q in sorted(py.rglob("*")) if q.is_file()}
+    proc = build_py(*args)
+    after = {str(q.relative_to(pkg)): (q.stat().st_mtime_ns, q.read_bytes()) for q in sorted(py.rglob("*")) if q.is_file()}
+    report.check(proc.returncode == 0 and "nothing to do" in proc.stdout and before == after,
+                 "P2 python-runtime re-run changes nothing", proc.stdout.strip()[:120])
+    (py / "Lib" / "site-packages" / "numpy" / "__init__.py").write_text("tampered\n")
+    proc = build_py(*args)
+    report.check(proc.returncode == 0 and "unpacked" in proc.stdout
+                 and (py / "Lib" / "site-packages" / "numpy" / "__init__.py").read_bytes() == b"__version__ = '2.3.3'\n",
+                 "P2 python-runtime restores a changed tree", proc.stdout.strip()[:120])
+
+
 def leg_refusals(report: Report, r: Runner, pkg: Path, fake_exe: Path, corpus: Path) -> None:
-    def expect(label: str, name: str, *args: str, with_wsl: bool = True) -> None:
+    def expect(label: str, name: str, *args: str, with_wsl: bool = True, python_arg: str | None = None) -> None:
         shutil.rmtree(pkg / "results", ignore_errors=True)
-        proc = r.run(pkg, *args, with_wsl=with_wsl)
-        ran = [l for l in r.invocations() if not l.startswith(("probe", "wsl"))]
+        proc = r.run(pkg, *args, with_wsl=with_wsl, python_arg=python_arg)
+        ran = [l for l in r.invocations() if not l.startswith(("probe", "wsl", "python -c"))]
         report.check(proc.returncode == 1 and name in proc.stdout and not ran
                      and not (pkg / "results" / "docs").exists(), f"P3 {label}",
                      f"exit {proc.returncode}; '{name}' {'printed' if name in proc.stdout else 'NOT printed'}; "
@@ -462,11 +563,21 @@ def leg_refusals(report: Report, r: Runner, pkg: Path, fake_exe: Path, corpus: P
     r.config(tier="avx2", distros=["Ubuntu-22.04"])
     expect("Ubuntu-24.04 absent", "SEMB-PACKAGE-WSL-DISTRO-MISSING")
     r.config(tier="avx2", wsl_version="22.04")
-    expect("Ubuntu-24.04 at another VERSION_ID", "SEMB-PACKAGE-WSL-DISTRO-VERSION 22.04")
+    expect("Ubuntu-24.04 at another VERSION_ID", "SEMB-PACKAGE-WSL-DISTRO-VERSION-MISMATCH 22.04")
     r.config(tier="avx2")
     expect("forced AVX-512 member on an AVX2 host", "SEMB-PACKAGE-CPU-TIER-UNSUPPORTED msvc19.33-avx512",
            "-Members", "msvc19.33-avx512")
     expect("-Final with -Gpu", "SEMB-PACKAGE-USAGE", "-Final", "-Gpu", "-Members", AUTO)
+    # The package's own Python (D-SLM7811): absent, unable to import numpy, and an absent -Python override.
+    own = pkg / "python" / "python.exe"
+    own.rename(own.with_name("python.exe.hidden"))
+    expect("python/python.exe absent, a working Python on PATH", "SEMB-PACKAGE-BINARY-MISSING python")
+    own.with_name("python.exe.hidden").rename(own)
+    r.config(tier="avx2", python_no_numpy=True)
+    expect("python/python.exe without numpy", "SEMB-PACKAGE-BINARY-MISSING python")
+    r.config(tier="avx2")
+    expect("-Python naming an absent interpreter", "SEMB-PACKAGE-BINARY-MISSING python",
+           python_arg=str(pkg / "no-such-python.exe"))
     if not WINDOWS:  # a Windows host may have a real wsl.exe on PATH; the stand-in is then the only one
         expect("no wsl.exe at all", "SEMB-PACKAGE-WSL-DISTRO-MISSING", with_wsl=False)
 
@@ -539,6 +650,11 @@ def leg_dev_box(report: Report, r: Runner, pkg: Path) -> None:
     report.check((pkg / "results" / "readings" / "msvc19.33-auto@avx2" / "readiness.json").is_file(),
                  "P4 readings", "results/readings/msvc19.33-auto@avx2/readiness.json")
     report.check(not any("c63" in c for c in calls), "P4 no C63 on the dev box", "C63 runs with the AVX-512 member")
+    pys = [c for c in calls if c.startswith("python ")]
+    path_py = [c for c in calls if c.startswith("PATH-python")]
+    report.check(pys == ["python -c", "python roundtrip.py", "python readiness.py"] and not path_py,
+                 "P4 the package's own Python", f"python/python.exe ran {pys}; a working Python on PATH ran "
+                                                f"{len(path_py)} times (no -Python given)")
     summary = json.loads((pkg / "results" / "summary.json").read_text(encoding="utf-8"))
     report.check(summary.get("allStepsDone") is True and summary.get("hostBestTier") == "avx2",
                  "P4 summary.json", f"allStepsDone {summary.get('allStepsDone')}, {len(summary.get('steps', []))} steps")
@@ -772,6 +888,8 @@ def main(argv: list[str]) -> int:
         return 1 if report.failed else 0
     fake_bin = work / "fake-bin"
     stage_tool(args.fake_tool, fake_bin / "wsl.exe", FAKE_WSL)
+    for name in ("python", "python3", "python.exe", "py.exe"):
+        stage_tool(args.fake_tool, fake_bin / name, FAKE_PATH_PYTHON)
     corpus = c35.corpus_jsonl(work)
     r = Runner(pwsh, sys.executable, fake_bin, work)
     pkg = work / "package"
