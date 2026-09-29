@@ -14,9 +14,16 @@ its own [PASS]/[FAIL]/[RED-UNIMPLEMENTED] lines into build/_u3_logs/.
   python tests/u3_devbox_steps.py --build-dir <tree> --run <step>  (that step again)
   python tests/u3_devbox_steps.py --build-dir <tree> --status
 
-Commissioning steps (row 5 (d), P:4215) run in a SECOND tree configured
-against the engine at v1.7.1 with -DSEMB_U3_COMMISSION_TREE=ON; pass that tree
-as --commission-build-dir. They come before any decision-bearing (d) run.
+Commissioning steps (row 5 (d), P:4215) run in a SECOND tree (tree B)
+configured against the engine at v1.7.1 with -DSEMB_U3_COMMISSION_TREE=ON; pass
+that tree as --commission-build-dir. They come before any decision-bearing (d)
+run. Tree B cannot configure against the checked-in superslm.lock (it pins
+1.8.0, so the configure refuses SEMB_ENGINE_PIN_MISMATCH): point EngineGuards'
+own override at the v1.7.1 lock the pin tool wrote for the --with-gpu install,
+never by editing the checked-in lock:
+  cmake -S <repo> -B <tree B> -DSEMB_BUILD_GPU=ON -DSEMB_U3_COMMISSION_TREE=ON
+        -DCMAKE_PREFIX_PATH=<v1.7.1 --with-gpu install>
+        -DSEMB_ENGINE_LOCK_FILE=<the v1.7.1 lock the pin tool wrote> ...
 """
 from __future__ import annotations
 
@@ -115,7 +122,8 @@ def main(argv: list[str]) -> int:
         if (marks / f"{step}.done").is_file():
             continue
         if trees[tree] is None:
-            print(f"next step {step} runs in the commissioning tree (engine v1.7.1, -DSEMB_U3_COMMISSION_TREE=ON): "
+            print(f"next step {step} runs in the commissioning tree (engine v1.7.1, -DSEMB_U3_COMMISSION_TREE=ON, "
+                  f"-DSEMB_ENGINE_LOCK_FILE=<the v1.7.1 lock>): "
                   f"pass --commission-build-dir, or --run a later step by name")
             return 2
         return run_step(step, trees[tree], marks)
