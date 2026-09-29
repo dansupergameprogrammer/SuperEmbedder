@@ -1967,3 +1967,204 @@ set_tests_properties(
 	te230_c4_zero_gain_check
 	te230_semb_cli_check
 	PROPERTIES RESOURCE_LOCK semb_multi_gb_mint)
+
+# ---------------------------------------------------------------------------
+# U3 red suite -- the GPU path (te266 sec 4.5 C10/C11, sec 4.6 rows 1-11; the
+# U2 plan's sec 6.2 J9, J11, J12). The test author's; every binary is
+# EXCLUDE_FROM_ALL and built on demand by its driver, so a link failure on a
+# builder item is that cell's RED-UNIMPLEMENTED, never a broken default build.
+# GPU-execution cells are registered on every platform and report MISSING
+# PREREQUISITE (exit 77, skipped) anywhere but a Windows tree configured with
+# SEMB_BUILD_GPU=ON; tests/u3_devbox_steps.py runs them one ctest per step.
+# ---------------------------------------------------------------------------
+set(SEMB_U3_SHADER_TO_REMOVE "" CACHE FILEPATH "U3 C10 (d)/row 5 (d): one installed .cso the must-reject renames away")
+set(SEMB_U3_OFF_BUILD_DIR "" CACHE PATH "U3 C10 (b): a SEMB_BUILD_GPU=OFF build tree of the same commit")
+set(SEMB_U3_CORPORA_ROOT "" CACHE PATH "U3 C10 (h): <name>.jsonl and <name>-cpu bank stems (PENDING population)")
+set(SEMB_U3_FIQA_CORPUS "" CACHE FILEPATH "U3 C11: the FiQA document slice (jsonl)")
+set(SEMB_U3_FIQA_QUERIES "" CACHE FILEPATH "U3 C11: 100 FiQA queries (jsonl)")
+set(SEMB_U3_GPU_ENGINE_PREFIX "" CACHE PATH "U3 row 8: a --with-gpu pin install, for the ON/OFF compileFlags leg")
+option(SEMB_U3_COMMISSION_TREE "U3 row 5 (d): this tree links the must-reject engine (v1.7.1); register the commissioning legs" OFF)
+if(SEMB_BUILD_GPU)
+	set(_semb_u3_gpu 1)
+else()
+	set(_semb_u3_gpu 0)
+endif()
+set(_semb_u3_real_args --real-model "${SEMB_C12B_MODEL}" --real-tokenizer "${SEMB_U1_TOKENIZER}")
+
+# J9 and the device ABI (P:4022-4027): links the shipped target.
+add_executable(u3_abi_test EXCLUDE_FROM_ALL u3_abi_test.cpp)
+target_link_libraries(u3_abi_test PRIVATE superembedder superslm::superslm Threads::Threads)
+target_include_directories(u3_abi_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_definitions(u3_abi_test PRIVATE U3_TEST_BUILD_GPU=${_semb_u3_gpu})
+add_test(NAME u3_abi_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u3_cells_check.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}" --target u3_abi_test --fixtures u1
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# Row 5 (a)'s guard fixture and its CPU half (P:4215): links the shipped target.
+add_executable(u3_guard_fixture_test EXCLUDE_FROM_ALL u3_guard_fixture_test.cpp)
+target_link_libraries(u3_guard_fixture_test PRIVATE superembedder superslm::superslm Threads::Threads)
+target_include_directories(u3_guard_fixture_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+add_test(NAME u3_guard_fixture_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u3_cells_check.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}" --target u3_guard_fixture_test
+		--fixtures guardmain
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# C10 (i) G11 and row 5 (f)'s disk leg: the CLI.
+add_test(NAME u3_cli_device_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u3_cli_device_check.py"
+		--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# C10 (i) G10 and row 8: the configure legs.
+add_test(NAME u3_configure_legs_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u3_configure_legs_check.py"
+		--repo-root "${CMAKE_SOURCE_DIR}" --engine-prefix "${SEMB_ENGINE_PREFIX}"
+		--gpu-engine-prefix "${SEMB_U3_GPU_ENGINE_PREFIX}"
+		--cmake-executable "${CMAKE_COMMAND}" --generator "${CMAKE_GENERATOR}"
+		--ninja-executable "${CMAKE_MAKE_PROGRAM}" --python-executable "${Python3_EXECUTABLE}"
+		--scratch "${CMAKE_BINARY_DIR}/_scratch/u3_configure_legs"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# Row 7 / row 8 / J10: the pin tool's GPU half, unit legs.
+add_test(NAME u3_pin_tool_gpu_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u3_pin_tool_gpu_check.py"
+		--python-executable "${Python3_EXECUTABLE}" --scratch "${CMAKE_BINARY_DIR}"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# C10 (a)/(e) 3: the pairwise row-digest instrument's commissioning.
+add_test(NAME u3_row_digest_pair_selftest
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u3_row_digest_pair.py" selftest
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+set_tests_properties(u3_abi_check u3_guard_fixture_check u3_cli_device_check u3_configure_legs_check
+	u3_pin_tool_gpu_check u3_row_digest_pair_selftest PROPERTIES LABELS "u3" SKIP_RETURN_CODE 77 TIMEOUT 3600)
+# Each driver builds its target in this tree: never two at once.
+set_tests_properties(u3_abi_check u3_guard_fixture_check u3_cli_device_check PROPERTIES RESOURCE_LOCK semb_u3_build)
+
+# The seam-linked binaries: after superembedder_testseam exists.
+function(semb_add_u3_seam_tests)
+	if(NOT TARGET superembedder_testseam)
+		return()
+	endif()
+	set(_d "${CMAKE_CURRENT_FUNCTION_LIST_DIR}")
+	set(_drv "${Python3_EXECUTABLE}" "${_d}/u3_cells_check.py" --build-dir "${CMAKE_BINARY_DIR}"
+		--cmake-executable "${CMAKE_COMMAND}")
+	# Row 11's CPU witness-triple counter (P:4221): every build.
+	add_executable(u3_cpu_seam_test EXCLUDE_FROM_ALL "${_d}/u3_cpu_seam_test.cpp")
+	target_link_libraries(u3_cpu_seam_test PRIVATE superembedder_testseam superslm::superslm Threads::Threads)
+	target_include_directories(u3_cpu_seam_test PRIVATE "${_d}")
+	add_test(NAME u3_cpu_seam_check COMMAND ${_drv} --target u3_cpu_seam_test --fixtures u1
+		WORKING_DIRECTORY "${_d}/..")
+	# C14's clause for the U3 seam (P:4076).
+	add_test(NAME u3_gpu_seam_absent_check
+		COMMAND "${Python3_EXECUTABLE}" "${_d}/u3_gpu_seam_absent_check.py"
+			--production "$<TARGET_FILE:superembedder>" --testseam "$<TARGET_FILE:superembedder_testseam>"
+			--build-dir "${CMAKE_BINARY_DIR}" --cmake-executable "${CMAKE_COMMAND}" --gpu "${_semb_u3_gpu}"
+		WORKING_DIRECTORY "${_d}/..")
+	set_tests_properties(u3_cpu_seam_check u3_gpu_seam_absent_check PROPERTIES LABELS "u3" SKIP_RETURN_CODE 77
+		RESOURCE_LOCK semb_u3_build)
+
+	# The GPU binaries: Windows and SEMB_BUILD_GPU=ON only (P:4260-4275).
+	if(WIN32 AND SEMB_BUILD_GPU)
+		foreach(_t u3_gpu_cells_test u3_gpu_alloc_test u3_c64_gpu_leg_test)
+			add_executable(${_t} EXCLUDE_FROM_ALL "${_d}/${_t}.cpp")
+			target_link_libraries(${_t} PRIVATE superembedder_testseam superslm::superslm Threads::Threads d3d12 dxgi)
+			if(TARGET superslm::superslm_gpu)
+				target_link_libraries(${_t} PRIVATE superslm::superslm_gpu)
+			endif()
+			target_include_directories(${_t} PRIVATE "${_d}")
+			target_compile_definitions(${_t} PRIVATE U3_TEST_BUILD_GPU=1)
+		endforeach()
+	endif()
+	# Registered everywhere: off the dev box each reports MISSING PREREQUISITE (77).
+	set(_cells row1_lifetime row1_slots_mc8 row1_slots_unbounded row1_default_release row1_hold_600
+		row3_mc4 row3_batch16 row3a_two_handles row3b_one_handle row4_shapes row5a_guard row5a_mechanism
+		row5b_prefill row5b_seqcreate row5c_open_lost row5c_open_rejected row5d_seam row5f_batch_guard
+		row5f_batch_lost c10e1 c10e4_scale c10e4_last_wq c10e4_wb15 c10e2 c10i_before_device row7_fingerprint
+		row11_gpu_triples c10d_after_success c10d_debug_layer c10d_b5_srv c10d_b5_uav)
+	set(_gpu_tests "")
+	foreach(_c ${_cells})
+		add_test(NAME u3_gpu_cell_${_c}
+			COMMAND ${_drv} --target u3_gpu_cells_test --gpu --fixtures u1,min5k,guard --log-name gpu_cell_${_c}
+				-- --cell ${_c} --scratch "${CMAKE_BINARY_DIR}/_scratch/u3_gpu_cells/${_c}"
+			WORKING_DIRECTORY "${_d}/..")
+		list(APPEND _gpu_tests u3_gpu_cell_${_c})
+	endforeach()
+	foreach(_i default 0)
+		add_test(NAME u3_gpu_cell_c10d_index_${_i}
+			COMMAND ${_drv} --target u3_gpu_cells_test --gpu --fixtures u1 --log-name gpu_cell_c10d_index_${_i}
+				-- --cell c10d_index --index ${_i} --scratch "${CMAKE_BINARY_DIR}/_scratch/u3_gpu_cells/c10d_index_${_i}"
+			WORKING_DIRECTORY "${_d}/..")
+		list(APPEND _gpu_tests u3_gpu_cell_c10d_index_${_i})
+	endforeach()
+	foreach(_v 99 abc)
+		add_test(NAME u3_gpu_cell_c10d_refused_then_corrected_${_v}
+			COMMAND ${_drv} --target u3_gpu_cells_test --gpu --fixtures u1
+				--log-name gpu_cell_c10d_refused_then_corrected_${_v}
+				-- --cell c10d_refused_then_corrected --value ${_v}
+				--scratch "${CMAKE_BINARY_DIR}/_scratch/u3_gpu_cells/c10d_rtc_${_v}"
+			WORKING_DIRECTORY "${_d}/..")
+		list(APPEND _gpu_tests u3_gpu_cell_c10d_refused_then_corrected_${_v})
+	endforeach()
+	add_test(NAME u3_gpu_cell_c10d_refused_after_creation
+		COMMAND ${_drv} --target u3_gpu_cells_test --gpu --fixtures u1 --log-name gpu_cell_c10d_refused_after_creation
+			-- --cell c10d_refused_after_creation --remove-shader "${SEMB_U3_SHADER_TO_REMOVE}"
+			--scratch "${CMAKE_BINARY_DIR}/_scratch/u3_gpu_cells/c10d_rac"
+		WORKING_DIRECTORY "${_d}/..")
+	list(APPEND _gpu_tests u3_gpu_cell_c10d_refused_after_creation)
+	# Row 5 (d): the real-allocation legs, resumable (tests/u3_gpu_sweep_check.py).
+	foreach(_leg count d1 d2 d3h d3d d4 mr_removed)
+		add_test(NAME u3_gpu_alloc_${_leg}
+			COMMAND "${Python3_EXECUTABLE}" "${_d}/u3_gpu_sweep_check.py" --build-dir "${CMAKE_BINARY_DIR}"
+				--cmake-executable "${CMAKE_COMMAND}" --binary alloc --leg ${_leg} ${_semb_u3_real_args}
+			WORKING_DIRECTORY "${_d}/..")
+		list(APPEND _gpu_tests u3_gpu_alloc_${_leg})
+		if(SEMB_U3_COMMISSION_TREE AND NOT _leg MATCHES "^(count|mr_removed|d3h|d3d)$")
+			add_test(NAME u3_gpu_alloc_${_leg}_commission
+				COMMAND "${Python3_EXECUTABLE}" "${_d}/u3_gpu_sweep_check.py" --build-dir "${CMAKE_BINARY_DIR}"
+					--cmake-executable "${CMAKE_COMMAND}" --binary alloc --leg ${_leg} --commission ${_semb_u3_real_args}
+				WORKING_DIRECTORY "${_d}/..")
+			list(APPEND _gpu_tests u3_gpu_alloc_${_leg}_commission)
+		endif()
+	endforeach()
+	# J12: C64's GPU leg, one ctest per row and arm.
+	foreach(_row semb_encoder_open semb_encode semb_encode_query semb_encode_batch)
+		foreach(_arm a a2 b)
+			add_test(NAME u3_c64_gpu_${_row}_${_arm}
+				COMMAND "${Python3_EXECUTABLE}" "${_d}/u3_gpu_sweep_check.py" --build-dir "${CMAKE_BINARY_DIR}"
+					--cmake-executable "${CMAKE_COMMAND}" --binary c64 --row ${_row} --arm ${_arm} --artifact u1
+				WORKING_DIRECTORY "${_d}/..")
+			list(APPEND _gpu_tests u3_c64_gpu_${_row}_${_arm})
+		endforeach()
+	endforeach()
+	# C10's real-artifact legs.
+	foreach(_leg a e2 b g4096 g8192 gcap h i_verify i_install)
+		add_test(NAME u3_gpu_real_${_leg}
+			COMMAND "${Python3_EXECUTABLE}" "${_d}/u3_gpu_real_check.py" --build-dir "${CMAKE_BINARY_DIR}"
+				--cmake-executable "${CMAKE_COMMAND}" --leg ${_leg} ${_semb_u3_real_args}
+				--off-build-dir "${SEMB_U3_OFF_BUILD_DIR}" --corpora-root "${SEMB_U3_CORPORA_ROOT}"
+			WORKING_DIRECTORY "${_d}/..")
+		list(APPEND _gpu_tests u3_gpu_real_${_leg})
+	endforeach()
+	# C11: measurement, pilot first (P:4196).
+	foreach(_leg tokps query device)
+		foreach(_p pilot full)
+			set(_pa "")
+			if(_p STREQUAL "pilot")
+				set(_pa --pilot)
+			endif()
+			add_test(NAME u3_c11_${_leg}_${_p}
+				COMMAND "${Python3_EXECUTABLE}" "${_d}/u3_c11_measure.py" --build-dir "${CMAKE_BINARY_DIR}"
+					--cmake-executable "${CMAKE_COMMAND}" --leg ${_leg} ${_pa} ${_semb_u3_real_args}
+					--fiqa-corpus "${SEMB_U3_FIQA_CORPUS}" --fiqa-queries "${SEMB_U3_FIQA_QUERIES}"
+				WORKING_DIRECTORY "${_d}/..")
+			list(APPEND _gpu_tests u3_c11_${_leg}_${_p})
+		endforeach()
+	endforeach()
+	set_tests_properties(${_gpu_tests} PROPERTIES LABELS "u3;u3_devbox" SKIP_RETURN_CODE 77 RUN_SERIAL TRUE
+		TIMEOUT 36000)
+endfunction()
+if(DEFINED SEMB_LIBRARY_SOURCES)
+	cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_add_u3_seam_tests)
+endif()
