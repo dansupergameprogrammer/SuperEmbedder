@@ -20,25 +20,28 @@
 //   ABI-c   SEMB_BUILD_GPU=OFF only: `device` = SEMB_DEVICE_GPU refuses
 //           SEMB_DEVICE_UNSUPPORTED (P:4024, "or SEMB_DEVICE_GPU in a build
 //           without SEMB_BUILD_GPU"; row 7's "no fallback", P:4217).
-//   ABI-d   struct_size stays exactly validated (P:4022): the pre-U3 size
-//           (today's six members) refuses SEMB_STRUCT_SIZE_MISMATCH.
+//   ABI-d   the layout is pinned and struct_size stays exactly validated
+//           (P:4022 as restated by the planner's U3 ruling 1: `device` lands in
+//           the former tail padding, so sizeof stays 48 and there is no
+//           reserved word or 64-bit member).
+//           (i)  compile time: offsetof(semb_config, device) ==
+//                offsetof(semb_config, max_concurrency) + 4, and on 64-bit
+//                sizeof(semb_config) == 48. The size pin holds in every build;
+//                the offset pin is instantiated once the member exists, and
+//                until then the cell reports RED.
+//           (ii) struct_size 44 (= offsetof(device)), 52, 56 and 0 each refuse
+//                SEMB_STRUCT_SIZE_MISMATCH and write NULL to *out. The
+//                must-accept, sizeof(semb_config), is ABI-a's open.
 //
 // RED TODAY, each for its own reason: J9-a/b (the names resolve to nothing);
 // ABI-a (semb_config has no `device` member: the open succeeds only because
 // the product ignores the bytes, so the cell reports RED, never PASS, until
 // the member exists); ABI-b/c (no SEMB_DEVICE_UNSUPPORTED; the open succeeds);
-// ABI-d (see below).
-//
-// ABI-d AND THE PLAN (a model gap, PENDING the planner): P:4022 says
-// "`struct_size` grows". On LP64 and LLP64 it does not: `uint32_t device`
-// appended after `uint32_t max_concurrency` lands in the struct's tail
-// padding, so sizeof(semb_config) is 48 before and after, and exact
-// struct_size validation cannot tell a pre-U3 caller from a U3 caller (a
-// pre-U3 caller's padding bytes become `device`). This cell asserts the plan's
-// stated property -- the pre-U3 size is refused -- and states the layout it
-// read, so a literal build leaves it red for the planner, not silently green.
+// ABI-d (i) (no member to pin). ABI-d (ii) is U2's exact validation, which
+// holds today and must keep holding.
 //
 // USAGE: u3_abi_test --model <pair model> --tokenizer <pair tokenizer> [--log <file>]
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -49,13 +52,23 @@
 
 namespace {
 
-struct OldConfig {  // today's semb_config, member for member (the pre-U3 layout)
-  uint32_t struct_size;
-  const char* model_path;
-  size_t model_path_len;
-  const char* tokenizer_path;
-  size_t tokenizer_path_len;
-  uint32_t max_concurrency;
+// ABI-d (i): the layout pin (ruling 1). The size pin needs no member and holds
+// in every build; the offset pin is instantiated only once semb_config::device
+// exists, so today's header compiles and the cell reports RED instead.
+#if UINTPTR_MAX > 0xFFFFFFFFu
+static_assert(sizeof(semb_config) == 48,
+              "U3 ABI-d (i): sizeof(semb_config) stays 48 on 64-bit (P:4022 as restated; no padding member)");
+#endif
+template <class C, bool = u3::HasDevice<C>::value>
+struct DevicePin {
+  static constexpr bool present = false;
+};
+template <class C>
+struct DevicePin<C, true> {
+  static constexpr bool present = true;
+  static_assert(offsetof(C, device) == offsetof(C, max_concurrency) + 4,
+                "U3 ABI-d (i): `device` is the member right after max_concurrency, in the former tail padding");
+  static_assert(sizeof(uint32_t) == sizeof(C::device), "U3 ABI-d (i): `device` is a uint32_t");
 };
 
 }  // namespace
@@ -177,25 +190,34 @@ int main(int argc, char** argv) {
   u3::Note("ABI-c", "SEMB_BUILD_GPU=ON: a GPU request is graded by the GPU cells (u3_gpu_cells_test)");
 #endif
 
-  // ---- ABI-d: the pre-U3 size is refused -----------------------------------
+  // ---- ABI-d: layout pin and exact struct_size validation (ruling 1) -------
   {
-    OldConfig c{};
-    c.struct_size = static_cast<uint32_t>(sizeof(OldConfig));
-    c.model_path = model.data();
-    c.model_path_len = model.size();
-    c.tokenizer_path = tokenizer.data();
-    c.tokenizer_path_len = tokenizer.size();
-    c.max_concurrency = 1;
-    semb_encoder e = nullptr;
-    const semb_status s = semb_encoder_open(reinterpret_cast<const semb_config*>(&c), &e);
-    u3::Verdict(s == SEMB_STRUCT_SIZE_MISMATCH && e == nullptr,
-                "ABI-d the pre-U3 struct_size refuses SEMB_STRUCT_SIZE_MISMATCH (\"struct_size grows\", P:4022)",
-                std::string("struct_size ") + u3::S(sizeof(OldConfig)) + " -> " + u3::Name(s) +
-                    (sizeof(OldConfig) == sizeof(u3::Config)
-                         ? "; the layout with `device` appended is also " + u3::S(sizeof(u3::Config)) +
-                               " bytes (tail padding): the plan's growth does not happen on this ABI (PENDING)"
-                         : ""));
-    if (s == SEMB_OK && e) semb_encoder_close(e);
+    const std::string cell = "ABI-d (i) layout pin: offsetof(device) == offsetof(max_concurrency) + 4, "
+                             "sizeof(semb_config) == 48 on 64-bit";
+    const std::string layout = "sizeof(semb_config) = " + u3::S(sizeof(semb_config)) +
+                               ", offsetof(max_concurrency) = " + u3::S(offsetof(semb_config, max_concurrency));
+    if (!DevicePin<semb_config>::present) {
+      u3::Red(cell, "semb_config has no `device` member to pin (P:4022); " + layout);
+    } else {
+      u3::Verdict(true, cell, "held at compile time; " + layout);
+    }
+  }
+  {
+    // A zeroed buffer larger than any size tried, so a product that read past
+    // sizeof(semb_config) before refusing reads zeros, never another object.
+    alignas(u3::Config) unsigned char buf[64] = {};
+    const u3::Config good = u3::MakeConfig(model, tokenizer, 1, u3::kDeviceCpu);
+    std::memcpy(buf, &good, sizeof(good));
+    const uint32_t sizes[4] = {static_cast<uint32_t>(offsetof(u3::Config, device)), 52u, 56u, 0u};
+    for (const uint32_t sz : sizes) {
+      std::memcpy(buf, &sz, sizeof(sz));  // struct_size is the first member
+      semb_encoder e = reinterpret_cast<semb_encoder>(static_cast<uintptr_t>(0x1));
+      const semb_status s = semb_encoder_open(reinterpret_cast<const semb_config*>(buf), &e);
+      u3::Verdict(s == SEMB_STRUCT_SIZE_MISMATCH && e == nullptr,
+                  "ABI-d (ii) struct_size " + u3::S(sz) + " refuses SEMB_STRUCT_SIZE_MISMATCH, *out NULL (P:4022)",
+                  std::string("status ") + u3::Name(s) + ", *out " + (e ? "NOT NULL" : "NULL"));
+      if (s == SEMB_OK && e && e != reinterpret_cast<semb_encoder>(static_cast<uintptr_t>(0x1))) semb_encoder_close(e);
+    }
   }
 
   std::printf("SUMMARY u3_abi pass=%d fail=%d red=%d missing=%d\n", u3::T().pass, u3::T().fail, u3::T().red,

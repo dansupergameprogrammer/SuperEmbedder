@@ -5,11 +5,12 @@
 //   * semb_config gains a last member `uint32_t device;` (P:4022), with
 //     SEMB_DEVICE_CPU = 0, the zero-initialized default, and SEMB_DEVICE_GPU = 1.
 //     u3::Config below is today's semb_config plus that member. On LP64 and
-//     LLP64 the member lands in the tail padding, so sizeof is 48 either way
-//     and today's product ACCEPTS a u3::Config, ignoring `device` (the plan's
-//     "struct_size grows", P:4022, does not hold: a PENDING planner item). No
-//     cell may read an accepted open as the device working: a cell that needs
-//     the member checks kProductHasDevice and is RED without it. Once semb.h
+//     LLP64 the member lands in the former tail padding, so sizeof is 48
+//     either way (the planner's U3 ruling 1 keeps that layout and strikes
+//     "struct_size grows" from P:4022; tests/u3_abi_test.cpp ABI-d pins it),
+//     and today's product ACCEPTS a u3::Config, ignoring `device`. No cell may
+//     read an accepted open as the device working: a cell that needs the
+//     member checks kProductHasDevice and is RED without it. Once semb.h
 //     carries the member, the static_asserts below hold the two layouts equal.
 //   * the three statuses are resolved BY NAME through semb_status_name (P:4023:
 //     "named, never numbered, in U3's cells"). An unresolved name is a
