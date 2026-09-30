@@ -16,6 +16,13 @@ the plan requires ("in a fresh process").
 Verdict: [PASS] when every graded site passed and none crashed; [FAIL] with the
 counts otherwise. OUTSIDE-MAP sites (d3) are listed, not graded.
 
+C64 sweeps number their sites 1..K-1 with no gaps (END carries K), so a site
+missing from the log is a hole, never a pass: the driver re-runs from the first
+hole even after END (the binary takes --first only, so the sites after it are
+read again), a site read twice with different verdicts is a [FAIL], and a hole
+still open at the end is a [FAIL]. The alloc legs are sampled (d3h) or fresh per
+site, so they are not held to a contiguous set.
+
 --commission grades the must-reject population instead (P:4215): run against
 the engine at v1.7.1, a leg that reads no non-conforming site is DEAD ([FAIL]);
 the reading is printed beside the plan's figures (d1 530 = 50 + 480, d2 120, d4
@@ -47,6 +54,7 @@ END = re.compile(r"^END .*?\bk=(\d+)\b")
 
 def read_state(log: Path) -> tuple[dict[int, str], set[int], int | None, list[str]]:
     results: dict[int, str] = {}
+    conflicts: set[int] = set()
     begun: set[int] = set()
     end_k: int | None = None
     lines: list[str] = []
@@ -54,7 +62,10 @@ def read_state(log: Path) -> tuple[dict[int, str], set[int], int | None, list[st
         for line in log.read_text(errors="replace").splitlines():
             m = RESULT.match(line)
             if m:
-                results[int(m.group(2))] = m.group(3)
+                k = int(m.group(2))
+                if k in results and results[k] != m.group(3):
+                    conflicts.add(k)
+                results[k] = m.group(3)
                 lines.append(line)
                 continue
             m = BEGIN.match(line)
@@ -67,7 +78,16 @@ def read_state(log: Path) -> tuple[dict[int, str], set[int], int | None, list[st
     crashed = {k for k in begun if k not in results and (end_k is None or k < end_k)}
     for k in crashed:
         results[k] = "CRASHED"
+    for k in conflicts:
+        results[k] = "FAIL"
+        lines.append(f"CONFLICT k={k}: the log holds two different verdicts for this site FAIL")
     return results, crashed, end_k, lines
+
+
+def holes(results: dict[int, str], end_k: int | None) -> list[int]:
+    """C64 sites missing from 1..K-1 (or 1..max read so far, before END)."""
+    top = end_k - 1 if end_k is not None else (max(results) if results else 0)
+    return [k for k in range(1, top + 1) if k not in results]
 
 
 class Streamed:
@@ -146,13 +166,22 @@ def main(argv: list[str]) -> int:
     log = log_dir / f"{step}.sweep.log"
     one_shot = args.binary == "alloc" and args.leg in ("count", "mr_removed")
     fresh_per_site = args.binary == "alloc" and args.leg == "d4"
+    contiguous = args.binary == "c64"
     launched = 0
+    refilled: set[int] = set()
     while True:
         results, crashed, end_k, _ = read_state(log)
-        if end_k is not None:
+        gap = holes(results, end_k) if contiguous else []
+        if gap and gap[0] in refilled:
+            print(f"[FAIL] {step}: a re-run from k={gap[0]} did not read that site")
+            return 1
+        if end_k is not None and not gap:
             break
-        done = max(results) if results else 0
+        done = gap[0] - 1 if gap else (max(results) if results else 0)
         nxt = done + 1
+        if gap:
+            refilled.add(nxt)
+            print(f"[NOTE] {step}: site k={nxt} has no result; re-running from it")
         if launched >= args.max_sites:
             print(f"[NOTE] {step}: stopped after {launched} launches; re-run this step to resume at k={nxt}")
             return 1
@@ -168,7 +197,7 @@ def main(argv: list[str]) -> int:
         if one_shot:
             return proc.returncode
         after, _, end_after, _ = read_state(log)
-        if end_after is None and (max(after) if after else 0) <= done:
+        if end_after is None and max(after, default=0) <= done:
             print(f"[FAIL] {step}: the binary made no progress at k={nxt} (exit {proc.returncode})")
             print(proc.stdout[-3000:] + proc.stderr[-2000:])
             return 1
@@ -188,7 +217,10 @@ def main(argv: list[str]) -> int:
               f"site(s) read (the plan's figure: {PLAN_FIGURES.get(args.leg, '-')}); "
               f"{'the leg is alive' if ok else 'DEAD: it passes on the must-reject population'}")
         return 0 if ok else 1
-    ok = bool(graded) and not fails and not crashed
+    missing = holes(results, end_k) if contiguous else []
+    if missing:
+        summary += f"; {len(missing)} site(s) never read, first k={missing[0]}"
+    ok = bool(graded) and not fails and not crashed and not missing
     first_fail = next((ln for ln in lines if ln.endswith("FAIL")), "")
     print(f"[{'PASS' if ok else 'FAIL'}] {step}: {summary}"
           + (f"; crashed at k={sorted(crashed)[:10]}" if crashed else "")
