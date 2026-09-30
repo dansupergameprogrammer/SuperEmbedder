@@ -111,14 +111,7 @@ semb_status OpenGpu(Handle* h, size_t dims) {
   return u3::Open(u3::MakeConfig(a.model, a.tokenizer, 1, u3::kDeviceGpu), &h->enc);
 }
 
-void Line(const std::string& s) {
-  std::printf("%s\n", s.c_str());
-  std::fflush(stdout);
-  if (u3::LogFile()) {
-    std::fprintf(u3::LogFile(), "%s\n", s.c_str());
-    std::fflush(u3::LogFile());
-  }
-}
+void Line(const std::string& s) { u3::LogLine(s); }  // flushed and synced to disk per line (u3_common.h)
 
 // Preallocated inputs and outputs for every driver, so the armed window holds
 // only product allocations.

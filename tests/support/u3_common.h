@@ -29,6 +29,10 @@
 #include <type_traits>
 #include <vector>
 
+#if defined(_WIN32)
+#include <io.h>  // _commit, _fileno: SyncLog
+#endif
+
 #include "superembedder/semb.h"
 
 namespace u3 {
@@ -114,13 +118,31 @@ inline std::FILE*& LogFile() {
   static std::FILE* f = nullptr;
   return f;
 }
-inline void Emit(const char* tag, const std::string& cell, const std::string& observed) {
-  std::printf("[%s] %s: %s\n", tag, cell.c_str(), observed.c_str());
+// Pushes the log's last line to disk, not only out of the C runtime. fflush
+// alone hands it to the OS cache: on Windows the file's recorded size (what a
+// directory listing shows) then stays at its value before the process opened
+// it until the handle closes -- the dev box read a C64 sweep log at 0 B for
+// 88 minutes -- and a machine crash (the box's faulty RAM) loses what the cache
+// held. _commit (FlushFileBuffers) writes both through. One call per line:
+// the per-site sweeps write a few lines per armed site, seconds apart.
+inline void SyncLog() {
+  if (!LogFile()) return;
+  std::fflush(LogFile());
+#if defined(_WIN32)
+  _commit(_fileno(LogFile()));
+#endif
+}
+// One line to stdout and the log, both flushed; the log synced to disk.
+inline void LogLine(const std::string& s) {
+  std::printf("%s\n", s.c_str());
   std::fflush(stdout);
   if (LogFile()) {
-    std::fprintf(LogFile(), "[%s] %s: %s\n", tag, cell.c_str(), observed.c_str());
-    std::fflush(LogFile());
+    std::fprintf(LogFile(), "%s\n", s.c_str());
+    SyncLog();
   }
+}
+inline void Emit(const char* tag, const std::string& cell, const std::string& observed) {
+  LogLine("[" + std::string(tag) + "] " + cell + ": " + observed);
 }
 inline void Verdict(bool ok, const std::string& cell, const std::string& observed) {
   (ok ? T().pass : T().fail)++;

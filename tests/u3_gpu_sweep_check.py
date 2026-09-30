@@ -26,6 +26,7 @@ Off Windows, or in a tree without SEMB_BUILD_GPU=ON: MISSING PREREQUISITE, 77.
 from __future__ import annotations
 
 import argparse
+import functools
 import re
 import subprocess
 import sys
@@ -34,6 +35,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import u3_cells_check as cells  # noqa: E402
+
+print = functools.partial(print, flush=True)  # noqa: A001 -- every line reaches ctest as written
 
 TARGETS = {"alloc": "u3_gpu_alloc_test", "c64": "u3_c64_gpu_leg_test"}
 PLAN_FIGURES = {"d1": "530 (50 + 480)", "d2": "120", "d4": "a permanent loss"}
@@ -65,6 +68,30 @@ def read_state(log: Path) -> tuple[dict[int, str], set[int], int | None, list[st
     for k in crashed:
         results[k] = "CRASHED"
     return results, crashed, end_k, lines
+
+
+class Streamed:
+    def __init__(self, returncode: int, stdout: str, stderr: str) -> None:
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+
+def run_streamed(cmd: list[str]) -> Streamed:
+    """Runs the sweep binary with its output passed through line by line as it is written, flushed, so
+    ctest (and the dev box's console) sees each site as it lands rather than the whole sweep at exit (the
+    box read nothing for 88 minutes of a C64 sweep). stderr is merged into stdout; the tail is kept for
+    the failure messages below."""
+    tail: list[str] = []
+    with subprocess.Popen(cmd, cwd=cells.REPO_ROOT, text=True, errors="replace", stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT, bufsize=1) as p:
+        assert p.stdout is not None
+        for line in p.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            tail.append(line)
+            if len(tail) > 400:
+                del tail[:200]
+        rc = p.wait()
+    return Streamed(rc, "".join(tail), "")
 
 
 def main(argv: list[str]) -> int:
@@ -135,12 +162,10 @@ def main(argv: list[str]) -> int:
         else:
             cmd = [str(exe), "--row", args.row, "--arm", args.arm, *art, "--first", str(nxt), "--log", str(log)]
         launched += 1
-        proc = subprocess.run(cmd, cwd=cells.REPO_ROOT, text=True, errors="replace", capture_output=True)
-        sys.stdout.write(proc.stdout[-2000:])
+        proc = run_streamed(cmd)
         if proc.returncode == 77 and "MISSING PREREQUISITE" in proc.stdout:
             return 77
         if one_shot:
-            print(proc.stdout)
             return proc.returncode
         after, _, end_after, _ = read_state(log)
         if end_after is None and (max(after) if after else 0) <= done:
