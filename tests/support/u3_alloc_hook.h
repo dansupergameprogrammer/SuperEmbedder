@@ -58,13 +58,17 @@ struct HostState {
   std::atomic<int> fired{0};
   std::atomic<uint64_t> fired_call_count{0};
   std::atomic<uint32_t> fired_occupancy{0};
+  std::atomic<uint64_t> fired_size{0};  // the byte count the failed k asked for
   std::atomic<int64_t> live{0};  // live allocations, whole process
   // Segmentation (C64's GPU-open site plan): while `segmenting`, each counted
   // allocation is keyed by (inside an engine call?, the running call count),
   // and maximal runs of one key are recorded in fixed storage -- no
   // allocation inside the hook. A key is one engine call, or U3's own frames
-  // between two engine calls.
+  // between two engine calls. Each run also keeps its kTopSizes largest
+  // allocations (k and bytes, largest first), so a plan can add the largest
+  // sites of a class without a second counting run (row 5(d3h)'s sample).
   static constexpr int kMaxSegments = 1 << 16;
+  static constexpr int kTopSizes = 4;
   std::atomic<int> segmenting{0};
   int nseg = 0;
   bool seg_overflow = false;
@@ -72,6 +76,8 @@ struct HostState {
   uint64_t seg_last[kMaxSegments];
   uint64_t seg_call[kMaxSegments];
   bool seg_engine[kMaxSegments];
+  uint64_t seg_top_k[kMaxSegments][kTopSizes];
+  uint64_t seg_top_size[kMaxSegments][kTopSizes];  // 0 = empty slot
 };
 inline HostState& Host() {
   static HostState s;
@@ -107,7 +113,22 @@ inline uint64_t Disarm() {
 }
 
 // Called on every allocation. Throws when this is the armed k.
-inline void OnAllocate() {
+inline void KeepIfLarge(int seg, uint64_t k, uint64_t size) {
+  HostState& h = Host();
+  uint64_t* ks = h.seg_top_k[seg];
+  uint64_t* sz = h.seg_top_size[seg];
+  if (size <= sz[HostState::kTopSizes - 1]) return;  // ties keep the earlier k
+  int i = HostState::kTopSizes - 1;
+  while (i > 0 && sz[i - 1] < size) {
+    sz[i] = sz[i - 1];
+    ks[i] = ks[i - 1];
+    --i;
+  }
+  sz[i] = size;
+  ks[i] = k;
+}
+
+inline void OnAllocate(std::size_t size) {
   HostState& h = Host();
   if (!h.counting.load(std::memory_order_relaxed) || t_reentry) return;
   const uint64_t n = h.seen.fetch_add(1) + 1;
@@ -116,10 +137,13 @@ inline void OnAllocate() {
     const uint64_t call = semb_test_seam_gpu_call_count();
     if (h.nseg > 0 && h.seg_engine[h.nseg - 1] == eng && h.seg_call[h.nseg - 1] == call) {
       h.seg_last[h.nseg - 1] = n;
+      KeepIfLarge(h.nseg - 1, n, size);
     } else if (h.nseg < HostState::kMaxSegments) {
       h.seg_first[h.nseg] = h.seg_last[h.nseg] = n;
       h.seg_engine[h.nseg] = eng;
       h.seg_call[h.nseg] = call;
+      for (int j = 0; j < HostState::kTopSizes; ++j) h.seg_top_k[h.nseg][j] = h.seg_top_size[h.nseg][j] = 0;
+      KeepIfLarge(h.nseg, n, size);
       ++h.nseg;
     } else {
       h.seg_overflow = true;
@@ -129,6 +153,7 @@ inline void OnAllocate() {
   t_reentry = 1;
   h.fired_call_count = semb_test_seam_gpu_call_count();
   h.fired_occupancy = semb_test_seam_gpu_occupancy_now();
+  h.fired_size = size;
   h.fired = 1;
   h.counting = 0;  // one fault per arm; the failure paths allocate freely
   t_reentry = 0;
@@ -275,7 +300,7 @@ inline uint64_t DeviceDisarm() {
 
 // ---- the replaced global allocation functions -------------------------------
 void* operator new(std::size_t n) {
-  u3hook::OnAllocate();
+  u3hook::OnAllocate(n);
   void* p = u3hook::RawAlloc(n);
   u3hook::Host().live.fetch_add(1, std::memory_order_relaxed);
   return p;
@@ -307,7 +332,7 @@ void operator delete(void* p, const std::nothrow_t&) noexcept { ::operator delet
 void operator delete[](void* p, const std::nothrow_t&) noexcept { ::operator delete(p); }
 
 void* operator new(std::size_t n, std::align_val_t a) {
-  u3hook::OnAllocate();
+  u3hook::OnAllocate(n);
   void* p = u3hook::RawAlignedAlloc(n, static_cast<std::size_t>(a));
   u3hook::Host().live.fetch_add(1, std::memory_order_relaxed);
   return p;

@@ -45,6 +45,23 @@ numbered by the old exhaustive population:
                                      build/_u3_logs/alloc_{d1,d3h,d3d}*.sweep.log first:
                                      their sites were numbered by the old population. The
                                      count step's CLASS lines show where K goes.
+  u3_gpu_alloc_d3h                   (again, after the conductor's d3h ruling) d3h now sweeps a
+                                     deterministic ~90-site sample of the model map's 1,742 host
+                                     allocations (first, last, every Nth, the 4 largest; its
+                                     PLAN line prints the rule and N) instead of all of them
+                                     (~38.7 h). Its old log's k's belong to the exhaustive plan
+                                     and would make the resume skip sampled sites, so
+                                     build/_u3_logs/alloc_d3h.sweep.log must go before it runs:
+                                     this runner moves it aside by itself (to
+                                     alloc_d3h.sweep.log.exhaustive-<time>) when its PLAN line
+                                     carries no sample= rule. Delete u3_gpu_alloc_d3h.done if
+                                     the step has one, or `--run u3_gpu_alloc_d3h`.
+
+PROGRESS: ctest runs with -V, so each site's BEGIN/SITE (ARM for C64) line reaches the
+console as it lands; build/_u3_logs/<step>.sweep.log is synced to disk per line, so
+its size in a directory listing grows as the sweep goes and a crash loses nothing
+already written. (Earlier binaries only flushed to the OS cache: the box read a C64
+sweep log at 0 B for 88 minutes.)
 
 Commissioning steps (row 5 (d), P:4215) run in a SECOND tree (tree B)
 configured against the engine at v1.7.1 with -DSEMB_U3_COMMISSION_TREE=ON; pass
@@ -128,10 +145,37 @@ def restore_hidden_shaders(tree: Path) -> None:
                     print(f"restored {orig} (left renamed by an interrupted c10d_refused_after_creation)")
 
 
+# Sweep logs a step must not resume from once its population changed: step -> (log under _u3_logs, the
+# token the current binary's PLAN line carries). A log whose PLAN lines lack it was numbered by the old
+# population and is moved aside before the step runs.
+STALE_SWEEP_LOGS: dict[str, tuple[str, str]] = {
+    "u3_gpu_alloc_d3h": ("alloc_d3h.sweep.log", "sample="),
+}
+
+
+def set_aside_stale_log(step: str, tree: Path) -> None:
+    entry = STALE_SWEEP_LOGS.get(step)
+    if entry is None:
+        return
+    name, token = entry
+    log = tree / "_u3_logs" / name
+    if not log.is_file():
+        return
+    plans = [ln for ln in log.read_text(errors="replace").splitlines() if ln.startswith("PLAN ")]
+    if plans and all(token in ln for ln in plans):
+        return
+    aside = log.with_name(f"{name}.exhaustive-{datetime.datetime.now().strftime('%Y%m%dT%H%M%S')}")
+    log.rename(aside)
+    print(f"moved {log} aside to {aside.name}: it was written under the old site population (no '{token}' "
+          f"in its PLAN line), and resuming from it would skip planned sites", flush=True)
+
+
 def run_step(step: str, tree: Path, marks: Path) -> int:
     restore_hidden_shaders(tree)
+    set_aside_stale_log(step, tree)
     log = marks / f"{step}.ctest.log"
-    cmd = ["ctest", "--test-dir", str(tree), "-R", f"^{step}$", "--output-on-failure", "--output-log", str(log)]
+    cmd = ["ctest", "--test-dir", str(tree), "-R", f"^{step}$", "-V", "--output-on-failure", "--output-log",
+           str(log)]
     print("$ " + " ".join(cmd), flush=True)
     rc = subprocess.run(cmd).returncode
     (marks / f"{step}.done").write_text(f"exit={rc} at={datetime.datetime.now().isoformat(timespec='seconds')}\n",

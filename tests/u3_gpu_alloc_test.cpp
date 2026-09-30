@@ -70,8 +70,10 @@
 //        plan's population, exhaustively), plus the first and last allocation
 //        of the first run of each U3-frame class (U3's frames between two
 //        engine calls), graded by the same oracle;
-//   d3h  every host allocation made inside sslm_gpu_model_map during the open
-//        ("(d1) and (d2) at the model map");
+//   d3h  a deterministic sample of the host allocations made inside
+//        sslm_gpu_model_map during the open ("(d1) and (d2) at the model map"):
+//        first, last, every Nth and the few largest, ~90 sites (the rule at
+//        D3hStride; the PLAN line prints it and N);
 //   d3d  every D3D12 creation made inside sslm_gpu_model_map during the open;
 //   d2   every D3D12 creation of the encode (24 at v1.8.0), unchanged.
 // The count leg prints the breakdown (CLASS lines) that shows where K goes.
@@ -98,6 +100,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "support/u3_alloc_hook.h"
@@ -154,14 +157,7 @@ std::string WhereFired(uint64_t call_count_at_fault, uint32_t occupancy_at_fault
   return "engine:?";
 }
 
-void Line(const std::string& s) {
-  std::printf("%s\n", s.c_str());
-  std::fflush(stdout);
-  if (u3::LogFile()) {
-    std::fprintf(u3::LogFile(), "%s\n", s.c_str());
-    std::fflush(u3::LogFile());
-  }
-}
+void Line(const std::string& s) { u3::LogLine(s); }  // flushed and synced to disk per line (u3_common.h)
 
 bool Setup(Encoder* e1, Encoder* e2, std::vector<float>* ref) {
   *ref = CpuReference(a.text);
@@ -195,7 +191,33 @@ struct Site {
   bool engine = false;
   uint64_t rel_call = 0;  // the running call count at k, minus the count before the armed call
   std::string cls;
+  std::string pick;   // d3h's sample: first | every-Nth | last | largest (joined with '+')
+  uint64_t size = 0;  // bytes, when the plan knows them (d3h's largest sites); checked like the location
 };
+
+// d3h's sample (conductor's ruling, a build-time item under the plan's stopping
+// rule; row 5(d3), te266 P:4215). At v1.8.0 the model map makes 1,742 host
+// allocations, and each site costs two real opens (~80 s): ~38.7 h
+// exhaustively. The sample is deterministic and fixed by the counting run:
+// with the map's sites in allocation order s[0..M-1], it sweeps s[0] (first),
+// s[M-1] (last), every s[i] with i a multiple of N, and the kD3hLargest
+// largest allocations of the map (by requested bytes, ties to the earlier k),
+// where N = ceil((M-1) / (kD3hTarget - kD3hLargest - 2)) keeps the plan near
+// kD3hTarget sites (~2 h); M <= kD3hTarget sweeps every site (N = 1). Each
+// site's location is checked as before, and a largest site's byte count too.
+constexpr uint64_t kD3hTarget = 90;
+constexpr int kD3hLargest = u3hook::HostState::kTopSizes;
+
+uint64_t D3hStride(uint64_t m) {
+  if (m <= kD3hTarget) return 1;
+  const uint64_t gaps = kD3hTarget - static_cast<uint64_t>(kD3hLargest) - 2;
+  return (m - 1 + gaps - 1) / gaps;
+}
+
+std::string D3hRule(uint64_t m, uint64_t n) {
+  return "sample=first+last+every-Nth+" + u3::S(kD3hLargest) + "-largest N=" + u3::S(n) + " map_sites=" + u3::S(m) +
+         " target=" + u3::S(kD3hTarget);
+}
 
 std::string VerbOf(uint64_t index) {
   const uint64_t total = semb_test_seam_gpu_call_log(nullptr, 0, 0);
@@ -216,8 +238,9 @@ void ResetCallLog() {
 // map_only: only allocations inside sslm_gpu_model_map, every one.
 // Otherwise: every allocation inside any engine call, and the first and last
 // allocation of the first run of each U3-frame class.
+// map_only samples the map's sites (d3h's rule above); *rule then says how.
 bool DeriveHostPlan(uint64_t c0, uint64_t c_end, bool map_only, std::vector<Site>* plan, std::string* why,
-                    bool print_classes) {
+                    bool print_classes, std::string* rule = nullptr) {
   u3hook::HostState& h = u3hook::Host();
   if (h.seg_overflow) {
     *why = "more than " + u3::S(u3hook::HostState::kMaxSegments) + " allocation runs";
@@ -236,6 +259,7 @@ bool DeriveHostPlan(uint64_t c0, uint64_t c_end, bool map_only, std::vector<Site
     return tallies.back();
   };
   std::vector<std::string> sampled;
+  std::vector<std::pair<uint64_t, uint64_t>> largest;  // (bytes, k) over the map's runs' kept largest
   std::vector<std::string> verbs;  // verb per relative call index, read once
   for (uint64_t c = c0 + 1; c <= c_end; ++c) verbs.push_back(VerbOf(c));
   auto verb = [&](uint64_t c) { return c > c0 && c <= c_end ? verbs[c - c0 - 1] : std::string("?"); };
@@ -254,6 +278,9 @@ bool DeriveHostPlan(uint64_t c0, uint64_t c_end, bool map_only, std::vector<Site
     t.runs += 1;
     if (map_only) {
       if (f.cls != "engine:sslm_gpu_model_map") continue;
+      for (int j = 0; j < u3hook::HostState::kTopSizes; ++j) {
+        if (h.seg_top_size[i][j]) largest.emplace_back(h.seg_top_size[i][j], h.seg_top_k[i][j]);
+      }
     } else if (!f.engine) {
       if (std::find(sampled.begin(), sampled.end(), f.cls) != sampled.end()) continue;
       sampled.push_back(f.cls);
@@ -271,7 +298,31 @@ bool DeriveHostPlan(uint64_t c0, uint64_t c_end, bool map_only, std::vector<Site
       f.k = k;
       plan->push_back(f);
     }
-    t.swept += h.seg_last[i] - h.seg_first[i] + 1;
+    if (!map_only) t.swept += h.seg_last[i] - h.seg_first[i] + 1;
+  }
+  if (map_only && !plan->empty()) {  // d3h: the sample, from the map's every site in allocation order
+    std::sort(plan->begin(), plan->end(), [](const Site& x, const Site& y) { return x.k < y.k; });
+    const std::vector<Site> all = std::move(*plan);
+    plan->clear();
+    const uint64_t m = all.size(), n = D3hStride(m);
+    std::sort(largest.begin(), largest.end(),
+              [](const auto& x, const auto& y) { return x.first != y.first ? x.first > y.first : x.second < y.second; });
+    if (largest.size() > static_cast<size_t>(kD3hLargest)) largest.resize(kD3hLargest);
+    for (uint64_t i = 0; i < m; ++i) {
+      Site f = all[i];
+      if (i == 0) f.pick = "first";
+      if (i % n == 0 && i != 0) f.pick = "every-Nth";
+      if (i == m - 1) f.pick += f.pick.empty() ? "last" : "+last";
+      for (const auto& l : largest) {
+        if (l.second == f.k) {
+          f.pick += f.pick.empty() ? "largest" : "+largest";
+          f.size = l.first;
+        }
+      }
+      if (!f.pick.empty()) plan->push_back(f);
+    }
+    tally("engine:sslm_gpu_model_map").swept = plan->size();
+    if (rule) *rule = D3hRule(m, n);
   }
   if (print_classes) {
     for (const auto& t : tallies) {
@@ -421,13 +472,13 @@ void SweepOpen(bool device) {
     const uint64_t c0 = semb_test_seam_gpu_call_count();
     const u3::Config c = u3::MakeConfig(a.model, a.tokenizer, 1, u3::kDeviceGpu);
     semb_encoder e = nullptr;
-    std::string why;
+    std::string why, rule = "sample=every";
     bool ok = false;
     if (!device) {
       u3hook::Count(true);
       const semb_status s = u3::Open(c, &e);
       K = u3hook::Disarm();
-      ok = s == SEMB_OK && DeriveHostPlan(c0, semb_test_seam_gpu_call_count(), true, &plan, &why, true);
+      ok = s == SEMB_OK && DeriveHostPlan(c0, semb_test_seam_gpu_call_count(), true, &plan, &why, true, &rule);
       if (s != SEMB_OK) why = std::string("the counting open returned ") + u3::Name(s);
     } else {
 #if defined(_WIN32)
@@ -445,7 +496,12 @@ void SweepOpen(bool device) {
       u3::Verdict(false, a.leg + " site plan", why);
       return;
     }
-    Line("PLAN " + a.leg + " K=" + u3::S(K) + " sites=" + u3::S(plan.size()) + " (inside sslm_gpu_model_map)");
+    Line("PLAN " + a.leg + " K=" + u3::S(K) + " sites=" + u3::S(plan.size()) + " " + rule +
+         " (inside sslm_gpu_model_map)");
+    for (const auto& st : plan) {
+      Line("PLANSITE " + a.leg + " k=" + u3::S(st.k) + " rel_call=" + u3::S(st.rel_call) +
+           (st.pick.empty() ? std::string() : " pick=" + st.pick) + (st.size ? " bytes=" + u3::S(st.size) : ""));
+    }
   }
   size_t pi = 0;
   for (;;) {
@@ -490,7 +546,8 @@ void SweepOpen(bool device) {
     }
     const std::string where = WhereFired(cc, occ);
     if (s == SEMB_OK && e) semb_encoder_close(e);
-    const bool on_plan = occ > 0 && cc - c_before == site->rel_call;
+    const uint64_t bytes = device ? 0 : u3hook::Host().fired_size.load();
+    const bool on_plan = occ > 0 && cc - c_before == site->rel_call && (site->size == 0 || bytes == site->size);
     const bool in_map = where == "engine:sslm_gpu_model_map";
     const bool null_out = s != SEMB_OK && e == nullptr;
     const int64_t contexts = semb_test_seam_gpu_context_count();
@@ -503,7 +560,9 @@ void SweepOpen(bool device) {
       semb_encoder_close(again.enc);
     }
     const bool ok = s == SEMB_ALLOCATION_FAILED && null_out && contexts == 0 && second && on_plan && in_map;
-    Line("SITE " + a.leg + " k=" + u3::S(k) + " kind=" + kind + (on_plan && in_map ? "" : " DRIFTED") +
+    Line("SITE " + a.leg + " k=" + u3::S(k) + " kind=" + kind +
+         (site->pick.empty() ? std::string() : " pick=" + site->pick) + (device ? "" : " bytes=" + u3::S(bytes)) +
+         (on_plan && in_map ? "" : " DRIFTED") +
          " where=" + where + " status=" + u3::Name(s) + " want=SEMB_ALLOCATION_FAILED contexts=" +
          std::to_string(contexts) + " second=" + (second ? "1" : "0") + (ok ? " PASS" : " FAIL"));
     u3::Verdict(ok, a.leg + " k=" + u3::S(k), u3::Name(s));
@@ -553,8 +612,9 @@ void LegCount() {
     std::vector<Site> plan;
     std::string why;
     a.leg = "count-open";
-    DeriveHostPlan(oc0, semb_test_seam_gpu_call_count(), true, &plan, &why, true);
-    Line("PLAN d3h sites=" + u3::S(plan.size()));
+    std::string rule;
+    DeriveHostPlan(oc0, semb_test_seam_gpu_call_count(), true, &plan, &why, true, &rule);
+    Line("PLAN d3h sites=" + u3::S(plan.size()) + " " + rule);
     a.leg = "count";
   }
   uint64_t odev = 0;
