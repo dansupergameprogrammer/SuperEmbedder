@@ -132,6 +132,21 @@
 // SEMB_CPU_TIER_UNSUPPORTED (39), SEMB_STATUS_NEXT_FREE now 40. Nothing
 // moves out of kPlanStatusNames (none was listed there).
 //
+// U3 (`Claude/Plans/te266-gpu-path.md` sec 4.1, P:4022-4027; the U2 plan's
+// sec 6.2 J9): three statuses APPENDED at the next free ordinals after U2's,
+// in sec 4.1's order -- SEMB_DEVICE_UNSUPPORTED (40), SEMB_DEVICE_UNAVAILABLE
+// (41), SEMB_DEVICE_DIVERGED (42), SEMB_STATUS_NEXT_FREE now 43 -- and
+// `semb_config` gains a last member `uint32_t device` (SEMB_DEVICE_CPU = 0,
+// the zero-initialized default; SEMB_DEVICE_GPU = 1). The member lands in
+// the struct's tail padding on LP64/LLP64, so sizeof(semb_config) stays 48
+// and cells opening through this header still open today (the plan's
+// "struct_size grows", P:4022, does not hold -- a PENDING planner item);
+// tests/u1_public_header_parity_check.py's member comparison is what reads
+// the member's absence from semb.h.
+// Behavioural cells still resolve statuses by name; the ordinals are pinned
+// here and by tests/u1_public_header_parity_check.py (J9: 35 is
+// SEMB_CORPUS_DIGEST_MISMATCH and U2 took 36-39, so U3's three are 40-42).
+//
 // STATUSES ARE PINNED BY NAME AND BY ORDINAL, AND THE CELLS COMPARE BY NAME.
 // Behavioural cells resolve every status through `semb_status_name` (StatusByName
 // below) so that a cell is red for its own reason -- a behaviour that differs
@@ -213,7 +228,12 @@ typedef int32_t semb_status;
   X(SEMB_ENGINE_BUILD_UNRECORDED,          36) \
   X(SEMB_ENGINE_TOOLCHAIN_MISMATCH,        37) \
   X(SEMB_ENGINE_LINK_MISMATCH,             38) \
-  X(SEMB_CPU_TIER_UNSUPPORTED,             39)
+  X(SEMB_CPU_TIER_UNSUPPORTED,             39) \
+  /* U3 (te266 sec 4.1, P:4023-4026; J9): the device statuses, appended   */ \
+  /* at the next free ordinals after U2's, in sec 4.1's order.            */ \
+  X(SEMB_DEVICE_UNSUPPORTED,               40) \
+  X(SEMB_DEVICE_UNAVAILABLE,               41) \
+  X(SEMB_DEVICE_DIVERGED,                  42)
 
 enum : int32_t {
 #define SEMB_CONTRACT_STATUS_ENUM_(name, value) name = value,
@@ -222,7 +242,7 @@ enum : int32_t {
   SEMB_STATUS_NEXT_FREE  // the sentinel: never returned, never a valid argument, never named
 };
 
-static_assert(SEMB_STATUS_NEXT_FREE == 40, "the contract pins 40 named statuses, ordinals 0-39 (TE-192 appends 32-33, TE-194 appends 34, TE-264 appends 35, U2-3 items 8/13/14 append 36-39)");
+static_assert(SEMB_STATUS_NEXT_FREE == 43, "the contract pins 43 named statuses, ordinals 0-42 (TE-192 appends 32-33, TE-194 appends 34, TE-264 appends 35, U2-3 items 8/13/14 append 36-39, U3 appends 40-42)");
 
 // sec 3.1 item 5: library-owned, opaque, not copyable, released only by
 // semb_encoder_close; a double close returns SEMB_INVALID_HANDLE.
@@ -243,7 +263,11 @@ struct semb_config {
   int32_t appended_token_id;    // DIAGNOSTIC ONLY: the retired 496d036 member (see the header comment)
 #endif
   uint32_t max_concurrency;     // sec 3.1 concurrency: the workspace pool size; 0 selects the default of 1 (D-10)
+  uint32_t device;              // U3 (te266 P:4022): SEMB_DEVICE_CPU (0, the zero-initialized default) or SEMB_DEVICE_GPU (1)
 };
+
+// U3 (te266 P:4022): the two `device` values.
+enum : uint32_t { SEMB_DEVICE_CPU = 0, SEMB_DEVICE_GPU = 1 };
 
 // sec 3.1 item 6 + sec 3.3, P-2/P-3: struct_size first; the encoder
 // fingerprint is one opaque 32-byte value, written only on SEMB_OK.
@@ -283,7 +307,7 @@ inline const StatusEntry kStatusTable[] = {
 #undef SEMB_CONTRACT_STATUS_ENTRY_
 };
 inline constexpr size_t kStatusCount = sizeof(kStatusTable) / sizeof(kStatusTable[0]);
-static_assert(kStatusCount == 40, "40 named statuses (TE-192 appends 32-33, TE-194 appends SEMB_BANK_IN_USE at 34, TE-264 appends SEMB_CORPUS_DIGEST_MISMATCH at 35, U2-3 appends 36-39)");
+static_assert(kStatusCount == 43, "43 named statuses (TE-192 appends 32-33, TE-194 appends SEMB_BANK_IN_USE at 34, TE-264 appends SEMB_CORPUS_DIGEST_MISMATCH at 35, U2-3 appends 36-39, U3 appends 40-42)");
 
 // The name every non-member int32_t resolves to (P-5: static storage, never NULL).
 inline constexpr const char* kUnknownStatusName = "SEMB_UNKNOWN";

@@ -21,7 +21,23 @@ include(GNUInstallDirs)
 # semb_witness included.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# U3 (te266 sec 4.2): the GPU encode path. Default OFF; Windows only, against
+# an engine installed by the pin tool with --with-gpu. Refused by name off
+# Windows before the engine is located, and after it when the engine install
+# carries no superslm::superslm_gpu (SEMB_ENGINE_GPU_MISSING, below).
+option(SEMB_BUILD_GPU "Build the GPU encode path (Windows only; needs a --with-gpu engine install)" OFF)
+if(SEMB_BUILD_GPU AND NOT WIN32)
+	message(FATAL_ERROR "SEMB_BUILD_GPU=ON requires Windows: the GPU path is D3D12 and the engine builds "
+		"superslm_gpu on Windows only. Configure without -DSEMB_BUILD_GPU=ON on this platform.")
+endif()
+
 include(EngineGuards)   # find_package(superslm), the two version guards, provenance (C33)
+
+if(SEMB_BUILD_GPU AND NOT TARGET superslm::superslm_gpu)
+	message(FATAL_ERROR "SEMB_ENGINE_GPU_MISSING: SEMB_BUILD_GPU=ON, but the SuperSLM install at "
+		"${superslm_DIR} carries no superslm::superslm_gpu target. Re-run "
+		"tools/pin-superslm/pin_superslm.py with --with-gpu, or configure without SEMB_BUILD_GPU.")
+endif()
 include(BuildFlags)     # the precise-FP flag (directory-wide) + semb_assert_precise_fp() (C14)
 include(SourceProvenance)  # semb_source_sha (C34)
 include(CertifiedBuilds)  # the certified-builds list and the certification identity, compiled in (U2-3)
@@ -125,6 +141,14 @@ set(SEMB_LIBRARY_SOURCES
 	src/superembedder/certification.cpp
 	src/superembedder/engine_link_check.cpp
 )
+# U3 (te266 sec 4.2): the CPU-only or GPU choice is which of two adapter TUs
+# links; nothing else SEMB_BUILD_GPU introduces reaches another translation
+# unit (no compile definition, include directory or option on the library).
+if(SEMB_BUILD_GPU)
+	list(APPEND SEMB_LIBRARY_SOURCES src/superembedder/engine_adapter_gpu.cpp)
+else()
+	list(APPEND SEMB_LIBRARY_SOURCES src/superembedder/engine_adapter_gpu_off.cpp)
+endif()
 
 # U2-3 items 1 and 13: the step every build runs before any library
 # translation unit compiles (tools/semb_build_step.py): it refuses
@@ -214,6 +238,9 @@ target_include_directories(superembedder
 		"${CMAKE_BINARY_DIR}/generated"
 )
 target_link_libraries(superembedder PRIVATE superslm::superslm)
+if(SEMB_BUILD_GPU)
+	target_link_libraries(superembedder PRIVATE superslm::superslm_gpu d3d12 dxgi)
+endif()
 add_dependencies(superembedder semb_build_step)
 # U2-3 item 1: the descriptor's configuration and buildSystem. A build that
 # defines neither (a build of the vendored sources by another build system)
@@ -287,6 +314,9 @@ target_include_directories(superembedder_shared
 		$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_definitions(superembedder_shared INTERFACE SEMB_SHARED)
 target_link_libraries(superembedder_shared PRIVATE superslm::superslm)
+if(SEMB_BUILD_GPU)
+	target_link_libraries(superembedder_shared PRIVATE superslm::superslm_gpu d3d12 dxgi)
+endif()
 if(WIN32)
 	target_sources(superembedder_shared PRIVATE "${_semb_export_list}")
 elseif(APPLE)
@@ -363,6 +393,11 @@ install(FILES
 # ---------------------------------------------------------------------------
 add_executable(semb src/main.cpp)
 target_link_libraries(semb PRIVATE superembedder)
+# Command-line queries are UTF-8 on Windows (src/semb.manifest): without it argv arrives in the ANSI
+# code page and every non-ASCII query is refused as SEMB_INVALID_UTF8.
+if(WIN32)
+	target_sources(semb PRIVATE src/semb.manifest)
+endif()
 target_include_directories(semb PRIVATE "${CMAKE_BINARY_DIR}/generated" "${CMAKE_SOURCE_DIR}/src/superembedder")
 # U2-1: `semb --version`'s build line, from what CMake itself recorded.
 if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT)
@@ -500,6 +535,21 @@ add_subdirectory(tests)
 # target is swept into C14's directory-wide precise-FP audit like every
 # other target this file declares.
 add_subdirectory(tools/epoch-store)
+
+# U3 (te266 sec 4.2, "Shaders"): the build stages the installed shader set
+# beside semb and beside every GPU test executable, once per output directory
+# (cmake/GpuShaders.cmake), and `cmake --install` places it beside the
+# installed semb. The U3 GPU test executables are registered by a deferred call
+# in tests/ that runs at the end of this directory, so the staging is deferred
+# too: it is registered after add_subdirectory(tests), and deferred calls run
+# in the order they were registered.
+if(SEMB_BUILD_GPU)
+	include(GpuShaders)
+	cmake_language(DEFER CALL semb_stage_gpu_shaders "${superslm_GPU_SHADER_DIR}"
+		semb u3_gpu_cells_test u3_gpu_alloc_test u3_c64_gpu_leg_test)
+	install(DIRECTORY "${superslm_GPU_SHADER_DIR}/" DESTINATION "${CMAKE_INSTALL_BINDIR}/shaders"
+		FILES_MATCHING PATTERN "*.cso")
+endif()
 
 # TE-79 F-4 (Significant, TE-76 review): semb_assert_precise_fp() moved
 # HERE, after every add_subdirectory() this file calls -- it used to run

@@ -107,7 +107,18 @@ typedef struct semb_query_opaque* semb_query;
   X(SEMB_ENGINE_BUILD_UNRECORDED,          36) \
   X(SEMB_ENGINE_TOOLCHAIN_MISMATCH,        37) \
   X(SEMB_ENGINE_LINK_MISMATCH,             38) \
-  X(SEMB_CPU_TIER_UNSUPPORTED,             39)
+  X(SEMB_CPU_TIER_UNSUPPORTED,             39) \
+  /* U3: the device statuses. semb_encoder_open refuses                */ \
+  /* SEMB_DEVICE_UNSUPPORTED for a `device` value it does not know, or */ \
+  /* SEMB_DEVICE_GPU in a library built without the GPU path;          */ \
+  /* SEMB_DEVICE_UNAVAILABLE when the GPU cannot be used (no adapter,  */ \
+  /* a lost device, shaders missing or stale); SEMB_DEVICE_DIVERGED    */ \
+  /* when the GPU's open-time witness disagrees with the CPU's. A GPU  */ \
+  /* handle whose device is lost returns SEMB_DEVICE_UNAVAILABLE from  */ \
+  /* every later encode.                                               */ \
+  X(SEMB_DEVICE_UNSUPPORTED,               40) \
+  X(SEMB_DEVICE_UNAVAILABLE,               41) \
+  X(SEMB_DEVICE_DIVERGED,                  42)
 
 typedef enum semb_status {
 #define SEMB_STATUS_ENUM_VALUE_(name, value) name = value,
@@ -139,6 +150,17 @@ typedef enum semb_status {
 // batch call can also acquire every free slot for its own duration (TE-350)
 // -- the slots are shared, greedy, and per-handle, not one reserved slot per
 // caller.
+//
+// `device` selects where encodes run: SEMB_DEVICE_CPU (0, the
+// zero-initialized default) or SEMB_DEVICE_GPU (1). Every other value refuses
+// SEMB_DEVICE_UNSUPPORTED, as does SEMB_DEVICE_GPU in a library built without
+// the GPU path. A GPU open first checks the GPU against the CPU on the
+// open-time witness and refuses SEMB_DEVICE_DIVERGED on any difference, so a
+// GPU handle returns the same bytes a CPU handle does. The GPU path is
+// selected through `semb_config.device`; `semb_encoder_open_memory` always
+// runs on the CPU. `device` occupies what was the struct's tail padding, so
+// sizeof(semb_config) is unchanged; a caller built against an earlier header
+// recompiles.
 typedef struct semb_config semb_config;
 struct semb_config {
   uint32_t struct_size;
@@ -147,7 +169,11 @@ struct semb_config {
   const char* tokenizer_path;
   size_t tokenizer_path_len;
   uint32_t max_concurrency;
+  uint32_t device;
 };
+
+// semb_config's `device` values.
+enum semb_device { SEMB_DEVICE_CPU = 0, SEMB_DEVICE_GPU = 1 };
 
 // semb_encoder_open_memory's argument: the model and tokenizer artifacts as
 // sized byte spans in place of paths. A span is required iff its length is

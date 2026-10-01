@@ -77,10 +77,26 @@ bool ParseMaxConcurrencyOption(const std::vector<std::string>& args, uint32_t de
   return true;
 }
 
+// U3 (te266 sec 4.1, CLI): `--device cpu|gpu` for `semb bake` and `semb
+// query`, default cpu. Any other value is refused SEMB_DEVICE_UNSUPPORTED
+// before anything opens. `semb verify` takes no --device.
+bool ParseDeviceOption(const char* raw, uint32_t* out_device) {
+  if (!raw || std::strcmp(raw, "cpu") == 0) {
+    *out_device = SEMB_DEVICE_CPU;
+    return true;
+  }
+  if (std::strcmp(raw, "gpu") == 0) {
+    *out_device = SEMB_DEVICE_GPU;
+    return true;
+  }
+  return false;
+}
+
 struct QueryArguments {
   const char* model = nullptr;
   const char* tokenizer = nullptr;
   const char* top = nullptr;
+  const char* device = nullptr;
   bool help = false;
   bool stdin_mode = false;
   bool hex = false;
@@ -124,6 +140,7 @@ bool ParseQueryArguments(const std::vector<std::string>& args, QueryArguments* o
     if (argument == "--model") value = &out->model;
     if (argument == "--tokenizer") value = &out->tokenizer;
     if (argument == "--top") value = &out->top;
+    if (argument == "--device") value = &out->device;
     if (value) {
       if (i + 1 == args.size() || args[i + 1] == "--") {
         *bad_option = argument.c_str();
@@ -306,16 +323,16 @@ uint32_t OpenBakeConcurrency(uint32_t requested_ceiling, size_t doc_count) {
 }
 
 semb_status OpenEncoder(const char* model, const char* tokenizer, Handles* handles,
-                        uint32_t max_concurrency) {
+                        uint32_t max_concurrency, uint32_t device = SEMB_DEVICE_CPU) {
   if (!model || !tokenizer) return SEMB_NULL_ARGUMENT;
   const semb_config config{sizeof(config), model, std::strlen(model), tokenizer,
-                           std::strlen(tokenizer), max_concurrency};
+                           std::strlen(tokenizer), max_concurrency, device};
   return semb_encoder_open(&config, &handles->encoder);
 }
 
 semb_status OpenCheckedQuery(const std::string& stem, const char* model, const char* tokenizer,
-                             Handles* handles, uint32_t max_concurrency) {
-  semb_status status = OpenEncoder(model, tokenizer, handles, max_concurrency);
+                             Handles* handles, uint32_t max_concurrency, uint32_t device) {
+  semb_status status = OpenEncoder(model, tokenizer, handles, max_concurrency, device);
   if (status != SEMB_OK) return status;
   status = semb_bank_open(stem.data(), stem.size(), &handles->bank);
   if (status != SEMB_OK) return status;
@@ -671,6 +688,10 @@ int Bake(const std::vector<std::string>& args) {
   const char* model = Option(args, "--model");
   const char* tokenizer = Option(args, "--tokenizer");
   if (!out || !model || !tokenizer) return Refuse("semb bake", SEMB_NULL_ARGUMENT);
+  uint32_t device = SEMB_DEVICE_CPU;
+  if (!ParseDeviceOption(Option(args, "--device"), &device)) {
+    return Refuse("semb bake --device", SEMB_DEVICE_UNSUPPORTED);
+  }
   uint32_t requested_concurrency = 0;
   if (!ParseMaxConcurrencyOption(args, kBakeMaxConcurrency, &requested_concurrency)) {
     return Refuse("semb bake --max-concurrency", SEMB_NULL_ARGUMENT);
@@ -702,7 +723,7 @@ int Bake(const std::vector<std::string>& args) {
   // own floor of 1 keeps that case opening exactly as it always has.
   const uint32_t open_concurrency = OpenBakeConcurrency(requested_concurrency, kept.size());
   Handles handles;
-  semb_status status = OpenEncoder(model, tokenizer, &handles, open_concurrency);
+  semb_status status = OpenEncoder(model, tokenizer, &handles, open_concurrency, device);
   if (status != SEMB_OK) return Refuse("semb_encoder_open", status);
   status = semb_bake_to_path(handles.encoder, kept.data(), kept.size(), out, std::strlen(out));
   if (status != SEMB_OK) return Refuse("semb_bake_to_path", status);
@@ -721,7 +742,7 @@ int Bake(const std::vector<std::string>& args) {
 
 int Query(const std::vector<std::string>& args) {
   if (args.size() == 1 && args[0] == "--help") {
-    std::cout << "usage: semb query [--stdin] <name> [<text>] [--hex | --raw | --top k] --model <sslm> --tokenizer <sslm>\n"
+    std::cout << "usage: semb query [--stdin] <name> [<text>] [--hex | --raw | --top k] [--device cpu|gpu] --model <sslm> --tokenizer <sslm>\n"
                  "One-shot query is a documented diagnostic; --stdin reuses one checked query handle.\n"
                  "Output modes: --hex (default), --raw (float bytes), or --top k (JSON hits).\n";
     return 0;
@@ -748,6 +769,8 @@ int Query(const std::vector<std::string>& args) {
   if (parsed.raw && parsed.hex) return Refuse("semb query --raw --hex", SEMB_NULL_ARGUMENT);
   if (parsed.raw && top != 0) return Refuse("semb query --raw --top", SEMB_NULL_ARGUMENT);
   if (parsed.raw && parsed.stdin_mode) return Refuse("semb query --raw --stdin", SEMB_NULL_ARGUMENT);
+  uint32_t device = SEMB_DEVICE_CPU;
+  if (!ParseDeviceOption(parsed.device, &device)) return Refuse("semb query --device", SEMB_DEVICE_UNSUPPORTED);
 #if defined(_WIN32)
   if (parsed.raw && _setmode(_fileno(stdout), _O_BINARY) == -1) {
     return Refuse("semb query --raw", SEMB_ARTIFACT_UNREADABLE);
@@ -764,7 +787,7 @@ int Query(const std::vector<std::string>& args) {
   // TE-350: query always encodes exactly one text per call, so a workspace
   // pool above 1 buys nothing here -- this stays the single-workspace path
   // the batch verb has always supported (T == 1 by construction).
-  semb_status status = OpenCheckedQuery(stem, parsed.model, parsed.tokenizer, &handles, /*max_concurrency=*/1);
+  semb_status status = OpenCheckedQuery(stem, parsed.model, parsed.tokenizer, &handles, /*max_concurrency=*/1, device);
   if (status != SEMB_OK) return Refuse("semb query", status);
   auto emit = [&](const std::string& text) -> bool {
     std::vector<float> vector;
@@ -846,7 +869,7 @@ int Verify(const std::vector<std::string>& args) {
   // compare digests, which is the bake path in every way that matters here
   // -- it gets the same machine-sized, document-count-capped pool `semb
   // bake` itself now opens with (TE-356).
-  semb_status status = OpenCheckedQuery(positional[0], model, tokenizer, &handles, open_concurrency);
+  semb_status status = OpenCheckedQuery(positional[0], model, tokenizer, &handles, open_concurrency, SEMB_DEVICE_CPU);
   if (status != SEMB_OK) return Refuse("semb verify", status);
   // TE-317 round 3 (conductor direction, D-SLM7433, revising TE-320's own
   // S-3 remedy): verify's contract is "re-baking this corpus under the same

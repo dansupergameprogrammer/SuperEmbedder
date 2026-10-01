@@ -74,6 +74,10 @@
 #include <condition_variable>
 
 namespace semb::test_seam {
+// U3 (te266 sec 4.6 row 11, T388-11): calls to the C verb
+// semb_interim_ps_n_select, every caller. A CPU open makes none; a GPU open
+// makes one per W-B document for the agreement check's CPU triples.
+static std::atomic<uint64_t> ps_n_select_calls{0};
 static std::mutex state_mutex;
 static std::condition_variable state_changed;
 static uint32_t park_budget = 0;
@@ -1160,16 +1164,23 @@ extern "C" SembInterimStatus semb_interim_ps_n_select(const SembInterimEncoder* 
                                                        int8_t* out_codes, int64_t* out_m,
                                                        int64_t* out_e,
                                                        const char** out_engine_status_name) {
+#ifdef SEMB_ENABLE_WORKSPACE_TEST_SEAM
+  semb::test_seam::ps_n_select_calls.fetch_add(1);
+#endif
   return semb::c_boundary::Interim(out_engine_status_name, [&] {
     return PsNSelectBody(encoder, codes, m, e, n, position, out_codes, out_m, out_e,
                          out_engine_status_name);
   });
 }
 
+// `out_triple`, when non-null, also receives the selected triple dequantize
+// reads (U3: a GPU open's W-Q agreement-check triples, T388-11). The public
+// verb passes none, so a CPU open computes nothing extra.
 static SembInterimStatus EncodePsNBody(
     SembInterimEncoder* encoder, const int32_t* content_ids, size_t n_content, size_t chunk_budget,
     float* out_vector, size_t out_capacity_bytes, size_t* out_required_bytes,
-    SembWaPoolStatus* out_dequantize_status, const char** out_engine_status_name) {
+    SembWaPoolStatus* out_dequantize_status, const char** out_engine_status_name,
+    semb::InterimTriple* out_triple = nullptr) {
   if (out_engine_status_name) *out_engine_status_name = OkName();
   if (out_dequantize_status) *out_dequantize_status = kSembOk;
   if (!encoder || !out_required_bytes) return kSembInterimNullArgument;
@@ -1199,6 +1210,11 @@ static SembInterimStatus EncodePsNBody(
   st = PsNSelectBody(encoder, codes.data(), ms.data(), es.data(), n, n - 1, sel.data(), &sel_m,
                      &sel_e, out_engine_status_name);
   if (st != kSembInterimOk) return st;
+  if (out_triple) {
+    out_triple->codes = sel;
+    out_triple->m = sel_m;
+    out_triple->e = sel_e;
+  }
 
   const SembWaPoolStatus dq = semb_ps_n_dequantize(sel.data(), sel_m, sel_e, hidden, out_vector);
   if (out_dequantize_status) *out_dequantize_status = dq;
@@ -1224,6 +1240,30 @@ extern "C" SembInterimStatus semb_interim_encode_ps_n(
                          out_engine_status_name);
   });
 }
+
+namespace semb {
+
+// U3 (te266 sec 4.2): C++-linkage internals for the GPU open path. Neither is
+// a C verb, so neither joins tools/c_boundary_table.json.
+SembInterimStatus EncodePsNWithTriple(SembInterimEncoder* encoder, const int32_t* content_ids,
+                                      size_t n_content, size_t chunk_budget, float* out_vector,
+                                      size_t out_capacity_bytes, size_t* out_required_bytes,
+                                      SembWaPoolStatus* out_dequantize_status,
+                                      const char** out_engine_status_name, InterimTriple* out_triple) {
+  return semb::c_boundary::Interim(out_engine_status_name, [&] {
+    return EncodePsNBody(encoder, content_ids, n_content, chunk_budget, out_vector,
+                         out_capacity_bytes, out_required_bytes, out_dequantize_status,
+                         out_engine_status_name, out_triple);
+  });
+}
+
+// The interim encoder's own model view: the GPU map reads the model the CPU
+// open already loaded (sec 3.3's one-read rule), so the model is read once.
+const superslm::SslmModelView* InterimModelView(const SembInterimEncoder* encoder) {
+  return encoder && encoder->model ? &encoder->model->view : nullptr;
+}
+
+}  // namespace semb
 
 // TE-147 (U1 slice 2 build), re-stated TE-350 for cross-document
 // parallelism: the batch composed path, AT MOST T workspace acquisitions
@@ -1654,6 +1694,8 @@ extern "C" uint64_t semb_test_seam_model_buffer_capacity(const SembInterimEncode
 }
 
 extern "C" uint64_t semb_test_seam_slot_growths(void) { return semb::test_seam::slot_growths.load(); }
+
+extern "C" uint64_t semb_test_seam_ps_n_select_count(void) { return semb::test_seam::ps_n_select_calls.load(); }
 
 extern "C" void semb_test_seam_arm_fill(int32_t byte) {
   semb::test_seam::fill_byte.store(byte < 0 ? -1 : (byte & 0xFF));

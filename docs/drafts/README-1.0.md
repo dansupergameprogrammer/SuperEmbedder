@@ -251,7 +251,8 @@ SuperEmbedder. The build and `cmake --install` put them beside `semb`; an applic
 must ship them beside its own executable.
 
 **Use.** Set `device` to `SEMB_DEVICE_GPU` in `semb_config`, or pass `--device gpu` to `semb bake` or
-`semb query`. The default is the CPU. `semb verify` always runs on the CPU.
+`semb query`. The default is the CPU. `semb verify` always runs on the CPU. The GPU path is selected through
+`semb_config.device`; `semb_encoder_open_memory` always runs on the CPU.
 
 - **No fallback.** If the GPU cannot be used, the open is refused (`SEMB_DEVICE_UNAVAILABLE`); it never runs on the
   CPU instead. A build without GPU support refuses `SEMB_DEVICE_GPU` (`SEMB_DEVICE_UNSUPPORTED`).
