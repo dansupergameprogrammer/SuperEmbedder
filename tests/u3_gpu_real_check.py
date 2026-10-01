@@ -61,7 +61,8 @@ import u3_row_digest_pair as pair  # noqa: E402
 sys.path.insert(0, str(ROOT / "tests" / "fixtures" / "u3"))
 import fiqa_sets  # noqa: E402
 
-CORPUS = ROOT / "tests" / "fixtures" / "c12b" / "corpus-239.jsonl"
+CORPUS_SRC = ROOT / "tests" / "fixtures" / "c12b" / "corpus-239.jsonl"
+CORPUS = CORPUS_SRC  # replaced in main() by its {"id", "text"} form
 WQ = ROOT / "tests" / "fixtures" / "wq" / "wq-queries.jsonl"
 FAILED = False
 LOG = None
@@ -75,6 +76,16 @@ def emit(state: str, leg: str, detail: str) -> None:
         LOG.write(line + "\n")
         LOG.flush()
     FAILED |= state in ("FAIL", "RED-UNIMPLEMENTED")
+
+
+def id_corpus(dst: Path) -> Path:
+    """corpus-239 in the shape `semb bake` and `semb verify` read: {"id", "text"}, the id being the row's C12b
+    label (the anchors' key). The fixture itself is the C12b shape, with no "id" field, and `semb bake` refuses
+    it (SEMB_ARTIFACT_UNREADABLE), as superfaiss_roundtrip/roundtrip.py's conversion already accounts for."""
+    rows = [json.loads(x) for x in CORPUS_SRC.read_text(encoding="utf-8").splitlines() if x.strip()]
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text("".join(json.dumps({"id": r["label"], "text": r["text"]}) + "\n" for r in rows), encoding="utf-8")
+    return dst
 
 
 def run(cmd: list[str], timeout: int = 6 * 3600) -> subprocess.CompletedProcess[str]:
@@ -117,7 +128,7 @@ def texts(path: Path, n: int | None = None) -> list[tuple[str, str]]:
 
 
 def main(argv: list[str]) -> int:
-    global LOG
+    global LOG, CORPUS
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--build-dir", required=True)
     ap.add_argument("--cmake-executable", required=True)
@@ -157,6 +168,7 @@ def main(argv: list[str]) -> int:
     semb = str(cells.find_exe(build, "semb"))
     gcells = str(cells.find_exe(build, "u3_gpu_cells_test"))
     a_gpu, a_cpu = work / "a" / "gpu", work / "a" / "cpu"
+    CORPUS = id_corpus(work / "corpus-239.id.jsonl")
 
     if leg == "a":
         ok_g, ok_c = bake(semb, CORPUS, a_gpu, "gpu", base), bake(semb, CORPUS, a_cpu, "cpu", base)

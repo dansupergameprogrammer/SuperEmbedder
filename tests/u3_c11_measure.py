@@ -54,8 +54,19 @@ import u3_cells_check as cells  # noqa: E402
 sys.path.insert(0, str(ROOT / "tests" / "fixtures" / "u3"))
 import fiqa_sets  # noqa: E402
 
-CORPUS = ROOT / "tests" / "fixtures" / "c12b" / "corpus-239.jsonl"
+CORPUS_SRC = ROOT / "tests" / "fixtures" / "c12b" / "corpus-239.jsonl"
+CORPUS = CORPUS_SRC  # replaced in main() by its {"id", "text"} form
 LOG = None
+
+
+def id_corpus(dst: Path) -> Path:
+    """corpus-239 in the shape `semb bake` and `semb verify` read: {"id", "text"}, the id being the row's C12b
+    label (the anchors' key). The fixture itself is the C12b shape, with no "id" field, and `semb bake` refuses
+    it (SEMB_ARTIFACT_UNREADABLE), as superfaiss_roundtrip/roundtrip.py's conversion already accounts for."""
+    rows = [json.loads(x) for x in CORPUS_SRC.read_text(encoding="utf-8").splitlines() if x.strip()]
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text("".join(json.dumps({"id": r["label"], "text": r["text"]}) + "\n" for r in rows), encoding="utf-8")
+    return dst
 
 
 def reading(text: str) -> None:
@@ -83,7 +94,7 @@ def write(path: Path, rows: list[dict]) -> Path:
 
 
 def main(argv: list[str]) -> int:
-    global LOG
+    global LOG, CORPUS
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--build-dir", required=True)
     ap.add_argument("--cmake-executable", required=True)
@@ -131,6 +142,7 @@ def main(argv: list[str]) -> int:
         return 1
     semb = str(cells.find_exe(build, "semb"))
     work = build / "_u3_c11"
+    CORPUS = id_corpus(work / "corpus-239.id.jsonl")
     n = 10 if args.pilot else None
     tag = "pilot " if args.pilot else ""
     failed = False
@@ -174,7 +186,11 @@ def main(argv: list[str]) -> int:
         qs = [d["text"] for d in docs(qpath)][: (10 if args.pilot else 100)]
         stem = work / "qbank"
         if not Path(str(stem) + ".semb.json").is_file():
-            timed([semb, "bake", str(CORPUS), "--out", str(stem), "--device", "cpu", *base])
+            t, rc, out = timed([semb, "bake", str(CORPUS), "--out", str(stem), "--device", "cpu", *base])
+            if rc or not Path(str(stem) + ".semb.json").is_file():
+                # Every query below would time a process that refuses a missing bank (the 09-30 box run).
+                print(f"[FAIL] C11 query: the query bank's bake failed (exit {rc}): {out}", flush=True)
+                return 1
         for dev in ("cpu", "gpu"):
             t1, rc1, _ = timed([semb, "query", "--stdin", str(stem), "--hex", "--device", dev, *base],
                                stdin=(qs[0] + "\n").encode())
