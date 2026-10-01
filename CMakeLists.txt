@@ -393,6 +393,11 @@ install(FILES
 # ---------------------------------------------------------------------------
 add_executable(semb src/main.cpp)
 target_link_libraries(semb PRIVATE superembedder)
+# Command-line queries are UTF-8 on Windows (src/semb.manifest): without it argv arrives in the ANSI
+# code page and every non-ASCII query is refused as SEMB_INVALID_UTF8.
+if(WIN32)
+	target_sources(semb PRIVATE src/semb.manifest)
+endif()
 target_include_directories(semb PRIVATE "${CMAKE_BINARY_DIR}/generated" "${CMAKE_SOURCE_DIR}/src/superembedder")
 # U2-1: `semb --version`'s build line, from what CMake itself recorded.
 if(CMAKE_CXX_COMPILER_FRONTEND_VARIANT)
