@@ -1,24 +1,44 @@
 """Tests for component 2 -- the embedding runner. These load real models from the local HF
-cache and run a real forward pass; skipped automatically if CUDA or the local cache entry
-is unavailable, rather than mocked, per StandardsDocument.md 5.4's real-workload rule."""
+cache and run a real forward pass; skipped automatically if torch, a usable CUDA device, or
+the local cache entry is unavailable, rather than mocked, per StandardsDocument.md 5.4's
+real-workload rule.
+
+TE-43: the CUDA guard tests that a device is *usable* (a tensor can be placed on it), not
+`torch.cuda.is_available()` alone, which has been observed to return True with
+`CUDA_VISIBLE_DEVICES=""` and so let these cells run, and fail, on a GPU-less leg. The guard
+runs at collection, before `eval.k1.embed_runner` (which imports torch) is imported, so a
+machine without torch at all skips this module instead of erroring at collection."""
 from __future__ import annotations
 
 import os
 
 import pytest
-import torch
 
-from eval.k1.embed_runner import (
+torch = pytest.importorskip("torch", reason="U-K1's embedding runner needs torch")
+
+
+def _cuda_device_usable() -> bool:
+    """True only when a tensor can actually be placed on a CUDA device."""
+    try:
+        if not torch.cuda.is_available() or torch.cuda.device_count() < 1:
+            return False
+        torch.zeros(1, device="cuda")
+        return True
+    except Exception:  # noqa: BLE001 -- any failure to place a tensor means "not usable"
+        return False
+
+
+if not _cuda_device_usable():
+    pytest.skip("U-K1's embedding runner is CUDA-only per the design; no usable CUDA device",
+                allow_module_level=True)
+
+from eval.k1.embed_runner import (  # noqa: E402 -- imported only once the guards above pass
     BARE_QUERY_CONVENTION,
     ModelSpec,
     POOLING_NATIVE,
     POOLING_PS1_PRE_NORM,
     POOLING_PS2_POST_NORM,
     embed_texts,
-)
-
-pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available(), reason="U-K1's embedding runner is CUDA-only per the design"
 )
 
 QWEN25_0_5B_REVISION = "7ae557604adf67be50417f59c2c2f167def9a775"
