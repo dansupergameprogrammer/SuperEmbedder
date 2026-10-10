@@ -15,7 +15,9 @@ itself is SuperFAISS's format and is documented there.
 | `<stem>.semb.json` | The manifest, below |
 | `<stem>.skipped.json` | Documents skipped for empty text: a JSON array of `{"id", "reason": "empty_text"}`, `[]` when none. Informational only; no reader uses it |
 
-SuperFAISS reads the first two directly. SuperEmbedder reads all three when it opens a bank for queries.
+SuperFAISS reads the first two directly. SuperEmbedder reads all three when it opens a bank for queries, and
+refuses a header whose `schemaVersion` is not 1, or that carries a `channels` member
+(`SEMB_MANIFEST_SCHEMA_UNSUPPORTED`).
 
 **The corpus `semb bake` and `semb verify` read.** A `.jsonl` corpus (the extension, in any case) is one
 `{"id", "text"}` object per line, and an empty line is skipped; any other corpus is one document per line, with
@@ -24,14 +26,12 @@ platform, so a CR before the LF belongs to the line, and a final line without an
 
 ## 2. The manifest, `<stem>.semb.json`
 
-A JSON object. **Readers ignore members they do not recognise.** A manifest whose `schemaVersion` is not 1,
-or that carries a `channels` member, is refused (`SEMB_MANIFEST_SCHEMA_UNSUPPORTED`).
+A JSON object. **Readers ignore members they do not recognise.**
 
 ### 2.1 Identity
 
 | Member | Type | Meaning |
 |---|---|---|
-| `schemaVersion` | integer | `1` |
 | `encoder_fingerprint` | hex string, 64 | The encoder fingerprint ([DETERMINISM.md](DETERMINISM.md#what-the-fingerprint-covers)). A query handle refuses a bank whose value differs from its encoder's (`SEMB_FINGERPRINT_MISMATCH`). **This is the value a companion fingerprint asset copies** when a consumer ships a fingerprint in place of the float bank; `semb_fingerprint_of`, `semb_encode` and `semb_encode_query` return the same value from an open encoder, and comparing the two is the consumer's check |
 | `model_sha` | hex string, 64 | Fingerprint field 1 |
 | `tokenizer_sha` | hex string, 64 | Fingerprint field 2 |
@@ -66,18 +66,19 @@ or that carries a `channels` member, is refused (`SEMB_MANIFEST_SCHEMA_UNSUPPORT
 
 ### 2.4 Provenance
 
-`provenance` is an object of labels. No member of it is a fingerprint input or decides a verdict.
+`provenance` is an object of labels. No member of it is a fingerprint input. Two are checked when a bank opens:
+`artifact_sha` and `witness.corpus_digest`.
 
 | Member | Meaning |
 |---|---|
-| `artifact_sha` | SHA-256 of the model file |
+| `artifact_sha` | SHA-256 over `model_sha` then `tokenizer_sha`, each as raw bytes preceded by its length. A bank whose value is not recomputed from its own two members is refused (`SEMB_ARTIFACT_SHA_MISMATCH`) |
 | `engine_tree_sha` | Digest of the engine's source tree as pinned |
 | `engine_path_sha` | Digest of the CPU engine adapter's source |
 | `engine_chunk_budget` | The engine's pinned chunk budget |
 | `object_code_sha`, `engine_object_code_sha`, `semb_source_sha` | Reserved labels; `"NOT-COMPUTED"` in 1.0 |
-| `witness` | `{corpus_digest, wa_digest, wb_digest, cpu_tier}`: the witness digests the encoder computed at open, and the tier it ran on |
+| `witness` | `{corpus_digest, wa_digest, wb_digest, cpu_tier}`: `corpus_digest` repeats the bank's top-level `corpus_digest`, and a bank whose two copies differ is refused (`SEMB_BANK_DIGEST_MISMATCH`); `wa_digest` and `wb_digest` are the witness digests the encoder computed; `cpu_tier` is the tier it ran on |
 
-Top-level labels, also informational:
+Top-level labels; the first two are checked when a bank opens:
 
 | Member | Meaning |
 |---|---|

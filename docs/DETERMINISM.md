@@ -35,7 +35,7 @@ document that names the engine pin and the proof corpus by their contents.
 ### Where the certified set is published, and how to check a build
 
 The certified set is `docs/certified-builds.json` in this repository, and the README's certified-platforms
-table is generated from it. Its format is in [FORMAT.md](FORMAT.md#certified-buildsjson).
+table is generated from it. Its format is in [FORMAT.md](FORMAT.md#3-certified-buildsjson).
 
 An epoch names a **certification line**. A later release can add cells to a line without moving its epoch,
 so a list published later contains every earlier one: check membership against the line's latest published
@@ -113,7 +113,9 @@ when it does they will be stated per certified cell.
 
 ### The engine pin, as a consumer obligation
 
-**SuperEmbedder requires SuperSLM `>= 1.3.0`.** 1.0 pins SuperSLM `1.8.0`.
+**SuperEmbedder 1.0 requires exactly the SuperSLM it pins, `1.8.0`.** Configure refuses any other version, and
+every open refuses an engine build other than the one configure verified. The pin must never fall below
+`1.3.0`, for the reason below.
 
 Below 1.3.0 the engine's open path builds hash containers whose bucket count MSVC computes from
 `max_load_factor()`, a `float`, so `reserve` performs a floating-point division. **With exceptions unmasked,
@@ -123,7 +125,7 @@ not trap** — measured on one machine, same source, same build line. That is a 
 not to: the operation is still on the path, and a toolchain that happens not to raise on it is one toolchain
 change away from the crash with nothing in the build to say so.
 
-A build linked against a `1.2.x` engine is refused, not guarded.
+A build configured against a `1.2.x` engine is refused, not guarded.
 
 ### Build flags, as a consumer obligation
 
@@ -143,7 +145,7 @@ see.
 **The threat model is accidental and stale mismatch, not a forged bundle.** A coordinated edit across a
 manifest, its bank and their digests produces a self-consistent bundle that SuperEmbedder does not detect,
 because nothing outside the bundle anchors it. The same holds for a forged certification record or a
-compiler binary that is not the compiler it reports; [FORMAT.md](FORMAT.md#what-the-checks-do-not-catch)
+compiler binary that is not the compiler it reports; [FORMAT.md](FORMAT.md#6-what-the-checks-do-not-catch)
 lists each residual.
 
 ## Errors

@@ -97,10 +97,10 @@ typedef struct semb_query_opaque* semb_query;
   /* Encoder and bank open read the LINKED                            */ \
   /* engine's own build identity (sslm_build_identity) before any     */ \
   /* artifact byte is read and before any engine code runs, and       */ \
-  /* refuse, in this order of checks: no readable identity or no      */ \
-  /* build record; an engine needing an instruction-set extension     */ \
-  /* this host lacks; a compiler or standard library other than this  */ \
-  /* library's; a build record other than the one configure verified. */ \
+  /* refuse, in this order of checks: no readable identity; an engine */ \
+  /* needing an instruction-set extension this host lacks; a compiler */ \
+  /* or standard library other than this library's; no build record;  */ \
+  /* a build record other than the one configure verified.            */ \
   X(SEMB_ENGINE_BUILD_UNRECORDED,          36) \
   X(SEMB_ENGINE_TOOLCHAIN_MISMATCH,        37) \
   X(SEMB_ENGINE_LINK_MISMATCH,             38) \
@@ -155,9 +155,7 @@ typedef enum semb_status {
 // open-time witness and refuses SEMB_DEVICE_DIVERGED on any difference, so a
 // GPU handle returns the same bytes a CPU handle does. The GPU path is
 // selected through `semb_config.device`; `semb_encoder_open_memory` always
-// runs on the CPU. `device` occupies what was the struct's tail padding, so
-// sizeof(semb_config) is unchanged; a caller built against an earlier header
-// recompiles.
+// runs on the CPU.
 typedef struct semb_config semb_config;
 struct semb_config {
   uint32_t struct_size;

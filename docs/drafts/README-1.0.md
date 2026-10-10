@@ -59,11 +59,8 @@ python tools/t2700_fused_k_calibration.py flow --checkpoint <checkpoint dir> \
     --verifier build/sslm_verify
 python tools/convert_tokenizer.py --ckpt <checkpoint dir> --emit qwen3-embedding-0.6b-tokenizer.sslm
 ```
-<!-- filled by: the v1.8.0 pin step — re-read both commands from SuperSLM 1.8.0's quickstart; the tool names
-     above are 1.7.1's -->
 
-The model conversion takes about 1.5 hours ({{CONVERSION_SECONDS}} s on an AMD Ryzen 9 3950X).
-<!-- filled by: the v1.8.0 pin step's conversion run; 5,226 s was measured at SuperSLM 1.7.1 -->
+The model conversion takes about 1.5 hours (5,226 s on an AMD Ryzen 9 3950X).
 **A converted file is certified only if its bytes equal the published ones.** Check its SHA-256 against the
 table above. A file that differs is a different model: it gives a different encoder fingerprint, its banks
 are refused by every build using the published files, and no certification covers it.
@@ -129,7 +126,7 @@ engine it is running with at every encoder and bank open, before reading any fil
 name (`SEMB_ENGINE_BUILD_UNRECORDED`, `SEMB_CPU_TIER_UNSUPPORTED`, `SEMB_ENGINE_TOOLCHAIN_MISMATCH` or
 `SEMB_ENGINE_LINK_MISMATCH`; [docs/FORMAT.md](docs/FORMAT.md#53-the-check-at-open) gives the order).
 
-If you link SuperEmbedder's static library into your application instead, it is certified only where every
+If you build SuperEmbedder from source and link its static library into your application instead, it is certified only where every
 translation unit of yours that includes its headers compiles with the certified cell's options.
 
 ## Quick start
@@ -169,7 +166,7 @@ Details a script may depend on:
   [Readiness](#readiness). A single `semb query` pays that for one query; `semb query --stdin` pays it once for
   the whole stream, and the library pays it once per handle.
 - **Bake concurrency.** `semb bake` encodes up to 8 documents at a time, and never more than the corpus has
-  documents or the machine has hardware threads. `--max-concurrency N` sets another ceiling. The bank's bytes
+  documents or the machine has hardware threads. `--max-concurrency N` replaces the 8. The bank's bytes
   do not depend on it.
 - **Empty documents.** A document whose text is empty is skipped, not refused. Each one is reported on stderr as
   `skipped "<id>": SEMB_INPUT_EMPTY`, with the id escaped as a JSON string, and listed in `<stem>.skipped.json`
@@ -431,8 +428,8 @@ with a paired 95% bootstrap interval:
 Measured on {{RETRIEVAL_CELL}}, over a fixed query-sampled pool per set ({{RETRIEVAL_POOL_SIZES}}); the figures are relative to
 that pool, not to each set's full leaderboard corpus. They equal the SuperSLM engine's own embedding on the same
 pool exactly. English is the only language measured. {{RETRIEVAL_CARRY_SENTENCE}}
-<!-- filled by: K1_CELL and K1_POOL_SIZES from the retrieval run's report (build, tier, host; queries and documents
-     per set). K1_CARRY_SENTENCE by REL-2 step 2 and REL-4 step 5.3: "The 1.0.0 release produces the same document
+<!-- filled by: RETRIEVAL_CELL and RETRIEVAL_POOL_SIZES from the retrieval run's report (build, tier, host; queries and documents
+     per set). RETRIEVAL_CARRY_SENTENCE by REL-2 step 2 and REL-4 step 5.3: "The 1.0.0 release produces the same document
      and query vectors as the build measured, so these figures apply to it unchanged." — or, if vectors moved,
      the re-measured figures replace the table. -->
 
