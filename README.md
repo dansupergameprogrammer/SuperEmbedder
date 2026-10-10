@@ -116,8 +116,11 @@ without the provenance re-verification steps below.
 python tools/pin-superslm/pin_superslm.py \
     --lock superslm.lock --prefix build/_engine_install
 
-# 2. Configure and build.
-cmake -G Ninja -S . -B build/semb -DCMAKE_PREFIX_PATH="$PWD/build/_engine_install"
+# 2. Configure and build. Release is the certified configuration; without a
+#    build type, GCC leaves header-inline floating-point functions such as
+#    std::isfinite out of line, and the build's R20 object census refuses them.
+cmake -G Ninja -S . -B build/semb -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_PREFIX_PATH="$PWD/build/_engine_install"
 cmake --build build/semb
 
 # 3. Run the CLI stub and the negative-configure / build-flag test matrix.
