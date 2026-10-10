@@ -4,9 +4,6 @@ This page documents the files SuperEmbedder writes and reads that a consumer may
 manifest, the certified-builds list, the certification identity file, and the engine-build record. The bank
 itself is SuperFAISS's format and is documented there.
 
-<!-- Placeholders in {{DOUBLE_BRACES}} are filled before the release; each carries a comment naming the step
-     that produces it. -->
-
 ## 1. A bank
 
 `semb bake <corpus> --out <stem>` writes three files, plus a report of skipped documents:
@@ -151,8 +148,15 @@ Every pair of cells has one entry, and a list missing a pair is refused at confi
 GPUs on which a GPU process of a certified build reproduced its cell's certified rows. **An entry is not a
 cell**, and the cell matcher never reads this array. Each entry names the GPU's vendor, device, adapter name
 and driver, the `builds[]` cell its process resolved to, and the run ids of its evidence.
-{{GPU_VERIFICATION_ENTRY_KEYS}}
-<!-- filled by: U2-3 item 15 as built — the exact member names of a gpuVerifications entry, read at source -->
+
+| Member | Meaning |
+|---|---|
+| `vendorId` | The GPU's PCI vendor id, as its bake manifest records `gpu_vendor_id` |
+| `deviceId` | The GPU's PCI device id, as the manifest records `gpu_device_id` |
+| `adapterName` | The adapter's name, as the manifest records `gpu_adapter_name` |
+| `driverVersion` | The driver version, as the manifest records `gpu_driver_version` |
+| `cell` | The `builds[]` cell id the GPU process resolved to |
+| `runIds` | The run ids of the evidence, each committed under the cell's evidence directory at `gpu/<runId>/`; exactly one of them bakes the proof corpus |
 
 ### 3.5 The compile-flag record
 
@@ -185,21 +189,19 @@ file, not the list:** a certified cell's `certification_epoch` is the SHA-256 of
   "product": "superembedder",
   "line": 1,
   "enginePin": {
-    "tag": "{{ENGINE_PIN_TAG}}",
-    "commit": "{{ENGINE_PIN_COMMIT}}",
-    "engine_tree_sha": "{{ENGINE_TREE_SHA}}"
+    "tag": "v1.8.0",
+    "commit": "9ed52bb55af881348be6ccb591efdaa133f84329",
+    "engine_tree_sha": "ffad24449984ba5b7390a2cec007be9404bc1c64dfd529c1f420de37653e567c"
   },
   "proofCorpus": {
     "path": "tests/fixtures/c12b/corpus-239.jsonl",
-    "sha256": "{{PROOF_CORPUS_SHA256}}",
+    "sha256": "275b0749a25cfd141e747111d4cbed66d7772ce58a50b5c13a394c5c0da222c0",
     "rows": 239,
-    "corpusDigest": "{{PROOF_CORPUS_DIGEST}}",
-    "tokenIdDigest": "{{PROOF_CORPUS_TOKEN_ID_DIGEST}}"
+    "corpusDigest": "5e3a27bdf49ea6ebd905923cb2359bd9eb7825b9ab7bf4e93ecbed423f54bff7",
+    "tokenIdDigest": "e440e227fb5bdd3cc58895ac4fa536e533c8e5988fc993c4f3286e36680de835"
   }
 }
 ```
-<!-- filled by: the v1.8.0 pin step (enginePin) and the identity writer tool at that pin (proofCorpus digests);
-     copy the committed file's values verbatim -->
 
 **Canonical form.** ASCII; LF line endings; two-space indentation; members in exactly the order above; one
 trailing LF. The file is written only by the repository's writer tool, and the release check regenerates it

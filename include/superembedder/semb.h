@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* SEMB_API marks each verb this header declares, and only those (U2-1). The
+/* SEMB_API marks each verb this header declares, and only those. The
  * shared library exports exactly the verbs a line-anchored scan of this header
  * reads (tools/generate_export_list.py); its objects are compiled with hidden
  * visibility, so SEMB_API is also what gives each verb default visibility.
@@ -33,10 +33,10 @@ extern "C" {
 
 typedef struct semb_encoder_s* semb_encoder;
 
-// sec 3.1 item 5: library-owned, opaque, not copyable, released only by
+// A baked bank: library-owned, opaque, not copyable, released only by
 // semb_bank_close; a double close returns SEMB_INVALID_HANDLE. A distinct
 // opaque tag from semb_encoder/semb_query -- the three handle kinds are
-// never interchangeable (tests/semb_bank_abi_contract.h, TE-163/TE-166).
+// never interchangeable.
 typedef struct semb_bank_opaque* semb_bank;
 
 // A bank-bound query handle. It is library-owned and distinct from both the
@@ -79,12 +79,9 @@ typedef struct semb_query_opaque* semb_query;
   X(SEMB_BANK_NONFINITE_ROW,               29) \
   X(SEMB_BANK_ZERO_NORM_ROW,               30) \
   X(SEMB_BANK_GEOMETRY_CEILING_EXCEEDED,   31) \
-  /* TE-191 (D-SLM6467's ruling on F2/F3): provisional, named one per */ \
-  /* class per D-SLM6392's own convention, proposed to the planner    */ \
-  /* for ratification alongside 28-31. FORMAT.md sec 1: "unknown      */ \
-  /* schemaVersion, metric, or dtype" is rejected; schemaVersion has  */ \
-  /* SEMB_MANIFEST_SCHEMA_UNSUPPORTED already, this is metric/dtype's */ \
-  /* own name (semb_bank_open, bank.cpp).                             */ \
+  /* A bank manifest whose metric or dtype this library does not     */ \
+  /* read (semb_bank_open). An unknown schemaVersion is              */ \
+  /* SEMB_MANIFEST_SCHEMA_UNSUPPORTED.                                */ \
   X(SEMB_BANK_METRIC_DTYPE_UNSUPPORTED,    32) \
   /* A manifest digest (row_digest recomputed over the payload, or    */ \
   /* corpus_digest disagreeing with its own provenance.witness copy)  */ \
@@ -97,7 +94,7 @@ typedef struct semb_query_opaque* semb_query;
   /* `semb verify`: the bank manifest's corpus_digest disagrees with  */ \
   /* the digest of the corpus the verify re-encoded.                  */ \
   X(SEMB_CORPUS_DIGEST_MISMATCH,           35) \
-  /* U2-3 items 8, 13 and 14: encoder and bank open read the LINKED   */ \
+  /* Encoder and bank open read the LINKED                            */ \
   /* engine's own build identity (sslm_build_identity) before any     */ \
   /* artifact byte is read and before any engine code runs, and       */ \
   /* refuse, in this order of checks: no readable identity or no      */ \
@@ -108,7 +105,7 @@ typedef struct semb_query_opaque* semb_query;
   X(SEMB_ENGINE_TOOLCHAIN_MISMATCH,        37) \
   X(SEMB_ENGINE_LINK_MISMATCH,             38) \
   X(SEMB_CPU_TIER_UNSUPPORTED,             39) \
-  /* U3: the device statuses. semb_encoder_open refuses                */ \
+  /* The device statuses. semb_encoder_open refuses                   */ \
   /* SEMB_DEVICE_UNSUPPORTED for a `device` value it does not know, or */ \
   /* SEMB_DEVICE_GPU in a library built without the GPU path;          */ \
   /* SEMB_DEVICE_UNAVAILABLE when the GPU cannot be used (no adapter,  */ \
@@ -147,7 +144,7 @@ typedef enum semb_status {
 // additionally caps its own request by this process's hardware concurrency
 // and by the corpus's own document count before it ever reaches open -- a
 // caller of this ABI directly chooses its own policy for that half.) A single
-// batch call can also acquire every free slot for its own duration (TE-350)
+// batch call can also acquire every free slot for its own duration
 // -- the slots are shared, greedy, and per-handle, not one reserved slot per
 // caller.
 //
@@ -196,15 +193,14 @@ struct semb_fingerprint {
   uint8_t digest[32];
 };
 
-// The bake-side corpus entry's per-document argument
-// (`Claude/Fable/te96-u1-contract-closure-2026-09-05.md` sec 4.1). The id is
+// The per-document argument of semb_encode_batch. The id is
 // opaque bytes to the library: validated, never interpreted, never
 // tokenized, never digested by any fingerprint field.
 typedef struct semb_document semb_document;
 struct semb_document {
   uint32_t struct_size;    // sizeof(semb_document), validated exactly, per document
   const char* id;          // the row's id, sized UTF-8 span; required iff id_len > 0
-  size_t id_len;            // > 0: every document carries an id (plan sec 3.4)
+  size_t id_len;            // > 0: every document carries an id
   const char* utf8;         // the document text, sized UTF-8 span; required iff utf8_len > 0
   size_t utf8_len;
 };
@@ -218,8 +214,14 @@ struct semb_document {
 // No function declared here lets a C++ exception escape: every call returns a
 // `semb_status`. When a call on a bank, a query, or an encoder opened for the
 // CPU fails because memory cannot be allocated, it returns
-// SEMB_ALLOCATION_FAILED, and every handle the call used stays usable. When
-// the operating system or the C runtime cannot open or read a model,
+// SEMB_ALLOCATION_FAILED, and every handle the call used stays usable. On an
+// encoder opened for the GPU, memory exhausted, host or GPU, returns
+// SEMB_ALLOCATION_FAILED, and the handle stays usable, with one rare
+// exception: if the GPU's pending work cannot be confirmed stopped after the
+// failure, the call returns SEMB_DEVICE_UNAVAILABLE, and every GPU encoder in
+// the process may return it from then on. The device lost, or any other GPU
+// failure, returns SEMB_DEVICE_UNAVAILABLE, and the handle stops using the
+// GPU. When the operating system or the C runtime cannot open or read a model,
 // tokenizer or bank file, the call returns SEMB_ARTIFACT_UNREADABLE, whatever
 // the reason and whichever device an encoder is opened for, a shortage of
 // memory included; memory the library allocates to hold a file's bytes falls
@@ -254,8 +256,8 @@ semb_status semb_encode_query(semb_encoder enc, const char* utf8, size_t utf8_le
                               float* out_vector, size_t out_capacity_bytes,
                               size_t* out_required_bytes,
                               semb_fingerprint* out_fingerprint);
-// The bake-side corpus entry (`Claude/Fable/te96-u1-contract-closure-2026-09-05.md`
-// sec 4.2). Validation is shape-before-content-before-work; nothing is
+// Encodes a corpus of documents into rows. Validation is
+// shape-before-content-before-work; nothing is
 // written to `out_rows` on any non-SEMB_OK return; `*out_required_bytes` is
 // written on exactly SEMB_OK and SEMB_BUFFER_TOO_SMALL.
 SEMB_API
@@ -266,8 +268,7 @@ semb_status semb_encode_batch(semb_encoder enc, const semb_document* docs, size_
 // stem `path` (sized UTF-8 span, `path_len` bytes, never NUL-terminated);
 // owns the bank's own expected fingerprint, read from the manifest. `*out`
 // is set to a live handle only on SEMB_OK; every refusal leaves
-// `*out == NULL` (when `out` is non-NULL) (`Claude/Plans/SuperEmbedder_Plan.md`
-// sec 3.1; `tests/semb_bank_abi_contract.h`).
+// `*out == NULL` (when `out` is non-NULL).
 SEMB_API
 semb_status semb_bank_open(const char* path, size_t path_len, semb_bank* out);
 // Releases the handle. A bank with one or more live query handles returns

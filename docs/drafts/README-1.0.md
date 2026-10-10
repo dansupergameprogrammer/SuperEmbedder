@@ -315,9 +315,10 @@ interchange format (its `FORMAT.md` §1), `float32`, metric `cosine`, one id per
    at load.
 2. **Encode each query** with `semb_query_encode` or `semb_encode_query` in the library, or
    `semb query --raw` / `semb query --stdin` from the command line.
-3. **Pass the query to SuperFAISS** as follows: {{SUPERFAISS_QUERY_RULE}}
-   <!-- filled by: U2-2 — the padding to paddedDims and the query normalization rule, read at SuperFAISS source
-        and exactly what the round-trip harness does -->
+3. **Pass the query to SuperFAISS** as follows: copy its `dims` floats into a 16-byte-aligned `float32` buffer
+   of the bank's `paddedDims` (`PaddedDims(dims, quantization)`), with every pad lane zero, and pass that buffer
+   to `Query` unchanged. It needs no normalizing: the bank's rows are unit length, so scoring by dot product
+   ranks by cosine. This is exactly what the repository's SuperFAISS round-trip test does.
 
 `Exactness::CrossDevice` accepts int8 banks only, and gives identical hits across machines **given identical
 bank bytes**. {{INT8_BANK_README_SENTENCE}}

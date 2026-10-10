@@ -744,7 +744,8 @@ int Query(const std::vector<std::string>& args) {
   if (args.size() == 1 && args[0] == "--help") {
     std::cout << "usage: semb query [--stdin] <name> [<text>] [--hex | --raw | --top k] [--device cpu|gpu] --model <sslm> --tokenizer <sslm>\n"
                  "One-shot query is a documented diagnostic; --stdin reuses one checked query handle.\n"
-                 "Output modes: --hex (default), --raw (float bytes), or --top k (JSON hits).\n";
+                 "Output modes: --hex (default), --raw (float bytes), or --top k (JSON hits).\n"
+                 "--top k is a diagnostic: an exact scan of every bank row, not an index search.\n";
     return 0;
   }
   QueryArguments parsed;

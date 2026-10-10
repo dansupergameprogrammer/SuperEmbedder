@@ -1,34 +1,15 @@
 name: ci
 
-# TE-61 (U0 slice A) pinned the engine, configured, built, and ran ctest on
-# three OSes against the tree as it stood then (only C33's provenance legs,
-# C34's source-provenance legs, and C14's build-configuration legs existed).
-# TE-137 re-scoped the ctest step's own name and exclusion to match the tree
-# as it stands now: tests/CMakeLists.txt has since grown the full red suite
-# (C1/C3/C12b/C39/C40/U1/K-15/K-16/K-18/witness/etc.), all of which ctest
-# --test-dir build/semb picks up, minus the "real_artifact" label exclusion
-# below. Deliberately excludes eval/k1/tests (TE-43: those cells fail rather
-# than skip on a GPU-less runner).
+# Pins the SuperSLM engine, configures, builds and runs the test suite on
+# Windows (MSVC), Linux (GCC) and macOS (AppleClang). Cells that need the real
+# model are labelled real_artifact and are excluded below; each reports its
+# real-model leg as a missing prerequisite rather than a failure when the
+# model is absent.
 #
-# AUTHORED AND VALIDATED AS FAR AS A LOCAL RUN ALLOWS — this workflow has not
-# been executed by GitHub Actions as of this commit (the build seat that
-# wrote it never pushes). TE-137 executed every step of this file locally on
-# Windows (MSVC, full engine pin, full configure/build/ctest cycle); the
-# ubuntu/macos legs are the identical steps run through cross-platform-
-# portable tools (Ninja via seanmiddleditch/gha-setup-ninja, system
-# GCC/Clang/AppleClang) and have not themselves been executed anywhere,
-# though the strict-C probe itself was separately compiled there under GCC
-# and Clang. The three-OS green this workflow would produce is recorded as
-# authored and locally-verified on one OS, not executed on Linux/macOS, and
-# lands when this is pushed.
-
 # Hosted runs are manual: hosted minutes are spent on release-shaped tips only.
-# The U2 certified-set slice restores all three legs here -- windows-2022 (the
-# runner image that still carries Visual Studio 2022), macos-latest and
-# ubuntu-latest -- with no toolchain override on any of them: configure refuses
-# no compiler, and a toolchain outside docs/certified-builds.json builds and
-# runs in the uncertified epoch. Their first hosted reading is the release
-# candidate's run.
+# No leg overrides the toolchain: configure refuses no compiler, and a
+# toolchain outside docs/certified-builds.json builds and runs in the
+# uncertified epoch.
 on:
   workflow_dispatch:
 
@@ -40,29 +21,16 @@ jobs:
         os: [windows-2022, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      # TE-164 (U1 slice 3 build): fetch-depth: 0 (full history), not the
-      # default shallow depth-1 clone -- tests/epoch_store_check.py's own
-      # cell 1(c) diffs epoch-store/live/ against `--parent-ref HEAD~1` by
-      # default, and a depth-1 checkout has no HEAD~1 object at all, so
-      # every CI run would report that leg MISSING PREREQUISITE forever
-      # rather than ever actually diffing real parent-commit history once
-      # the store has more than one commit.
+      # Full history: tests/epoch_store_check.py diffs epoch-store/ against
+      # the parent commit, which a depth-1 clone does not have.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
-          # tools/convert_tokenizer.py's unicode_tables.py (pulled from the
-          # pinned engine clone by tests/fixtures/regenerate_tokenizer_pair_
-          # fixture.py) requires unicodedata.unidata_version to equal
-          # PINNED_UNICODE_VERSION = 15.1.0 (sslm_convert_validate.py) and
-          # raises UnicodeVersionMismatch otherwise. Python's stdlib
-          # unicodedata version tracks the interpreter (3.11 -> 14.0.0,
-          # 3.12 -> 15.0.0); 3.13 is the first CPython release whose stdlib
-          # ships 15.1.0 -- executed locally: Python 3.13.6's unicodedata
-          # reports 15.1.0, Python 3.12.10's reports 15.0.0 and fails the
-          # check.
+          # The engine's tokenizer converter requires Unicode 15.1.0 in
+          # unicodedata, which CPython ships from 3.13.
           python-version: "3.13"
 
       - name: Install fixture-generation dependencies
@@ -99,17 +67,9 @@ jobs:
 
       - name: Configure SuperEmbedder
         shell: bash
-        # -DCMAKE_BUILD_TYPE=Release: this tree's own determinism contract
-        # (Claude/Plans/SuperEmbedder_Plan.md sec 9 dim (iii); cmake/
-        # BuildFlags.cmake's semb_assert_precise_fp()) is that a different
-        # optimisation level does not change the emitted vector -- the
-        # guarantee, not a caveat on it -- so building Release here does
-        # not narrow what the negative-configure matrix or C14's tripwire
-        # exercise. Left unset, a single-config Ninja generator's implicit
-        # empty build type carries no -O flag at all, which is both an
-        # untested configuration relative to this project's own C33/C35
-        # cross-optimisation-level legs and, on a suite this size, several
-        # times slower per job -- and hosted Actions minutes are scarce.
+        # Release: the optimisation level does not change the emitted
+        # vector (docs/DETERMINISM.md), and an empty build type is both an
+        # untested configuration and several times slower on this suite.
         # No toolchain override: the certified set is decided at encoder open
         # from the build's compiled-in descriptor, never at configure. The
         # resolved identity each leg configured against is printed next.
@@ -133,13 +93,13 @@ jobs:
         shell: bash
         run: cmake --build build/semb
 
-      - name: Build the K-15 workspace-seam test targets (EXCLUDE_FROM_ALL)
+      - name: Build the workspace-seam test targets (EXCLUDE_FROM_ALL)
         shell: bash
         # u1_workspace_seam_test and its superembedder_testseam dependency
         # (tests/CMakeLists.txt's semb_add_workspace_tests()) are declared
         # EXCLUDE_FROM_ALL so the default build stays lean; the default
         # `cmake --build build/semb` above never produces them, so
-        # u1_workspace_seam_absent_check (K-18) has nothing to read without
+        # u1_workspace_seam_absent_check has nothing to read without
         # this explicit target build.
         run: cmake --build build/semb --target u1_workspace_seam_test
 
@@ -154,20 +114,8 @@ jobs:
 
       - name: Run the mechanism-cell suite (excludes real-artifact legs)
         shell: bash
-        # -LE real_artifact excludes any cell tests/CMakeLists.txt labels
-        # "real_artifact" (TE-137) -- applied there only when the real
-        # Qwen3-Embedding-0.6B artifact is actually configured
-        # (-DSEMB_C12B_MODEL=... / -DSEMB_U1_TOKENIZER=...), never here: CI
-        # configures neither, so today no cell carries the label and this
-        # flag changes nothing. Each of the three cells that CAN carry it
-        # (c12b_row_digest_check, u1_raw_text_cells_check,
-        # u1_trailing_special_mutants_check) already runs its own mechanism
-        # legs against a synthetic fixture unconditionally and reports its
-        # real-artifact leg as MISSING PREREQUISITE (non-failing) rather
-        # than FAIL when the model is absent, which is what keeps CI green
-        # without this flag doing any work -- the flag is the structural
-        # guard against gate 7's own worry (plan sec 11): if CI, or a
-        # certification run sharing this build tree, is ever reconfigured
-        # to point at the real 633 MB artifact, the label already exists
-        # and this exclusion already applies, with no regex to remember.
+        # -LE real_artifact excludes the cells tests/CMakeLists.txt labels
+        # real_artifact, which it does only when the real model is configured
+        # (-DSEMB_C12B_MODEL / -DSEMB_U1_TOKENIZER). CI configures neither, so
+        # the flag guards a build tree that is later pointed at the model.
         run: ctest --test-dir build/semb --output-on-failure -LE real_artifact
