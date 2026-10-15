@@ -22,11 +22,16 @@ refuses a header whose `schemaVersion` is not 1, or that carries a `channels` me
 **The corpus `semb bake` and `semb verify` read.** A `.jsonl` corpus (the extension, in any case) is one
 `{"id", "text"}` object per line, and an empty line is skipped; any other corpus is one document per line, with
 its zero-based line number as its id. The file is read in binary mode: a line is the bytes up to each LF on every
-platform, so a CR before the LF belongs to the line, and a final line without an LF is still a line.
+platform, and a final line without an LF is still a line. In a plain-text corpus, a CR before the LF is
+document text. In JSONL, only the decoded `text` member is encoded; whitespace after the object, including
+a CR, is ignored.
 
 ## 2. The manifest, `<stem>.semb.json`
 
-A JSON object. **Readers ignore members they do not recognise.**
+A JSON object. **Readers ignore members they do not recognise**, but parse their values too. Every number
+anywhere in the manifest, including inside unknown members, must use integer notation and fit in signed
+64-bit `int64`; fractional or exponent notation and out-of-range integers are refused
+(`SEMB_ARTIFACT_UNREADABLE`).
 
 ### 2.1 Identity
 
@@ -75,7 +80,9 @@ A JSON object. **Readers ignore members they do not recognise.**
 | `engine_tree_sha` | Digest of the engine's source tree as pinned |
 | `engine_path_sha` | Digest of the CPU engine adapter's source |
 | `engine_chunk_budget` | The engine's pinned chunk budget |
-| `object_code_sha`, `engine_object_code_sha`, `semb_source_sha` | Reserved labels; `"NOT-COMPUTED"` in 1.0 |
+| `object_code_sha` | Reserved label; `"SEMB-OBJECT-CODE-SHA-NOT-COMPUTED-IN-1.0"` in 1.0 |
+| `engine_object_code_sha` | Reserved label; `"SEMB-ENGINE-OBJECT-CODE-SHA-NOT-COMPUTED-IN-1.0"` in 1.0 |
+| `semb_source_sha` | Reserved label; `"SEMB-SOURCE-SHA-NOT-COMPUTED-IN-1.0"` in 1.0 |
 | `witness` | `{corpus_digest, wa_digest, wb_digest, cpu_tier}`: `corpus_digest` repeats the bank's top-level `corpus_digest`, and a bank whose two copies differ is refused (`SEMB_BANK_DIGEST_MISMATCH`); `wa_digest` and `wb_digest` are the witness digests the encoder computed; `cpu_tier` is the tier it ran on |
 
 Top-level labels; the first two are checked when a bank opens:
@@ -262,8 +269,9 @@ library checks the engine it is linked against, in this order:
 4. `build_record` is empty → `SEMB_ENGINE_BUILD_UNRECORDED`;
 5. `build_record` differs from the one configure verified → `SEMB_ENGINE_LINK_MISMATCH`.
 
-The host check comes first so that an engine that would fault is refused rather than run. An application
-must therefore link the engine the installed library was configured against; any other is refused at open.
+The host check comes first so that an engine that would fault is refused rather than run. Source builds
+and applications that link SuperEmbedder statically must link the engine it was configured against;
+a mismatch is refused at open. The installed shared library carries its engine privately.
 
 ## 6. What the checks do not catch
 

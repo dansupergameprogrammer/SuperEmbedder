@@ -67,8 +67,9 @@ are refused by every build using the published files, and no certification cover
 
 ## Build and install
 
-Requires CMake 3.21 or later, Ninja, Python 3, and a C++20 compiler. On Windows, build from a Developer
-Command Prompt for the compiler you mean to use.
+Requires CMake 3.21 or later, Ninja, Git, Python 3.10 or later, and a C++20 compiler. Running the tests
+requires Python 3.13 and NumPy (`python -m pip install numpy`); use that Python for the recipe below.
+On Windows, use a Developer PowerShell with the compiler you mean to use. On Linux and macOS, use a shell:
 
 ```sh
 # 1. Build and install the pinned engine. This clones SuperSLM at the tag in superslm.lock,
@@ -81,13 +82,28 @@ cmake --build build/semb
 ctest --test-dir build/semb --output-on-failure
 
 # 3. Install.
-cmake --install build/semb --prefix <install dir>
+cmake --install build/semb --prefix "<install dir>"
+```
+
+On Windows:
+
+```powershell
+# 1. Build and install the pinned engine.
+python tools/pin-superslm/pin_superslm.py --lock superslm.lock --prefix build/engine
+
+# 2. Configure, build and test.
+cmake -G Ninja -S . -B build/semb -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$PWD/build/engine"
+cmake --build build/semb
+ctest --test-dir build/semb --output-on-failure
+
+# 3. Install.
+cmake --install build/semb --prefix "<install dir>"
 ```
 
 **Build the engine and SuperEmbedder in the same compiler environment.** The engine's tier kernels are
 compiled by whatever compiler step 1 finds, and they are part of what a certified cell certifies. Configure
-and encoder open both refuse a build whose engine was compiled by a different compiler or standard library
-(`SEMB_ENGINE_TOOLCHAIN_MISMATCH`).
+refuses an engine built with a different compiler ID, version or frontend. Encoder open checks the compiler
+and standard-library macros and refuses a mismatch (`SEMB_ENGINE_TOOLCHAIN_MISMATCH`).
 
 **Add no compile flags.** Every target is built with `-ffp-contract=off` (GCC, Clang) or `/fp:precise` (MSVC)
 and never with fast-math, and the build fails if those are missing. A build with any flag beyond its cell's
@@ -100,6 +116,7 @@ shows, so the engine pin tool and the build both refuse to run while any is set
 (`SEMB_PIN_AMBIENT_COMPILER_INPUT`, `SEMB_BUILD_AMBIENT_COMPILER_INPUT`), naming the variable.
 
 The compiler environment each certified cell was built in:
+<!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 | Member | Compiler | Environment |
 |---|---|---|
@@ -114,16 +131,18 @@ The compiler environment each certified cell was built in:
 
 The install puts a shared library, the headers `superembedder/semb.h` and `superembedder/version.h`, the `semb`
 tool, and a CMake package in `<install dir>`. The library exports only the `semb_*` functions declared in
-`semb.h`; the engine is linked into it privately.
+`semb.h`; the engine is linked into it privately. In `version.h`, only the `SEMB_VERSION_*` macros are for
+consumers; `superembedder::Version()` is not exported from the shared library.
 
 ```cmake
 find_package(superembedder 1.0 CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE superembedder::superembedder)
 ```
 
-**Your application must use the engine the installed library was configured against.** The library checks the
-engine it is running with at every encoder and bank open, before reading any file, and refuses any other by
-name (`SEMB_ENGINE_BUILD_UNRECORDED`, `SEMB_CPU_TIER_UNSUPPORTED`, `SEMB_ENGINE_TOOLCHAIN_MISMATCH` or
+**Source builds and applications that link SuperEmbedder statically must link the engine SuperEmbedder was
+configured against.** The installed shared library carries its engine privately. At every encoder and bank
+open, before reading any file, the library checks that engine and refuses a mismatch by name
+(`SEMB_ENGINE_BUILD_UNRECORDED`, `SEMB_CPU_TIER_UNSUPPORTED`, `SEMB_ENGINE_TOOLCHAIN_MISMATCH` or
 `SEMB_ENGINE_LINK_MISMATCH`; [docs/FORMAT.md](docs/FORMAT.md#53-the-check-at-open) gives the order).
 
 If you build SuperEmbedder from source and link its static library into your application instead, it is certified only where every
@@ -156,15 +175,18 @@ semb --version
 
 Details a script may depend on:
 
-- **Lines.** A line ends at LF only. A CR is part of the text, so a corpus or query list with CRLF line endings
-  encodes each line with a trailing CR. A final line without an LF still counts.
+- **Lines.** A line ends at LF only. In plain-text corpora and stdin queries, a CR is part of the text, so
+  CRLF line endings encode each line with a trailing CR. JSONL encodes the decoded `text` member;
+  whitespace after the object, including a CR, is ignored. A final line without an LF still counts.
 - **Output modes of `semb query`:** `--hex` (the default) prints `VECTOR_HEX=` and the vector's bytes as
   lowercase hex; `--raw` writes the raw `float32` bytes and cannot be combined with `--stdin`; `--top k` prints
   `{"hits":[{"id":"..."}, ...]}`, the bank's `k` nearest rows by an exact cosine scan in double precision.
   **`--top` is a diagnostic, not a search engine**: it checks a bank by brute force. Search with SuperFAISS.
-- **Open cost.** Every `semb` invocation opens an encoder, which takes the time-to-ready in
-  [Readiness](#readiness). A single `semb query` pays that for one query; `semb query --stdin` pays it once for
-  the whole stream, and the library pays it once per handle.
+- **Encoder opens.** The commands that encode — `semb bake`, `semb query` (including `--stdin`) and
+  `semb verify` — open an encoder. `inspect`, version output and `query --help` do not. One-shot `semb query`
+  is a documented diagnostic; `semb query --stdin` reuses one encoder and checked query handle for the stream.
+  The [Readiness](#readiness) timing runs from process start through the first query result, including encoder
+  and bank open. The library pays encoder-open cost once per handle; that cost is not measured separately here.
 - **Bake concurrency.** `semb bake` encodes up to 8 documents at a time, and never more than the corpus has
   documents or the machine has hardware threads. `--max-concurrency N` replaces the 8. The bank's bytes
   do not depend on it.
@@ -174,8 +196,8 @@ Details a script may depend on:
 - **stderr also carries one engine line per encoder open**, beginning `preflight: ` — a report the SuperSLM
   engine writes whenever it loads a model. It is expected, it is not an error, and it is not a skip report.
   `semb query --stdin` also writes `query_handle_opens=1` to stderr when it finishes.
-- **Errors** print `<where>: SEMB_<NAME> (<number>)` on stderr and exit with status 1. The name is stable; the
-  number is not guaranteed across releases, so match on the name.
+- **Errors** print `<where>: SEMB_<NAME> (<number>)` on stderr and exit with status 1. Prefer status names in
+  logs and tests; existing status names and numeric values never move.
 
 ## The library
 
@@ -183,10 +205,11 @@ Details a script may depend on:
 
 **Encoders.** `semb_encoder_open` opens an encoder from the model and tokenizer files;
 `semb_encoder_open_memory` opens one from those files' bytes already in memory, and copies them, so you may
-release your buffers when it returns. An encoder is expensive to open (see [Readiness](#readiness)) and cheap to
-keep: open one per process and reuse it. `semb_encode` encodes one document; `semb_encode_batch` encodes many,
-all or nothing; `semb_encode_query` encodes one query, applying the query prefix. Each returns the encoder
-fingerprint with its result.
+release your buffers when it returns. Opening loads the model and tokenizer and executes the witnesses;
+open one encoder per process and reuse it. `semb_encode` encodes one document; `semb_encode_batch` encodes many,
+all or nothing; `semb_encode_query` encodes one query, applying the query prefix. `semb_encode` and
+`semb_encode_query` return the encoder fingerprint with their result. `semb_encode_batch` returns rows and
+the required byte count, with no fingerprint; use `semb_fingerprint_of` to read the encoder's fingerprint.
 
 **Banks and queries.** `semb_bank_open` opens a baked bank and checks it. `semb_query_open` binds an encoder to
 a bank, and refuses a bank baked by an encoder with a different fingerprint (`SEMB_FINGERPRINT_MISMATCH`).
@@ -223,8 +246,8 @@ internal failure returns `SEMB_ENGINE_REFUSED`, or `SEMB_ARTIFACT_UNREADABLE` fr
 This covers the library's functions. It does not describe what the `semb` tool leaves on disk when a bake fails
 partway.
 
-`semb_status_name` gives a status's name. Match statuses by name in your own code's logs and tests: the
-numeric values of statuses added in 1.0 are not part of the guarantee.
+`semb_status_name` gives a status's name. Prefer status names in your own code's logs and tests. The enum is
+append-only: existing names and numeric values never move.
 
 ## The GPU
 
@@ -232,9 +255,9 @@ On Windows, SuperEmbedder can encode on a Direct3D 12 GPU. **The vectors are the
 the encoder fingerprint does not name the device, so a bank baked on the GPU is queried on the CPU and the
 reverse.
 
-**Build.** Pin the engine with GPU support and configure with the option on:
+**Build.** In the Windows Developer PowerShell, pin the engine with GPU support and configure with the option on:
 
-```sh
+```powershell
 python tools/pin-superslm/pin_superslm.py --lock superslm.lock --prefix build/engine --with-gpu
 cmake -G Ninja -S . -B build/semb -DCMAKE_BUILD_TYPE=Release -DSEMB_BUILD_GPU=ON -DCMAKE_PREFIX_PATH="$PWD/build/engine"
 ```
@@ -329,13 +352,16 @@ table is generated from it.
 {{CERTIFIED_CELLS_TABLE}}
 <!-- filled by: REL-4 step 4 — generated from docs/certified-builds.json's builds[]: cell id, OS, toolchain,
      dispatch, CPU tier, host. 7 members, 11 cells, 55 pairwise proofs. -->
+<!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 Reading the table:
 
 - **Membership is by exact compiler build.** MSVC 19.33.31631 is a member; another MSVC 19.33 build is not.
+  <!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 - **An auto-dispatching build is certified per tier.** The `-auto` members are certified at AVX2 and at AVX-512.
   On a host whose best tier is SSE2, an auto build is uncertified; use the `msvc19.33-sse2` build, which is
   forced to SSE2.
+  <!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 - **Check your own build on your own host** with `semb --version`. It prints the SuperEmbedder version, the engine
   pin, the build's descriptor, the tier it dispatched to, the certification line and the SHA-256 of the identity
   file and of the list, the linked engine's build report, and the cell this build is on this host — or
@@ -355,13 +381,15 @@ certified rows on a GPU-enabled build:
 
 ### Checking your build
 
-`docs/certification/reference-bank/` holds a bank of the certification corpus baked by a certified cell. To check
-that your build reproduces it:
+`docs/certification/reference-bank/` holds a bank of the certification corpus baked by a certified cell.
+<!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
+To check that your build reproduces it, use the `corpus-239-cli.jsonl` corpus file committed beside the bank. Each
+row has string `id` and `text` members, with the certification fixture's `label` used as `id`:
 
 ```sh
 semb verify docs/certification/reference-bank/{{REFERENCE_BANK_STEM}} \
     --model <model>.sslm --tokenizer <tokenizer>.sslm \
-    --corpus tests/fixtures/c12b/corpus-239.jsonl
+    --corpus docs/certification/reference-bank/corpus-239-cli.jsonl
 ```
 <!-- filled by: REL-4 step 5.4 — the committed reference bank's stem -->
 
@@ -375,9 +403,12 @@ of the certified set that fingerprint's `certification_epoch` names, produces by
 [docs/DETERMINISM.md](docs/DETERMINISM.md) states what the fingerprint covers, what it does not, and what the
 guarantee rests on.
 
-The fingerprint is a SHA-256 over the model's bytes, the tokenizer's bytes, the composition literals, the result
-of a witness the encoder runs when it opens, and the certification epoch. Every bank records it, and a query
-against a bank with a different fingerprint is refused.
+The fingerprint is a SHA-256 over the model's bytes, the tokenizer's bytes, the composition literals, the
+executed witness results and the certification epoch. A change to any of these changes it. Every bank
+records it, and a query against a bank with a different fingerprint is refused. A code change outside what
+the witnesses execute can change output without moving the fingerprint. The certified set and `semb verify`
+against the reference bank check for such changes on the certification corpus.
+<!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 **Epochs and re-baking.** A bank's epoch names a certification line.
 
@@ -392,6 +423,8 @@ case.
 ## Readiness
 
 Measured on a pre-release build at the 1.0 engine pin, with the 1.0 model and tokenizer, on the CPU.
+Time to ready runs from process start through the first query result, including process startup, encoder
+open, bank open and the first encoded query.
 
 | Reading | a pre-release MSVC 19.33 build at AVX2, on an AMD Ryzen 9 3950X, CPU device | {{READINESS_CELL_B}} |
 |---|---:|---:|
@@ -409,8 +442,8 @@ Measured on a pre-release build at the 1.0 engine pin, with the 1.0 model and to
      SPAN_MS_256_B, SPAN_MS_1024_B, SPAN_MS_4096_B (forced SSE2). -->
 
 Encode time grows faster than linearly with length. A document at the full 32,768-token context is legal and
-takes far longer than the 4,096-token row. Opening an encoder is paid in full at every launch, restart and
-crash recovery.
+takes far longer than the 4,096-token row. A new `semb query` process repeats startup, encoder open,
+bank open and its first query after every launch, restart or crash recovery.
 
 ## Retrieval quality
 

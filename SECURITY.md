@@ -7,9 +7,8 @@ process rather than a public issue:
 
 <https://github.com/dansupergameprogrammer/SuperEmbedder/security/advisories/new>
 
-This opens a private draft advisory visible only to the maintainer until a
-fix is ready. Please do not open a public issue for a suspected
-vulnerability.
+This opens a private advisory visible to the maintainers and the reporter.
+Please do not open a public issue for a suspected vulnerability.
 
 ## What to include
 

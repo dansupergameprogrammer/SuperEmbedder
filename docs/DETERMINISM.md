@@ -23,7 +23,7 @@ vectors.**
 | 1 | `model_sha` | SHA-256 of the converted model file's bytes |
 | 2 | `tokenizer_sha` | SHA-256 of the tokenizer file's bytes |
 | 3 | `template_sha256` | SHA-256 over the three literals composition applies — the document frame (empty), the query prefix and the end-token literal — each as its 8-byte little-endian length followed by its bytes |
-| 4 | `witness_sha` | SHA-256 over the three witness digests the encoder computes when it opens: two runs of the engine's forward over fixed inputs, and one run of the query entry point over fixed queries |
+| 4 | `witness_sha` | SHA-256 over the three witness digests the encoder computes when it opens: W-A runs pooling over fixed synthetic integer arrays, W-B runs the document forward over fixed texts, and W-Q runs the query composition over fixed queries |
 | 5 | `certification_epoch` | SHA-256 of `docs/certification-identity.json` as the build compiled it in, on a build that is a certified cell; on any other build, SHA-256 of `"SEMB-UNCERTIFIED\0"` followed by the same file's bytes |
 
 The device an encoder runs on is not an input. See [The GPU](#the-gpu).
@@ -52,13 +52,17 @@ by one is refused by the other by name (`SEMB_FINGERPRINT_MISMATCH`).
 
 To check a build end to end, run `semb verify` against the reference bank in `docs/certification/reference-bank/`
 (see the README's *Checking your build*).
+<!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 ## What changes the fingerprint, and what does not
 
-**With the certification identity, the build's own certified-cell verdict and the other four fields
-unchanged, an uncommitted edit to either source tree changes the fingerprint if and only if it changes what
-the encoder emits.** An uncommitted edit is never itself a new certification line; adopting one is the
-transition described under *Epochs and re-baking*.
+**A change to the model, tokenizer, composition literals, executed witness results or certification epoch
+changes the fingerprint.** A code change outside what the witnesses execute can change output without
+moving the fingerprint. The certified set's proofs and `semb verify` against the reference bank check for
+such changes on the certification corpus; the fingerprint alone does not catch them.
+An uncommitted edit is never itself a new certification line; adopting one is the transition described
+under *Epochs and re-baking*.
+<!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 **With the certification identity and the other four fields unchanged, and both builds certified cells, a
 different compiler, optimisation level or warning level does *not* change it, which is the point of the
@@ -170,9 +174,10 @@ query prefix; a document pays for its own text. Measured on {{SPAN_CURVE_CELL}}:
 A document at the full 32,768-token context takes far longer than these; submitting one is legal and is not
 fast.
 
-**Opening an encoder is paid in full every time**: at launch, after a restart, after a crash, at editor start
-and at service start. Measured time to ready on a pre-release MSVC 19.33 build at AVX2, on an AMD Ryzen 9 3950X, CPU device: 31,971 ms from a cold
-file cache, 31,994 ms warm.
+**Time to ready runs from process start through the first query result**, including process startup,
+encoder open, bank open and the first encoded query. Measured on a pre-release MSVC 19.33 build at AVX2,
+on an AMD Ryzen 9 3950X, CPU device: 31,971 ms from a cold file cache, 31,994 ms warm. These readings do not
+isolate encoder-open cost. Keep an encoder open to reuse it across encodes.
 
 ## What is not guaranteed
 

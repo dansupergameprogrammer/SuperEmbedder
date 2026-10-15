@@ -12,17 +12,17 @@ as a [GitHub Gist](https://gist.github.com/). The maintainer reads the gist and
 applies the change by hand, under their own review, with attribution in the
 commit.
 
-This is a deliberate security posture rather than a backlog problem or a
-judgment about contributors. GitHub Actions workflows run with elevated trust
-once an author has had a pull request merged into the repository: their later
-fork runs start automatically, at PR-open time, before any human looks at the
-diff. A project that never merges an outside pull request keeps *every* fork
-run behind a manual approval gate, at every submission rather than only the
-first. Merging one good PR would permanently weaken that gate for that author,
-so the rule holds without exceptions.
+This is a deliberate security posture. Under GitHub's **Require approval for
+all external contributors** fork-approval setting, a repository that never
+merges an outside pull request keeps fork workflow runs behind approval.
+That setting also requires approval after an outside contribution is merged.
+Under first-time-contributor settings, a merged commit or pull request can
+remove the approval requirement. The boundary depends on the selected
+[fork-approval setting](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/enabling-features-for-your-repository/managing-github-actions-settings-for-a-repository#controlling-changes-from-forks-to-workflows-in-public-repositories).
+The repository's current CI workflow runs only by manual dispatch.
 
 Routing code through an issue plus a gist gets the same change considered on
-the same merits, and keeps the CI trust boundary intact.
+the same merits, under the maintainer's review.
 
 ## Proposing a code change
 
@@ -37,11 +37,16 @@ Three things make a proposal much easier to accept:
 
 - **Keep it scoped.** A change that mixes an unrelated refactor with the actual
   fix is harder to review and slower to land.
-- **Say whether it changes emitted bytes.** Any change to what the encoder
-  emits changes the encoder fingerprint and requires every bank to be
-  re-baked; see [docs/DETERMINISM.md](docs/DETERMINISM.md). A change that is
-  meant to leave vectors alone should say how you checked that they did — for
-  example `semb verify` against the reference bank.
+- **Say whether it changes emitted bytes.** The fingerprint covers the model,
+  tokenizer, composition literals, executed witnesses and certification epoch;
+  changing any of these changes it and requires banks to be re-baked. A code
+  change outside what the witnesses execute can change output without moving the
+  fingerprint. The certified set and `semb verify` against the reference bank
+  check for such changes on the certification corpus; see
+  [docs/DETERMINISM.md](docs/DETERMINISM.md). A change meant to leave vectors
+  alone should say how you checked that they did.
+  <!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
+
 - **Regenerate, don't hand-edit, generated files.** Fixtures, golden files and
   `docs/certification-identity.json` are produced by tools in `tools/`;
   regenerate them with the tool and say so in the issue.

@@ -2,9 +2,14 @@
 
 All notable changes to SuperEmbedder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
-[Semantic Versioning](https://semver.org/). A change that alters emitted vector
-bytes changes the encoder fingerprint and is always called out, because it
-requires every bank to be re-baked.
+[Semantic Versioning](https://semver.org/). Changes to emitted vector bytes are
+always called out. The fingerprint covers the model, tokenizer, composition
+literals, executed witnesses and certification epoch; a change to any of these
+changes it and requires banks to be re-baked. A code change outside what the
+witnesses execute can change output without moving the fingerprint. The certified
+set and `semb verify` against the reference bank check for such changes on the
+certification corpus.
+<!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 ## [Unreleased]
 
@@ -34,6 +39,7 @@ The first release, pinned to SuperSLM `1.8.0`. Release notes: [docs/releases/1.0
   `docs/certified-builds.json`; the certification identity in
   `docs/certification-identity.json`; each encoder open decides its own
   build's cell ([docs/DETERMINISM.md](docs/DETERMINISM.md)).
+  <!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 - A check at every encoder and bank open that the linked engine is the one the
   build was configured against.
 - A GPU path on Windows (Direct3D 12), built with `SEMB_BUILD_GPU=ON` and
@@ -44,6 +50,7 @@ The first release, pinned to SuperSLM `1.8.0`. Release notes: [docs/releases/1.0
 - The model and tokenizer as release downloads with their SHA-256.
 - A reference bank in `docs/certification/reference-bank/` for checking a
   build with `semb verify`.
+  <!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 ### Upgrading from a pre-release build
 
