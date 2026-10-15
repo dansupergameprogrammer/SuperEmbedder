@@ -1,99 +1,0 @@
-Using the latest cached version of the dataset since mteb/scifact couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'corpus' at D:\hf_cache\datasets\mteb___scifact\corpus\0.0.0\cf10ab6856b15b0e670ef8ae5dae4e266c12d035 (last modified on Tue Aug 25 11:18:12 2026).
-Using the latest cached version of the dataset since mteb/scifact couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'queries' at D:\hf_cache\datasets\mteb___scifact\queries\0.0.0\cf10ab6856b15b0e670ef8ae5dae4e266c12d035 (last modified on Tue Aug 25 11:18:12 2026).
-Using the latest cached version of the dataset since mteb/scifact couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'default' at D:\hf_cache\datasets\mteb___scifact\default\0.0.0\cf10ab6856b15b0e670ef8ae5dae4e266c12d035 (last modified on Tue Aug 25 11:18:13 2026).
-[transformers] `torch_dtype` is deprecated! Use `dtype` instead!
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 8455.98it/s]
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 8138.32it/s]
-Using the latest cached version of the dataset since mteb/nfcorpus couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'corpus' at D:\hf_cache\datasets\mteb___nfcorpus\corpus\0.0.0\52ac3f19d3449632d9f00aab0ad34a110fc03816 (last modified on Tue Aug 25 11:18:25 2026).
-Using the latest cached version of the dataset since mteb/nfcorpus couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'queries' at D:\hf_cache\datasets\mteb___nfcorpus\queries\0.0.0\52ac3f19d3449632d9f00aab0ad34a110fc03816 (last modified on Tue Aug 25 11:18:27 2026).
-Using the latest cached version of the dataset since mteb/nfcorpus couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'default' at D:\hf_cache\datasets\mteb___nfcorpus\default\0.0.0\52ac3f19d3449632d9f00aab0ad34a110fc03816 (last modified on Tue Aug 25 11:18:28 2026).
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 8156.23it/s]
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 8549.45it/s]
-Using the latest cached version of the dataset since mteb/scifact couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'corpus' at D:\hf_cache\datasets\mteb___scifact\corpus\0.0.0\cf10ab6856b15b0e670ef8ae5dae4e266c12d035 (last modified on Tue Aug 25 11:18:12 2026).
-Using the latest cached version of the dataset since mteb/scifact couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'queries' at D:\hf_cache\datasets\mteb___scifact\queries\0.0.0\cf10ab6856b15b0e670ef8ae5dae4e266c12d035 (last modified on Tue Aug 25 11:18:12 2026).
-Using the latest cached version of the dataset since mteb/scifact couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'default' at D:\hf_cache\datasets\mteb___scifact\default\0.0.0\cf10ab6856b15b0e670ef8ae5dae4e266c12d035 (last modified on Tue Aug 25 11:18:13 2026).
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 7845.73it/s]
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 8364.38it/s]
-Using the latest cached version of the dataset since mteb/nfcorpus couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'corpus' at D:\hf_cache\datasets\mteb___nfcorpus\corpus\0.0.0\52ac3f19d3449632d9f00aab0ad34a110fc03816 (last modified on Tue Aug 25 11:18:25 2026).
-Using the latest cached version of the dataset since mteb/nfcorpus couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'queries' at D:\hf_cache\datasets\mteb___nfcorpus\queries\0.0.0\52ac3f19d3449632d9f00aab0ad34a110fc03816 (last modified on Tue Aug 25 11:18:27 2026).
-Using the latest cached version of the dataset since mteb/nfcorpus couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'default' at D:\hf_cache\datasets\mteb___nfcorpus\default\0.0.0\52ac3f19d3449632d9f00aab0ad34a110fc03816 (last modified on Tue Aug 25 11:18:28 2026).
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 8002.43it/s]
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 8558.62it/s]
-Using the latest cached version of the dataset since mteb/scifact couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'corpus' at D:\hf_cache\datasets\mteb___scifact\corpus\0.0.0\cf10ab6856b15b0e670ef8ae5dae4e266c12d035 (last modified on Tue Aug 25 11:18:12 2026).
-Using the latest cached version of the dataset since mteb/scifact couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'queries' at D:\hf_cache\datasets\mteb___scifact\queries\0.0.0\cf10ab6856b15b0e670ef8ae5dae4e266c12d035 (last modified on Tue Aug 25 11:18:12 2026).
-Using the latest cached version of the dataset since mteb/scifact couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'default' at D:\hf_cache\datasets\mteb___scifact\default\0.0.0\cf10ab6856b15b0e670ef8ae5dae4e266c12d035 (last modified on Tue Aug 25 11:18:13 2026).
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 6904.06it/s]
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 8606.38it/s]
-Using the latest cached version of the dataset since mteb/nfcorpus couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'corpus' at D:\hf_cache\datasets\mteb___nfcorpus\corpus\0.0.0\52ac3f19d3449632d9f00aab0ad34a110fc03816 (last modified on Tue Aug 25 11:18:25 2026).
-Using the latest cached version of the dataset since mteb/nfcorpus couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'queries' at D:\hf_cache\datasets\mteb___nfcorpus\queries\0.0.0\52ac3f19d3449632d9f00aab0ad34a110fc03816 (last modified on Tue Aug 25 11:18:27 2026).
-Using the latest cached version of the dataset since mteb/nfcorpus couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'default' at D:\hf_cache\datasets\mteb___nfcorpus\default\0.0.0\52ac3f19d3449632d9f00aab0ad34a110fc03816 (last modified on Tue Aug 25 11:18:28 2026).
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 8637.19it/s]
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 8017.08it/s]
-Using the latest cached version of the dataset since mteb/scifact couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'corpus' at D:\hf_cache\datasets\mteb___scifact\corpus\0.0.0\cf10ab6856b15b0e670ef8ae5dae4e266c12d035 (last modified on Tue Aug 25 11:18:12 2026).
-Using the latest cached version of the dataset since mteb/scifact couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'queries' at D:\hf_cache\datasets\mteb___scifact\queries\0.0.0\cf10ab6856b15b0e670ef8ae5dae4e266c12d035 (last modified on Tue Aug 25 11:18:12 2026).
-Using the latest cached version of the dataset since mteb/scifact couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'default' at D:\hf_cache\datasets\mteb___scifact\default\0.0.0\cf10ab6856b15b0e670ef8ae5dae4e266c12d035 (last modified on Tue Aug 25 11:18:13 2026).
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 7934.16it/s]
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 7885.80it/s]
-Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 5207.20it/s]
-Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 5623.79it/s]
-Using the latest cached version of the dataset since mteb/nfcorpus couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'corpus' at D:\hf_cache\datasets\mteb___nfcorpus\corpus\0.0.0\52ac3f19d3449632d9f00aab0ad34a110fc03816 (last modified on Tue Aug 25 11:18:25 2026).
-Using the latest cached version of the dataset since mteb/nfcorpus couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'queries' at D:\hf_cache\datasets\mteb___nfcorpus\queries\0.0.0\52ac3f19d3449632d9f00aab0ad34a110fc03816 (last modified on Tue Aug 25 11:18:27 2026).
-Using the latest cached version of the dataset since mteb/nfcorpus couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'default' at D:\hf_cache\datasets\mteb___nfcorpus\default\0.0.0\52ac3f19d3449632d9f00aab0ad34a110fc03816 (last modified on Tue Aug 25 11:18:28 2026).
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 8292.42it/s]
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 4982.60it/s]
-Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 3293.64it/s]
-Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 5605.74it/s]
-Using the latest cached version of the dataset since mteb/fiqa couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'corpus' at D:\hf_cache\datasets\mteb___fiqa\corpus\0.0.0\5e59eeb3a7df6b85882112b747008547c21587ea (last modified on Tue Aug 25 11:18:31 2026).
-Using the latest cached version of the dataset since mteb/fiqa couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'queries' at D:\hf_cache\datasets\mteb___fiqa\queries\0.0.0\5e59eeb3a7df6b85882112b747008547c21587ea (last modified on Tue Aug 25 11:18:33 2026).
-Using the latest cached version of the dataset since mteb/fiqa couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'default' at D:\hf_cache\datasets\mteb___fiqa\default\0.0.0\5e59eeb3a7df6b85882112b747008547c21587ea (last modified on Tue Aug 25 11:18:35 2026).
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 4461.92it/s]
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 5832.06it/s]
-Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 4195.80it/s]
-Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 5257.28it/s]
-Using the latest cached version of the dataset since mteb/arguana couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'corpus' at D:\hf_cache\datasets\mteb___arguana\corpus\0.0.0\6c1bcf74b13dfd823aff056b79d4d93e702f19c7 (last modified on Tue Aug 25 11:18:38 2026).
-Using the latest cached version of the dataset since mteb/arguana couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'queries' at D:\hf_cache\datasets\mteb___arguana\queries\0.0.0\6c1bcf74b13dfd823aff056b79d4d93e702f19c7 (last modified on Tue Aug 25 11:18:40 2026).
-Using the latest cached version of the dataset since mteb/arguana couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'default' at D:\hf_cache\datasets\mteb___arguana\default\0.0.0\6c1bcf74b13dfd823aff056b79d4d93e702f19c7 (last modified on Tue Aug 25 11:18:40 2026).
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 6919.49it/s]
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 4852.13it/s]
-Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 4263.42it/s]
-Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 4367.92it/s]
-Using the latest cached version of the dataset since mteb/scidocs couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'corpus' at D:\hf_cache\datasets\mteb___scidocs\corpus\0.0.0\490848228d0a9ca7a7244f5e77d8fe33e6df6974 (last modified on Sun Aug 30 08:24:57 2026).
-Using the latest cached version of the dataset since mteb/scidocs couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'queries' at D:\hf_cache\datasets\mteb___scidocs\queries\0.0.0\490848228d0a9ca7a7244f5e77d8fe33e6df6974 (last modified on Sun Aug 30 08:24:59 2026).
-Using the latest cached version of the dataset since mteb/scidocs couldn't be found on the Hugging Face Hub (offline mode is enabled).
-Found the latest cached dataset configuration 'default' at D:\hf_cache\datasets\mteb___scidocs\default\0.0.0\490848228d0a9ca7a7244f5e77d8fe33e6df6974 (last modified on Sun Aug 30 08:25:00 2026).
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 4952.27it/s]
-Loading weights:   0%|          | 0/310 [00:00<?, ?it/s]Loading weights: 100%|██████████| 310/310 [00:00<00:00, 4817.56it/s]
-Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 5800.28it/s]
-Loading weights:   0%|          | 0/199 [00:00<?, ?it/s]Loading weights: 100%|██████████| 199/199 [00:00<00:00, 3758.96it/s]

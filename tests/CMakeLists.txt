@@ -1047,7 +1047,7 @@ endif()
 # tests/te163_bank_pair_test.cpp per this round's own brief (TE-192 owns
 # that file in a concurrent round -- nothing is factored out of it). The
 # src include dir is for json_lite.h, the product's own internal JSON
-# reader (the same include the te166_bake_239_timer target already uses).
+# reader.
 # ---------------------------------------------------------------------------
 add_executable(te196_manifest_binding_test EXCLUDE_FROM_ALL te196_manifest_binding_test.cpp)
 target_link_libraries(te196_manifest_binding_test PRIVATE superembedder superslm::superslm)

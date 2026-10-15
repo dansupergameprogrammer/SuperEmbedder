@@ -416,20 +416,6 @@ target_compile_definitions(semb PRIVATE
 install(TARGETS semb RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 
 # ---------------------------------------------------------------------------
-# TE-166 diagnostic only (not part of the red suite, not wired to ctest):
-# times a real 239-document semb_bake_to_path call independent of
-# tests/te163_bank_pair_test.cpp's own --real leg. The tamper-cell defect
-# that made that --real leg unreachable was closed at ac12fac/c2b8380 --
-# the leg now runs to completion (48 cells, 0 failures at 21b1735, the
-# 239-document bake included) -- so this target is no longer a workaround;
-# it is kept as a standalone wall-clock reading of the bake that does not
-# rerun the suite. Duplicates no row derivation.
-# ---------------------------------------------------------------------------
-add_executable(te166_bake_239_timer EXCLUDE_FROM_ALL tools/te166_bake_239_timer.cpp)
-target_link_libraries(te166_bake_239_timer PRIVATE superembedder)
-target_include_directories(te166_bake_239_timer PRIVATE "${CMAKE_SOURCE_DIR}/src/superembedder")
-
-# ---------------------------------------------------------------------------
 # C12b's instrument (sec 8, C12b; D-SLM4648): per-row byte digests over the
 # seam, PS-N's selected position and the emitted vector, through the
 # library's own interim handle surface

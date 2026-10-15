@@ -1,9 +1,0 @@
-{
-  "finished": "2026-08-30T13:39:48",
-  "r3_holds": true,
-  "r3_report": "D:\\SuperEmbedder\\eval\\k1\\run1_output\\r3\\r3_replication_report.json",
-  "run1_packet": "D:\\SuperEmbedder\\eval\\k1\\run1_output\\run1-full.json",
-  "started": "2026-08-30T08:33:31",
-  "status": "COMPLETE",
-  "wall_clock_seconds": 18377.265792
-}

@@ -1,4 +1,0 @@
-e6668a399cd6edd6c8a69b8b6a69e1fb7b9cae7d 2026-08-10 T-1893 debunk probes: decompose T-1891 leg 1's drift into radial/angular, check ranking past k=1, and separate common mode from the ranking-relevant residual
-32f99273ae9c1aee259f5e0f01f999ff4c372d3a 2026-08-10 T-1891: overlay corrected Option G engine (d45927f) onto t1777's capture path
-d5cbe80eba67eb827b2ec2c1c1ac36d31847781e 2026-08-06 T-1777: retrieval-agreement measurement scratch instruments
-438107fc63867b8cfaf3124bee4b2ff48a53fd37 2026-08-06 T-1740: scratch instrument for the C++ engine's pooled-embedding cosine fidelity

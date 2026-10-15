@@ -18,5 +18,3 @@ __pycache__/
 # only by re-executing the capture. They remain on the machine that produced
 # them, in place, beside the artifacts that are committed. See the README in
 # the run's own output directory for what each run's excluded set contains.
-eval/k1/*_output/run_files/
-eval/k1/*_output/*/run_files/
