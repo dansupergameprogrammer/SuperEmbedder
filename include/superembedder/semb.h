@@ -238,6 +238,14 @@ SEMB_API
 semb_status semb_encoder_close(semb_encoder enc);
 SEMB_API
 semb_status semb_encoder_dims(semb_encoder enc, uint32_t* out_dims);
+// Encodes one document into `out_vector`. The checks run in this order:
+// `enc`, `out_required_bytes` and `out_fingerprint` non-NULL; a live handle;
+// `out_fingerprint->struct_size == sizeof(semb_fingerprint)`; `out_vector`,
+// when non-NULL, 16-byte aligned (SEMB_MISALIGNED_BUFFER); then, when
+// `out_capacity_bytes` is below dims * sizeof(float), `*out_required_bytes`
+// is set and SEMB_BUFFER_TOO_SMALL returned, so a NULL buffer with zero
+// capacity asks for the size; then `out_vector` non-NULL, non-empty text
+// (SEMB_INPUT_EMPTY), `utf8` non-NULL, and valid UTF-8 (SEMB_INVALID_UTF8).
 SEMB_API
 semb_status semb_encode(semb_encoder enc, const char* utf8, size_t utf8_len,
                         float* out_vector, size_t out_capacity_bytes,
