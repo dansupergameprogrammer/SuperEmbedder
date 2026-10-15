@@ -1,7 +1,10 @@
 """Tests for pooling.py -- pure tensor operations, no model load required."""
 from __future__ import annotations
 
-import torch
+import pytest
+
+# TE-43: skip, rather than error at collection, where torch is not installed.
+torch = pytest.importorskip("torch", reason="pooling cells need torch")
 
 from eval.k1.pooling import cls_pool, last_token_pool, mean_pool_excluding_position_zero
 

@@ -69,7 +69,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Shared classifier: which mnemonics are floating-point-computing. Ported
@@ -223,23 +223,37 @@ def _gcc_weak_funcs(readelf: str, obj: Path) -> List[str]:
     return names
 
 
-def _gcc_disasm(objdump: str, obj: Path, func: str) -> List[str]:
+def _gcc_disasm_by_func(objdump: str, obj: Path) -> Dict[str, List[str]]:
+    """Every function's mnemonics in `obj`, from ONE `objdump -d` of the object.
+
+    A function's body is the instruction lines after its `<name>:` header up to the next blank
+    line; the first header for a name wins. Disassembling the whole object once per WEAK
+    function (as this reader first did) is the same reading at O(functions x object size):
+    on encoder.cpp.o it ran objdump hundreds of times and held every Linux build of the
+    `superembedder_r20_census` target (built by ALL) for tens of minutes."""
     out = subprocess.run([objdump, "-d", "--no-show-raw-insn", str(obj)], capture_output=True, text=True,
                          check=True).stdout
-    mnems: List[str] = []
-    in_func = False
-    marker = f"<{func}>:"
+    by_func: Dict[str, List[str]] = {}
+    current: Optional[List[str]] = None
     for ln in out.splitlines():
-        if marker in ln:
-            in_func = True
+        h = re.match(r"^[0-9a-f]+ <(.+)>:\s*$", ln)
+        if h:
+            name = h.group(1)
+            if name in by_func:
+                current = None
+            else:
+                current = []
+                by_func[name] = current
             continue
-        if in_func:
-            if ln.strip() == "" :
-                break
-            m = re.match(r"^\s*[0-9a-f]+:\s*([a-zA-Z0-9\.]+)", ln)
-            if m:
-                mnems.append(m.group(1))
-    return mnems
+        if current is None:
+            continue
+        if ln.strip() == "":
+            current = None
+            continue
+        m = re.match(r"^\s*[0-9a-f]+:\s*([a-zA-Z0-9\.]+)", ln)
+        if m:
+            current.append(m.group(1))
+    return by_func
 
 
 def census_gcc(archive: Path, ar: str, readelf: str, objdump: str) -> int:
@@ -254,9 +268,10 @@ def census_gcc(archive: Path, ar: str, readelf: str, objdump: str) -> int:
             obj = outdir / m
             subprocess.run([ar, "x", f"--output={outdir}", str(archive), m], check=True, capture_output=True)
             funcs = _gcc_weak_funcs(readelf, obj)
+            dis = _gcc_disasm_by_func(objdump, obj) if funcs else {}
             for f in funcs:
                 total += 1
-                mnems = sorted({x for x in _gcc_disasm(objdump, obj, f) if is_fp(x)})
+                mnems = sorted({x for x in dis.get(f, []) if is_fp(x)})
                 if mnems:
                     fp.append((m, f, mnems))
         print(f"[R20/M19 GCC/ELF census] {archive}")

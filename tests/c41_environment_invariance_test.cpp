@@ -99,11 +99,21 @@
 #include <vector>
 #include <xmmintrin.h>
 
-// clang-cl and cl.exe both support SEH __try/__except on a Windows target;
-// this file is not built for any non-Windows toolchain in this session
-// (the WSL GCC leg is filed UNREACHABLE by the sub-plan's own toolchain
-// crossing, tests/c23_token_id_determinism_check.py's report).
+// Part 3's child processes are spawned through Win32 on Windows and through
+// fork/execv of /proc/self/exe elsewhere; a child's trap is observed at the
+// process boundary on both (the trapping NTSTATUS as the exit code on
+// Windows; termination by SIGFPE on POSIX). Parts 1 and 2 are SSE
+// intrinsics and std::thread only. Before the POSIX branch this file
+// included <windows.h> unconditionally and was not built off Windows.
+#if defined(_WIN32)
 #include <windows.h>
+#else
+#include <cerrno>
+#include <csignal>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 #include "semb_engine_pin.h"
 #include "semb_public_abi_contract.h"
@@ -311,7 +321,9 @@ ChildMode ParseChildMode(int argc, char** argv) {
 // NTSTATUS as its exit code -- nothing here catches it. If it does not
 // trap, the process exits 0. No SEH anywhere in this function.
 int RunChildInexact(bool clear_masks) {
+#if defined(_WIN32)
   SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);  // no modal crash dialog under automation
+#endif
   if (clear_masks) _MM_SET_EXCEPTION_MASK(0);
   volatile float a = 1.0f;
   volatile float b = 3.0f;
@@ -327,7 +339,9 @@ int RunChildInexact(bool clear_masks) {
 // stdout for the parent to read; a trap here terminates the child before
 // any of that runs, observed by the parent through the exit code alone.
 int RunChildLibrary() {
+#if defined(_WIN32)
   SetErrorMode(SEM_NOGPFAULTERRORBOX | SEM_FAILCRITICALERRORS);
+#endif
   _MM_SET_EXCEPTION_MASK(0);
   bool opened_ok = false;
   semb_status out_status = SEMB_OK;
@@ -337,12 +351,22 @@ int RunChildLibrary() {
   return 0;  // did not trap
 }
 
+// How a child ended, normalized across platforms. `code` is what the
+// messages print: the Win32 exit code (an NTSTATUS for a trap), or on POSIX
+// the exit status, or 0x80000000 | signal number for a signal termination.
+struct ChildOutcome {
+  bool exited_cleanly = false;  // exit code 0
+  bool fp_trapped = false;      // ended by the floating-point exception itself
+  unsigned long code = 0xFFFFFFFFul;
+};
+
+#if defined(_WIN32)
 // Spawns THIS binary's own resolved on-disk path as a child process with
 // `mode_flag` as argv[1], waits for it to exit, and returns its exit code.
 // When `capture_stdout` is non-null, the child's stdout/stderr are piped
 // and collected into it -- used only for the library leg, whose result the
 // parent must read; the two inexact legs need nothing but the exit code.
-DWORD SpawnChildAndWait(const char* mode_flag, std::string* capture_stdout) {
+DWORD SpawnChildAndWaitWin32(const char* mode_flag, std::string* capture_stdout) {
   char self_path[MAX_PATH] = {0};
   if (GetModuleFileNameA(nullptr, self_path, MAX_PATH) == 0) {
     Fail("SpawnChildAndWait: GetModuleFileNameA failed (error %lu)", GetLastError());
@@ -401,6 +425,86 @@ DWORD SpawnChildAndWait(const char* mode_flag, std::string* capture_stdout) {
   CloseHandle(pi.hThread);
   return exit_code;
 }
+
+ChildOutcome SpawnChildAndWait(const char* mode_flag, std::string* capture_stdout) {
+  const DWORD exit_code = SpawnChildAndWaitWin32(mode_flag, capture_stdout);
+  ChildOutcome out;
+  out.code = exit_code;
+  out.exited_cleanly = exit_code == 0;
+  out.fp_trapped = exit_code == static_cast<DWORD>(STATUS_FLOAT_INEXACT_RESULT) ||
+                   exit_code == static_cast<DWORD>(STATUS_FLOAT_MULTIPLE_TRAPS);
+  return out;
+}
+#else
+// POSIX: re-exec /proc/self/exe (this binary's own on-disk image, not the
+// caller-supplied argv[0] text) with `mode_flag` as argv[1]. An unmasked SSE
+// exception raises SIGFPE, whose default action terminates the child; the
+// parent observes it through waitpid, never through an in-process handler.
+ChildOutcome SpawnChildAndWait(const char* mode_flag, std::string* capture_stdout) {
+  ChildOutcome out;
+  int pipe_fds[2] = {-1, -1};
+  if (capture_stdout && pipe(pipe_fds) != 0) {
+    Fail("SpawnChildAndWait: pipe failed (errno %d)", errno);
+    return out;
+  }
+  std::fflush(stdout);
+  std::fflush(stderr);
+  const pid_t pid = fork();
+  if (pid < 0) {
+    Fail("SpawnChildAndWait: fork('%s') failed (errno %d)", mode_flag, errno);
+    if (capture_stdout) {
+      close(pipe_fds[0]);
+      close(pipe_fds[1]);
+    }
+    return out;
+  }
+  if (pid == 0) {
+    signal(SIGFPE, SIG_DFL);
+    if (capture_stdout) {
+      dup2(pipe_fds[1], STDOUT_FILENO);
+      dup2(pipe_fds[1], STDERR_FILENO);
+      close(pipe_fds[0]);
+      close(pipe_fds[1]);
+    }
+    char self_path[] = "/proc/self/exe";
+    char* child_argv[] = {self_path, const_cast<char*>(mode_flag), nullptr};
+    execv(self_path, child_argv);
+    _exit(127);  // exec failed
+  }
+  if (capture_stdout) {
+    close(pipe_fds[1]);
+    char buf[4096];
+    for (;;) {
+      const ssize_t n = read(pipe_fds[0], buf, sizeof(buf));
+      if (n > 0) {
+        capture_stdout->append(buf, static_cast<size_t>(n));
+      } else if (n < 0 && errno == EINTR) {
+        continue;
+      } else {
+        break;
+      }
+    }
+    close(pipe_fds[0]);
+  }
+  int status = 0;
+  pid_t waited = -1;
+  do {
+    waited = waitpid(pid, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  if (waited != pid) {
+    Fail("SpawnChildAndWait: waitpid('%s') failed (errno %d)", mode_flag, errno);
+    return out;
+  }
+  if (WIFEXITED(status)) {
+    out.code = static_cast<unsigned long>(WEXITSTATUS(status));
+    out.exited_cleanly = WEXITSTATUS(status) == 0;
+  } else if (WIFSIGNALED(status)) {
+    out.code = 0x80000000ul | static_cast<unsigned long>(WTERMSIG(status));
+    out.fp_trapped = WTERMSIG(status) == SIGFPE;
+  }
+  return out;
+}
+#endif
 
 }  // namespace
 
@@ -517,11 +621,12 @@ int main(int argc, char** argv) {
   // must-accept: "a child that does not clear the masks must be seen not
   // to trap" -- proving the trap below is the CLEARED MASKS, not the
   // division itself). ---
-  const DWORD cleared_exit = SpawnChildAndWait(kChildInexactCleared, nullptr);
-  const bool trapped = cleared_exit == static_cast<DWORD>(STATUS_FLOAT_INEXACT_RESULT) ||
-                        cleared_exit == static_cast<DWORD>(STATUS_FLOAT_MULTIPLE_TRAPS);
-  const DWORD uncleared_exit = SpawnChildAndWait(kChildInexactUncleared, nullptr);
-  if (uncleared_exit != 0) {
+  const ChildOutcome cleared = SpawnChildAndWait(kChildInexactCleared, nullptr);
+  const unsigned long cleared_exit = cleared.code;
+  const bool trapped = cleared.fp_trapped;
+  const ChildOutcome uncleared = SpawnChildAndWait(kChildInexactUncleared, nullptr);
+  const unsigned long uncleared_exit = uncleared.code;
+  if (!uncleared.exited_cleanly) {
     Fail("part 3(a) must-accept: the child WITHOUT cleared masks did not exit cleanly (exit code 0x%08lX) "
          "-- the same division traps regardless of the mask state on this host/toolchain, so a trap below "
          "under cleared masks would prove nothing about the masks specifically",
@@ -529,8 +634,8 @@ int main(int argc, char** argv) {
   }
   if (!trapped) {
     Undetermined("part 3(a): the liveness-control child did not trap under cleared MXCSR exception masks "
-                 "on this host/toolchain (child exit code 0x%08lX) -- STATUS_FLOAT_INEXACT_RESULT was not "
-                 "observed for a genuinely inexact division in its own child process. Parts 3(b)/3(c) "
+                 "on this host/toolchain (child exit code 0x%08lX) -- STATUS_FLOAT_INEXACT_RESULT (SIGFPE "
+                 "on POSIX) was not observed for a genuinely inexact division in its own child process. Parts 3(b)/3(c) "
                  "below still ran and are reported, but a PASS on 3(b) is not evidence of anything when "
                  "this control cannot fire; what would settle it: re-running on a host/toolchain "
                  "combination matching sec 1.3's own toolset table (MSVC 19.3x is documented as trapping; "
@@ -540,6 +645,8 @@ int main(int argc, char** argv) {
                  "clang " __clang_version__
 #elif defined(_MSC_VER)
                  "MSVC " SEMB_STRINGIZE(_MSC_FULL_VER)
+#elif defined(__GNUC__)
+                 "GCC " __VERSION__
 #else
                  "unknown"
 #endif
@@ -556,8 +663,9 @@ int main(int argc, char** argv) {
   // normally, in its own child process (SuperSLM >= 1.3.0's open path
   // performs no floating-point operation). ---
   std::string lib_stdout;
-  const DWORD lib_exit = SpawnChildAndWait(kChildLibraryCleared, &lib_stdout);
-  if (lib_exit != 0) {
+  const ChildOutcome lib = SpawnChildAndWait(kChildLibraryCleared, &lib_stdout);
+  const unsigned long lib_exit = lib.code;
+  if (!lib.exited_cleanly) {
     Fail("part 3(b): semb_encoder_open/semb_encode TRAPPED under cleared MXCSR exception masks in its own "
          "child process (exit code 0x%08lX) -- the raw path performed a floating-point operation that "
          "raised",

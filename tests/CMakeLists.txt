@@ -126,13 +126,12 @@ semb_add_cxx_test(seam_hidden_capacity_test seam_hidden_capacity_test.cpp)
 # failure message, rather than a silent skip; running the full suite (or
 # u1_raw_text_cells_check once) mints the pair first.
 #
-# U2 cloud build: registered on WIN32 only. The test includes <windows.h>
-# unconditionally (its cleared-mask and environment legs are Win32 calls), so
-# on Linux it cannot compile and a GCC build of the tree never completed. The
-# test is unchanged; the WSL/Linux members simply do not build it, as they
-# could not before.
+# Registered on Windows and Linux. Part 3's child processes are Win32 on
+# Windows and fork/execv of /proc/self/exe on Linux (a trap is SIGFPE there);
+# the U2 cloud build had gated it to WIN32 while the file still included
+# <windows.h> unconditionally. Not registered on macOS: no /proc/self/exe.
 find_package(Threads REQUIRED)
-if(WIN32)
+if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
 	semb_add_cxx_test(c41_environment_invariance_test c41_environment_invariance_test.cpp)
 	target_include_directories(c41_environment_invariance_test PRIVATE "${CMAKE_BINARY_DIR}/generated")
 	target_link_libraries(c41_environment_invariance_test PRIVATE Threads::Threads)
