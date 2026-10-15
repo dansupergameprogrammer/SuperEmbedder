@@ -179,7 +179,7 @@ Details a script may depend on:
 
 ## The library
 
-`include/superembedder/semb.h` is the whole interface. Every function returns a `semb_status`.
+`include/superembedder/semb.h` is the whole interface. Every function except `semb_status_name` returns a `semb_status`.
 
 **Encoders.** `semb_encoder_open` opens an encoder from the model and tokenizer files;
 `semb_encoder_open_memory` opens one from those files' bytes already in memory, and copies them, so you may
@@ -207,13 +207,14 @@ stays usable. Open returns `SEMB_ALLOCATION_FAILED` when the model, the tokenize
 allocated. Measured host memory after open: 636.3 MiB, with a peak of 1,234.2 MiB during
 the open, on a pre-release MSVC 19.33 build at AVX2, on an AMD Ryzen 9 3950X, CPU device.
 
-**Errors.** No function declared in `semb.h` lets a C++ exception escape: every call returns a `semb_status`.
+**Errors.** No function declared in `semb.h` lets a C++ exception escape: every call except `semb_status_name` returns a `semb_status`.
 When a call on a bank, a query, or an encoder opened for the CPU fails because memory cannot be allocated, it
 returns `SEMB_ALLOCATION_FAILED`, and every handle the call used stays usable. On an encoder opened for the GPU,
 memory exhausted, host or GPU, returns `SEMB_ALLOCATION_FAILED`, and the handle stays usable, with one rare
 exception: if the GPU's pending work cannot be confirmed stopped after the failure, the call returns
-`SEMB_DEVICE_UNAVAILABLE`, and every GPU encoder in the process may return it from then on. The device lost, or
-any other GPU failure, returns `SEMB_DEVICE_UNAVAILABLE`, and the handle stops using the GPU. When the operating
+`SEMB_DEVICE_UNAVAILABLE`, and every GPU encoder in the process may return it from then on. A lost device
+returns `SEMB_DEVICE_UNAVAILABLE`, and the handle stops using the GPU; any other GPU failure returns
+`SEMB_ENGINE_REFUSED`, and the handle stays usable. When the operating
 system or the C runtime cannot open or read a model, tokenizer or bank file, the call returns
 `SEMB_ARTIFACT_UNREADABLE`, whatever the reason and whichever device an encoder is opened for, a shortage of
 memory included; memory the library allocates to hold a file's bytes falls under the clauses above. Any other
