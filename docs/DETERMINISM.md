@@ -171,9 +171,8 @@ A document at the full 32,768-token context takes far longer than these; submitt
 fast.
 
 **Opening an encoder is paid in full every time**: at launch, after a restart, after a crash, at editor start
-and at service start. Measured time to ready on {{READINESS_CELL}}: {{READINESS_COLD_MS}} ms from a cold
-file cache, {{READINESS_WARM_MS}} ms warm.
-<!-- filled by: U2-4 (readiness readings) -->
+and at service start. Measured time to ready on `msvc19.33-auto@avx2` on an AMD Ryzen 9 3950X, CPU device: 31,971 ms from a cold
+file cache, 31,994 ms warm.
 
 ## What is not guaranteed
 
@@ -206,9 +205,8 @@ The guarantee on a GPU rests on three things:
    driver it is running on, and refuses (`SEMB_DEVICE_DIVERGED`) if any differs.
 
 **What that does not cover:** on hardware no one has verified, the open-time check proves positions only up
-to the longest witness sequence, {{GPU_WITNESS_MAX_POSITIONS}} positions. Longer positions on that hardware
+to the longest witness sequence, 97 positions. Longer positions on that hardware
 rest on parts 1 and 2 alone, not on an execution there.
-<!-- filled by: U3 C11 — the longest witness sequence's forward positions -->
 
 GPUs that have been verified are listed in the README's certified-platforms table under *Verified GPUs*.
 A GPU is never a certified cell: the verdict is decided on the build's CPU cell.

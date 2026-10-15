@@ -204,9 +204,8 @@ document's positions, at least 64 and at most the 32,768-position context. It is
 encode. A workspace above 4,096 positions is released after its encode, and only one such encode runs at a time
 per handle. When an encode's workspace cannot grow, that encode returns `SEMB_ALLOCATION_FAILED` and the handle
 stays usable. Open returns `SEMB_ALLOCATION_FAILED` when the model, the tokenizer or the witness cannot be
-allocated. Measured host memory after open: {{OPEN_STEADY_MIB}} MiB, with a peak of {{OPEN_PEAK_MIB}} MiB during
-the open, on {{READINESS_CELL}}.
-<!-- filled by: U2-4 reading 3 (steady and peak at open), with its cell -->
+allocated. Measured host memory after open: 636.3 MiB, with a peak of 1,234.2 MiB during
+the open, on `msvc19.33-auto@avx2` on an AMD Ryzen 9 3950X, CPU device.
 
 **Errors.** No function declared in `semb.h` lets a C++ exception escape: every call returns a `semb_status`.
 When a call on a bank, a query, or an encoder opened for the CPU fails because memory cannot be allocated, it
@@ -265,24 +264,21 @@ must ship them beside its own executable.
 - **Memory.** A document needs 57,344 bytes of GPU memory per position of its workspace size, beside the model:
   1.88 GB at the 32,768-position context. A document too long for the free GPU memory is refused
   `SEMB_ALLOCATION_FAILED`, and the handle keeps working. Free memory, or bake that document on the CPU. The model
-  takes {{GPU_VRAM_AFTER_MAP_MIB}} MiB of GPU memory once mapped; the peak at the context cap was
-  {{GPU_VRAM_PEAK_CAP_MIB}} MiB.
-  <!-- filled by: U3 C11 (VRAM after map, and at the cap row's peak), with its cell -->
+  takes 479.0 MiB of GPU memory once mapped; the peak at the context cap was
+  2,275.2 MiB.
 - **Very long documents on slow GPUs.** Windows resets a GPU that takes too long on one submission (2 s by
   default). On a GPU at less than about half an RTX 2080 SUPER's speed at long positions, a document near the
   32,768-token context can trigger that reset, which ends GPU work for the process. Bake such documents on the CPU.
 
-**What the GPU buys.** Measured on {{GPU_CELL}}:
-<!-- filled by: U3 C11, dev-box and work-machine cells -->
+**What the GPU buys.** Measured on `msvc19.33-auto@avx2` with the GPU path, on an AMD Ryzen 9 3950X with an NVIDIA RTX 2080 SUPER:
 
 | | CPU | GPU |
 |---|---:|---:|
-| Bake, short documents, tokens/s | {{GPU_BENCH_CPU_TOKS_SHORT}} | {{GPU_BENCH_GPU_TOKS_SHORT}} |
-| Bake, 4,096-token document, tokens/s | {{GPU_BENCH_CPU_TOKS_4096}} | {{GPU_BENCH_GPU_TOKS_4096}} |
-| Query on an open handle | {{GPU_BENCH_CPU_QUERY_MS}} ms | {{GPU_BENCH_GPU_QUERY_MS}} ms |
-| Encoder open | {{GPU_BENCH_CPU_OPEN_S}} s | {{GPU_BENCH_GPU_OPEN_S}} s |
-| One `semb query` process, end to end | {{GPU_BENCH_CPU_ONESHOT_S}} s | {{GPU_BENCH_GPU_ONESHOT_S}} s |
-<!-- filled by: U3 C11 — CPU at the CLI's default concurrency; tokens/s by band; FiQA queries for latency -->
+| Bake, short documents, tokens/s | 28.58 | 13.92 |
+| Bake, 4,096-token document, tokens/s | 2.26 | 29.95 |
+| Query on an open handle | 1,278 ms | 339 ms |
+| Encoder open | 30.41 s | 37.92 s |
+| One `semb query` process, end to end | 31.67 s | 38.12 s |
 
 The GPU is faster for queries **on a handle that stays open** — the library, or `semb query --stdin` — and for
 long documents. **A single `semb query` process is slower on the GPU**, because a GPU open costs more than the
@@ -296,9 +292,8 @@ query saves. For short documents the GPU bakes at about the multi-threaded CPU's
 3. Every GPU open re-proves byte equality with the CPU on the hardware and driver it is running on.
 
 On a GPU no one has verified, that open-time check covers positions up to the longest witness sequence,
-{{GPU_WITNESS_MAX_POSITIONS}} positions. Longer positions on that hardware rest on parts 1 and 2 alone, not on an
+97 positions. Longer positions on that hardware rest on parts 1 and 2 alone, not on an
 execution there. GPUs that have been verified are listed under [Verified GPUs](#verified-gpus).
-<!-- filled by: U3 C11 — the longest witness sequence's forward positions -->
 
 ## Using a bank with SuperFAISS
 
@@ -396,18 +391,20 @@ case.
 
 Measured with SuperEmbedder 1.0.0 on the released model and tokenizer, on the CPU.
 
-| Reading | {{READINESS_CELL_A}} | {{READINESS_CELL_B}} |
+| Reading | `msvc19.33-auto@avx2` on an AMD Ryzen 9 3950X, CPU device | {{READINESS_CELL_B}} |
 |---|---:|---:|
-| Time to ready, warm file cache | {{READINESS_WARM_MS_A}} ms | {{READINESS_WARM_MS_B}} ms |
-| Time to ready, cold (first run after reboot) | {{READINESS_COLD_MS_A}} ms | — |
-| Host memory with the encoder open | {{OPEN_STEADY_MIB}} MiB | {{OPEN_STEADY_MIB_B}} MiB |
-| Peak host memory during open | {{OPEN_PEAK_MIB}} MiB | {{OPEN_PEAK_MIB_B}} MiB |
-| Median query, one `--stdin` session, 239 queries | {{QUERY_MEDIAN_MS_A}} ms | {{QUERY_MEDIAN_MS_B}} ms |
+| Time to ready, warm file cache | 31,994 ms | {{READINESS_WARM_MS_B}} ms |
+| Time to ready, cold (first run after reboot) | 31,971 ms | — |
+| Host memory with the encoder open | 636.3 MiB | {{OPEN_STEADY_MIB_B}} MiB |
+| Peak host memory during open | 1,234.2 MiB | {{OPEN_PEAK_MIB_B}} MiB |
+| Median query, one `--stdin` session, 239 queries | 1,260 ms | {{QUERY_MEDIAN_MS_B}} ms |
 | One 256-token document | {{SPAN_MS_256_A}} ms | {{SPAN_MS_256_B}} ms |
 | One 1,024-token document | {{SPAN_MS_1024_A}} ms | {{SPAN_MS_1024_B}} ms |
 | One 4,096-token document | {{SPAN_MS_4096_A}} ms | {{SPAN_MS_4096_B}} ms |
-<!-- filled by: U2-4 on the dev box (auto = AVX2, forced SSE2), cell = build, tier, host; the AVX-512 column,
-     if published, from the REL-4 package. Cold time-to-ready is the one reading taken after a reboot. -->
+<!-- filled by: U2-4 on the dev box — READINESS_CELL_B, READINESS_WARM_MS_B, OPEN_STEADY_MIB_B,
+     OPEN_PEAK_MIB_B, QUERY_MEDIAN_MS_B (forced SSE2, cell = build, tier, host);
+     SPAN_MS_256_A, SPAN_MS_1024_A, SPAN_MS_4096_A (auto = AVX2) and
+     SPAN_MS_256_B, SPAN_MS_1024_B, SPAN_MS_4096_B (forced SSE2). -->
 
 Encode time grows faster than linearly with length. A document at the full 32,768-token context is legal and
 takes far longer than the 4,096-token row. Opening an encoder is paid in full at every launch, restart and
@@ -425,11 +422,10 @@ with a paired 95% bootstrap interval:
 | FiQA-2018 | 0.9654 | [0.9405, 0.9882] |
 | SCIDOCS | 0.9383 | [0.9110, 0.9646] |
 
-Measured on {{RETRIEVAL_CELL}}, over a fixed query-sampled pool per set ({{RETRIEVAL_POOL_SIZES}}); the figures are relative to
+Measured on an MSVC 19.33.31631 Release build (commit `2001662`) on an AMD Ryzen 9 3950X, over a fixed query-sampled pool per set (SciFact: 300 queries, 411 documents; FiQA-2018: 150 queries, 546 documents; SCIDOCS: 150 queries, 824 documents); the figures are relative to
 that pool, not to each set's full leaderboard corpus. They equal the SuperSLM engine's own embedding on the same
 pool exactly. English is the only language measured. {{RETRIEVAL_CARRY_SENTENCE}}
-<!-- filled by: RETRIEVAL_CELL and RETRIEVAL_POOL_SIZES from the retrieval run's report (build, tier, host; queries and documents
-     per set). RETRIEVAL_CARRY_SENTENCE by REL-2 step 2 and REL-4 step 5.3: "The 1.0.0 release produces the same document
+<!-- filled by: RETRIEVAL_CARRY_SENTENCE by REL-2 step 2 and REL-4 step 5.3: "The 1.0.0 release produces the same document
      and query vectors as the build measured, so these figures apply to it unchanged." — or, if vectors moved,
      the re-measured figures replace the table. -->
 
