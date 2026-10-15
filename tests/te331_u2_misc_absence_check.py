@@ -29,26 +29,18 @@ plan's contract.
                         `--check` finds the committed file byte-identical to
                         what it writes from this tree at line 1 (C42 (h)'s rule,
                         P:1161-1162).
-  C54-CRLF-CR-STRIPPED  (real artifact leg, --model/--tokenizer required;
+  C54-CRLF-CR-KEPT      (real artifact leg, --model/--tokenizer required;
                         MISSING PREREQUISITE otherwise) `semb query --stdin`
-                        reads stdin in TEXT mode on Windows today
-                        (confirmed at source: `src/main.cpp`'s `--stdin`
-                        path sets stdin to binary only when `--raw` is
-                        also given, never unconditionally; `LoadCorpus`
-                        opens with `std::ifstream stream(path)`, no
-                        `std::ios::binary`). A query line piped with a
-                        trailing CRLF ("hello\\r\\n") is read by the CRT's
-                        text-mode translation as "hello" (no CR): its
-                        VECTOR_HEX must equal a one-shot query of the
-                        CR-free text "hello", and must DIFFER from a
-                        one-shot query of "hello\\r" (with the CR kept) --
-                        the shape F19/C54 requires ONCE FIXED is the
-                        reverse: the CRLF-piped line's vector must equal
-                        "hello\\r"'s, not "hello"'s. This cell runs the
-                        real CLI (already built) against the real
-                        artifact and asserts TODAY's (wrong) equality,
-                        which is exactly the red condition C54 exists to
-                        invert.
+                        reads stdin in binary mode (`src/main.cpp` sets it
+                        unconditionally), so a CR before the LF is query
+                        text, as F19/C54 require. A line piped as
+                        "hello\\r\\n" must give the VECTOR_HEX of a one-shot
+                        query of "hello\\r" (CR kept) and must differ from
+                        a one-shot query of "hello". If those two one-shot
+                        references are themselves equal (a synthetic
+                        tokenizer can encode them alike), the cell cannot
+                        tell the cases apart and reports MISSING
+                        PREREQUISITE: only the real artifact grades it.
 
 EXIT CODE CONVENTION (te163's own): 0 only if every leg is PASS or MISSING
 PREREQUISITE; 1 if any is FAIL or RED-UNIMPLEMENTED.
@@ -141,10 +133,10 @@ def cell_identity_file() -> str:
 
 def cell_c54_crlf_stripped(semb_exe: Path, model: str, tokenizer: str, scratch: Path) -> str:
     if not (model and tokenizer):
-        print("[MISSING PREREQUISITE] C54-CRLF-CR-STRIPPED: no --model/--tokenizer given")
+        print("[MISSING PREREQUISITE] C54-CRLF-CR-KEPT: no --model/--tokenizer given")
         return "MISSING PREREQUISITE"
     if not semb_exe.exists():
-        print(f"[MISSING PREREQUISITE] C54-CRLF-CR-STRIPPED: {semb_exe} not built")
+        print(f"[MISSING PREREQUISITE] C54-CRLF-CR-KEPT: {semb_exe} not built")
         return "MISSING PREREQUISITE"
 
     scratch.mkdir(parents=True, exist_ok=True)
@@ -179,21 +171,24 @@ def cell_c54_crlf_stripped(semb_exe: Path, model: str, tokenizer: str, scratch: 
     vec_with_cr = one_shot("hello\r")
     vec_stdin_crlf = stdin_session(b"hello\r\n")
 
-    equals_no_cr_today = vec_stdin_crlf == vec_no_cr
+    equals_no_cr = vec_stdin_crlf == vec_no_cr
     equals_with_cr = vec_stdin_crlf == vec_with_cr
     print(f"  one-shot 'hello' vector:     {vec_no_cr}")
     print(f"  one-shot 'hello\\r' vector:   {vec_with_cr}")
     print(f"  --stdin 'hello\\r\\n' vector: {vec_stdin_crlf}")
-    print(f"  today: stdin-CRLF equals CR-free 'hello'? {equals_no_cr_today} "
-          f"(expected True TODAY -- text-mode CRT strips the CR)")
-    print(f"  target (F19/C54, once fixed): stdin-CRLF must instead equal 'hello\\r' "
-          f"(currently {equals_with_cr}, expected False today)")
+    print(f"  stdin-CRLF equals 'hello\\r'? {equals_with_cr} (required: True, stdin is read in binary mode)")
+    print(f"  stdin-CRLF equals 'hello'?   {equals_no_cr} (required: False)")
 
-    confirmed_todays_bug = equals_no_cr_today and not equals_with_cr and vec_no_cr != vec_with_cr
-    status = "RED-UNIMPLEMENTED" if confirmed_todays_bug else "FAIL"
-    print(f"[{status}] C54-CRLF-CR-STRIPPED: today's text-mode behavior confirmed by real execution "
-          f"on the real artifact -- GREEN once F19/C54 lands and this same construction instead "
-          f"asserts stdin-CRLF == 'hello\\r'")
+    # Vitality: the two references must differ, or the comparison cannot tell a stripped CR from a kept one.
+    # A synthetic tokenizer may encode both alike; only the real artifact grades this cell.
+    if vec_no_cr == vec_with_cr:
+        print("[MISSING PREREQUISITE] C54-CRLF-CR-KEPT: this model encodes 'hello' and 'hello\\r' identically, "
+              "so the cell cannot discriminate; run it on the real artifact")
+        return "MISSING PREREQUISITE"
+    ok = equals_with_cr and not equals_no_cr
+    status = "PASS" if ok else "FAIL"
+    print(f"[{status}] C54-CRLF-CR-KEPT: a CR before LF on --stdin is query text, as in a one-shot "
+          f"query of 'hello\\r' (F19, U2-7 item 3)")
     return status
 
 
