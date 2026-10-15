@@ -171,7 +171,7 @@ A document at the full 32,768-token context takes far longer than these; submitt
 fast.
 
 **Opening an encoder is paid in full every time**: at launch, after a restart, after a crash, at editor start
-and at service start. Measured time to ready on `msvc19.33-auto@avx2` on an AMD Ryzen 9 3950X, CPU device: 31,971 ms from a cold
+and at service start. Measured time to ready on a pre-release MSVC 19.33 build at AVX2, on an AMD Ryzen 9 3950X, CPU device: 31,971 ms from a cold
 file cache, 31,994 ms warm.
 
 ## What is not guaranteed

@@ -205,7 +205,7 @@ encode. A workspace above 4,096 positions is released after its encode, and only
 per handle. When an encode's workspace cannot grow, that encode returns `SEMB_ALLOCATION_FAILED` and the handle
 stays usable. Open returns `SEMB_ALLOCATION_FAILED` when the model, the tokenizer or the witness cannot be
 allocated. Measured host memory after open: 636.3 MiB, with a peak of 1,234.2 MiB during
-the open, on `msvc19.33-auto@avx2` on an AMD Ryzen 9 3950X, CPU device.
+the open, on a pre-release MSVC 19.33 build at AVX2, on an AMD Ryzen 9 3950X, CPU device.
 
 **Errors.** No function declared in `semb.h` lets a C++ exception escape: every call returns a `semb_status`.
 When a call on a bank, a query, or an encoder opened for the CPU fails because memory cannot be allocated, it
@@ -263,14 +263,14 @@ must ship them beside its own executable.
   refused `SEMB_DEVICE_UNAVAILABLE` until the process restarts.
 - **Memory.** A document needs 57,344 bytes of GPU memory per position of its workspace size, beside the model:
   1.88 GB at the 32,768-position context. A document too long for the free GPU memory is refused
-  `SEMB_ALLOCATION_FAILED`, and the handle keeps working. Free memory, or bake that document on the CPU. The model
-  takes 479.0 MiB of GPU memory once mapped; the peak at the context cap was
-  2,275.2 MiB.
+  `SEMB_ALLOCATION_FAILED`, and the handle keeps working. Free memory, or bake that document on the CPU. An open
+  GPU encoder held 479.0 MiB of GPU memory, the model and the open's own checks together; the peak at the
+  context cap was 2,275.2 MiB.
 - **Very long documents on slow GPUs.** Windows resets a GPU that takes too long on one submission (2 s by
   default). On a GPU at less than about half an RTX 2080 SUPER's speed at long positions, a document near the
   32,768-token context can trigger that reset, which ends GPU work for the process. Bake such documents on the CPU.
 
-**What the GPU buys.** Measured on `msvc19.33-auto@avx2` with the GPU path, on an AMD Ryzen 9 3950X with an NVIDIA RTX 2080 SUPER:
+**What the GPU buys.** Measured on a pre-release MSVC 19.33 build with the GPU path, on an AMD Ryzen 9 3950X with an NVIDIA RTX 2080 SUPER:
 
 | | CPU | GPU |
 |---|---:|---:|
@@ -282,7 +282,8 @@ must ship them beside its own executable.
 
 The GPU is faster for queries **on a handle that stays open** — the library, or `semb query --stdin` — and for
 long documents. **A single `semb query` process is slower on the GPU**, because a GPU open costs more than the
-query saves. For short documents the GPU bakes at about the multi-threaded CPU's rate and leaves the CPU free.
+query saves. For short documents the GPU bakes at about half the multi-threaded CPU's rate, and leaves the CPU free. The bake
+rows are whole-process wall time, one encoder open included.
 
 **What the GPU guarantee rests on**, in three parts:
 
@@ -389,9 +390,9 @@ case.
 
 ## Readiness
 
-Measured with SuperEmbedder 1.0.0 on the released model and tokenizer, on the CPU.
+Measured on a pre-release build at the 1.0 engine pin, with the 1.0 model and tokenizer, on the CPU.
 
-| Reading | `msvc19.33-auto@avx2` on an AMD Ryzen 9 3950X, CPU device | {{READINESS_CELL_B}} |
+| Reading | a pre-release MSVC 19.33 build at AVX2, on an AMD Ryzen 9 3950X, CPU device | {{READINESS_CELL_B}} |
 |---|---:|---:|
 | Time to ready, warm file cache | 31,994 ms | {{READINESS_WARM_MS_B}} ms |
 | Time to ready, cold (first run after reboot) | 31,971 ms | — |

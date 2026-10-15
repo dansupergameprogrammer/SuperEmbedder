@@ -11,7 +11,6 @@ as the release downloads {{MODEL_ASSET_NAME}} (model) and
 not contain the model's weights.
 
 Qwen3-Embedding-0.6B
-{{QWEN_COPYRIGHT_LINE}}
 Source: https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
 Revision: 97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3
 Licensed under the Apache License, Version 2.0.
@@ -28,7 +27,3 @@ Placeholders in {{DOUBLE_BRACES}} are filled before the release and this
 paragraph is removed:
   MODEL_ASSET_NAME, TOKENIZER_ASSET_NAME - the release step that publishes the
     downloads (REL-4 step 7).
-  QWEN_COPYRIGHT_LINE - the copyright line of the LICENSE/NOTICE file at the
-    pinned revision above, copied verbatim (read at REL-1 proper, since the
-    model host is not reachable from the drafting environment); if that
-    revision carries none, the line is removed rather than invented.
