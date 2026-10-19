@@ -1823,6 +1823,83 @@ add_test(
 )
 
 # ---------------------------------------------------------------------------
+# C51 (d)'s runtime legs (te267 sec 5 U2-3 item 13: must-rejects (k-1)...(k-9)
+# and (m4), the own-compiler, second-CMake and any-directory must-accepts;
+# REL-2 step 1). Each driver pins engines, configures and builds copies of
+# this tree under the toolchains it is given, and reports PASS, FAIL or
+# MISSING PREREQUISITE per leg (tests/u2_3_c51_support.py). Off Windows the
+# MSVC 19.33, clang-cl 18.1.8 and MSVC 19.44 legs report MISSING PREREQUISITE
+# and the tests pass on the rest; on Windows a MISSING leg skips the test (77).
+#
+# The dev box runs every leg with one invocation, `ctest -L c51_runtime`, in
+# its MSVC 19.33 tree configured with
+#   -DSEMB_C51_TOOLCHAINS_FILE=<json naming clang-cl 18.1.8 and MSVC 19.44,
+#      each with its vcvars environment; format in tests/u2_3_c51_support.py>
+#   -DSEMB_C51_SECOND_CMAKE=<BuildTools' CMake 3.31>
+#   -DSEMB_C51_OTHER_DRIVE_ROOT=<a directory on another drive>
+#   -DSEMB_C51_SCRATCH=<a short path, e.g. D:/_scratch/c51 (MSVC's link step
+#      fails past ~150-character paths)>
+# and the GCC 13.3.0 member with the same invocation in its WSL tree.
+# ---------------------------------------------------------------------------
+set(SEMB_C51_TOOLCHAINS_FILE "" CACHE FILEPATH
+	"C51 runtime legs: JSON naming the toolchains beside this tree's own (empty = found on PATH off Windows; MISSING PREREQUISITE on Windows)")
+set(SEMB_C51_SECOND_CMAKE "" CACHE FILEPATH
+	"C51 runtime legs: a second CMake for the two-CMake-versions must-accept (empty = MISSING PREREQUISITE)")
+set(SEMB_C51_OTHER_DRIVE_ROOT "" CACHE PATH
+	"C51 any-directory must-accept: a directory on another drive (Windows; empty = MISSING PREREQUISITE there)")
+set(SEMB_C51_SCRATCH "${CMAKE_BINARY_DIR}/_scratch/c51" CACHE PATH
+	"C51 runtime legs: scratch root for their engine pins and product builds")
+set(_semb_c51_args
+	"--cmake-executable=${CMAKE_COMMAND}" "--generator=${CMAKE_GENERATOR}"
+	"--ninja-executable=${CMAKE_MAKE_PROGRAM}" "--python-executable=${Python3_EXECUTABLE}"
+	"--cxx=${CMAKE_CXX_COMPILER}" "--compiler-id=${CMAKE_CXX_COMPILER_ID}"
+	"--compiler-version=${CMAKE_CXX_COMPILER_VERSION}" "--frontend=${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}"
+	"--engine-prefix=${SEMB_ENGINE_PREFIX}" "--toolchains-file=${SEMB_C51_TOOLCHAINS_FILE}")
+add_test(
+	NAME u2_3_c51_k1_k3_toolchain_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_3_c51_k1_k3_toolchain_check.py" ${_semb_c51_args}
+		"--second-cmake=${SEMB_C51_SECOND_CMAKE}" "--scratch=${SEMB_C51_SCRATCH}/k1_k3"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(
+	NAME u2_3_c51_k5_k8_flags_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_3_c51_k5_k8_flags_check.py" ${_semb_c51_args}
+		"--scratch=${SEMB_C51_SCRATCH}/k5_k8"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(
+	NAME u2_3_c51_k9_tree_digest_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_3_c51_k9_tree_digest_check.py" ${_semb_c51_args}
+		"--scratch=${SEMB_C51_SCRATCH}/k9"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(
+	NAME u2_3_c51_any_directory_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_3_c51_any_directory_check.py" ${_semb_c51_args}
+		"--layouts=engine-copy,second-tree,engine-in-build,engine-in-src" "--scratch=${SEMB_C51_SCRATCH}/any_directory"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(
+	NAME u2_3_c51_any_directory_other_root
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_3_c51_any_directory_check.py" ${_semb_c51_args}
+		"--layouts=other-root" "--other-drive-root=${SEMB_C51_OTHER_DRIVE_ROOT}"
+		"--scratch=${SEMB_C51_SCRATCH}/any_directory_other_root"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+add_test(
+	NAME u2_3_c51_k7_m4_checker_check
+	COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_3_c51_k7_m4_checker_check.py"
+		--scratch "${SEMB_C51_SCRATCH}/k7_m4"
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# (k-4): the product's open-time engine comparison over chosen engine
+# identities; the test defines sslm_build_identity() itself (no mixed build).
+add_executable(u2_3_c51_k4_verdict_test u2_3_c51_k4_verdict_test.cpp)
+target_link_libraries(u2_3_c51_k4_verdict_test PRIVATE superembedder)
+target_include_directories(u2_3_c51_k4_verdict_test PRIVATE "${CMAKE_SOURCE_DIR}/src" "${CMAKE_BINARY_DIR}/generated")
+add_test(NAME u2_3_c51_k4_verdict_test COMMAND u2_3_c51_k4_verdict_test)
+set_tests_properties(u2_3_c51_k1_k3_toolchain_check u2_3_c51_k5_k8_flags_check u2_3_c51_k9_tree_digest_check
+	u2_3_c51_any_directory_check u2_3_c51_any_directory_other_root u2_3_c51_k7_m4_checker_check
+	u2_3_c51_k4_verdict_test PROPERTIES LABELS "c51_runtime" SKIP_RETURN_CODE 77)
+# The drivers share <SEMB_C51_SCRATCH>/engines and each builds several copies of the product: one at a time.
+set_tests_properties(u2_3_c51_k1_k3_toolchain_check u2_3_c51_k5_k8_flags_check u2_3_c51_k9_tree_digest_check
+	u2_3_c51_any_directory_check u2_3_c51_any_directory_other_root PROPERTIES RESOURCE_LOCK semb_c51 TIMEOUT 7200)
+
+# ---------------------------------------------------------------------------
 # U2-0 item 1 (te267 sec 5 U2-0): the tests that need the tokenizer converter
 # refuse an interpreter too old for it, by name; configure refuses nothing.
 # The converter at the engine pin needs `unicodedata` 15.1.0 (Python 3.13's).
@@ -1901,6 +1978,11 @@ set_property(GLOBAL PROPERTY SEMB_PYTHON_GATE_TESTS
 	u2_9_c62_must_reject_mechanism
 	u2_9_workspace_cells_check)
 
+# C51's runtime-leg drivers bake on the u1 synthetic pair, which they mint when it is absent.
+set_property(GLOBAL APPEND PROPERTY SEMB_PYTHON_GATE_TESTS
+	u2_3_c51_k1_k3_toolchain_check u2_3_c51_k5_k8_flags_check u2_3_c51_k9_tree_digest_check
+	u2_3_c51_any_directory_check u2_3_c51_any_directory_other_root)
+
 # Applied in the directory that registered each test: here for this file's
 # own tests, and by a call deferred to the root for the tests this file's
 # deferred calls register there (it is scheduled after them, so it runs last).
@@ -1954,6 +2036,10 @@ set_property(GLOBAL PROPERTY SEMB_U1_PAIR_CONSUMERS
 	u1_interim_batch_optional_output_test
 	u1_trailing_special_mutants_check
 	u1_workspace_control_vitality_check)
+
+set_property(GLOBAL APPEND PROPERTY SEMB_U1_PAIR_CONSUMERS
+	u2_3_c51_k1_k3_toolchain_check u2_3_c51_k5_k8_flags_check u2_3_c51_k9_tree_digest_check
+	u2_3_c51_any_directory_check u2_3_c51_any_directory_other_root)
 
 # Applied in the directory that registered each test, like
 # semb_require_python_gate above: here, and by a call deferred to the root for
