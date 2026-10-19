@@ -20,10 +20,9 @@ engine's provenance record), print no SEMB_COMPILE_FLAGS_LOCATION, and open to t
   engine-in-src   the engine installed by the pin tool inside the source tree (the hosted workflow's layout).
 
 ctest registers other-root as its own test (u2_3_c51_any_directory_other_root) so a red there is attributed to
-that layout. RED ON LINUX AT 03047e5 (executed): with the source tree under a path containing a space, the GCC
-build stops at SEMB_SOURCE_SET_DRIFT (configure_time_file_count 15 against the build's 38), because
-tools/semb_source_hash.py's GCC/Clang closure reads the `-M` rule by splitting on whitespace, so an escaped
-space (`\ `) in a header path splits it in two. A build or engine root with a space alone is accepted.
+that layout. It was red on Linux at 03047e5: with the source tree under a path containing a space, the GCC
+build stopped at SEMB_SOURCE_SET_DRIFT, because tools/semb_source_hash.py split the `-M` rule on every space,
+escaped (`\ `) or not. The tool now splits on unescaped whitespace only, and the layout passes.
 
 And every pin this test makes leaves its copy of the committed superslm.lock byte-identical (F33: a GCC pin in the
 Ubuntu-24.04 distro must; the rule is platform-free, so every member's is graded).

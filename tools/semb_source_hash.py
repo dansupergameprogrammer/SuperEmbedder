@@ -114,8 +114,36 @@ def _gcc_clang_closure(compiler: str, source: Path, include_dirs: list[str], std
     parts = text.split(":", 1)
     if len(parts) != 2:
         return []
-    tokens = parts[1].split()
-    return [Path(t) for t in tokens]
+    return [Path(t) for t in _split_make_prerequisites(parts[1])]
+
+
+def _split_make_prerequisites(text: str) -> list[str]:
+    """Split a `-M` rule's prerequisite list on unescaped whitespace. GCC and
+    Clang write a space in a path as `\\ `, `#` as `\\#` and `$` as `$$`, so a
+    plain `split()` breaks a path that contains a space in two."""
+    tokens: list[str] = []
+    current: list[str] = []
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and i + 1 < len(text) and text[i + 1] in " #":
+            current.append(text[i + 1])
+            i += 2
+            continue
+        if c == "$" and i + 1 < len(text) and text[i + 1] == "$":
+            current.append("$")
+            i += 2
+            continue
+        if c.isspace():
+            if current:
+                tokens.append("".join(current))
+                current = []
+        else:
+            current.append(c)
+        i += 1
+    if current:
+        tokens.append("".join(current))
+    return tokens
 
 
 def _resolve_closure(compiler_id: str, compiler: str, source: Path, include_dirs: list[str], std: str,
