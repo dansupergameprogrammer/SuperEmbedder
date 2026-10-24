@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "family": "clangcl",
-  "sha256": "d1ae4c8e83b0af6c411d7dbcd0677ece0be592a65ca7bfaa17d6e3ba41903427",
+  "sha256": "3a4aa7da6830d408a34aaac3ccea06366ed09f073dd14db61353d7a288ce482d",
   "residual": [],
   "record": {
     "superslm:<src>\\src\\artifact.cpp": {
@@ -148,7 +148,61 @@
         "-I<src>\\include"
       ]
     },
+    "superslm:<src>\\src\\forward\\parallel_split.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\gpu\\gpu_inflight_registry.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
     "superslm:<src>\\src\\intmath.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\kv_pages.cpp": {
       "flags": [
         "-MD",
         "-TP",
@@ -239,6 +293,24 @@
       ]
     },
     "superslm:<src>\\src\\silu_lut.cpp": {
+      "flags": [
+        "-MD",
+        "-TP",
+        "-std:c++20",
+        "/DNDEBUG",
+        "/DWIN32",
+        "/D_WINDOWS",
+        "/EHsc",
+        "/GR",
+        "/O2",
+        "/Ob2",
+        "/fp:precise"
+      ],
+      "includes": [
+        "-I<src>\\include"
+      ]
+    },
+    "superslm:<src>\\src\\spx1_format.cpp": {
       "flags": [
         "-MD",
         "-TP",

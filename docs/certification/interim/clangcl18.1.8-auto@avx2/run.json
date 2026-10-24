@@ -1,10 +1,10 @@
 {
   "cellId": "clangcl18.1.8-auto@avx2",
   "runId": "te444-clangcl18.1.8-auto-avx2-2026-09-26",
-  "date": "2026-09-26",
-  "pass": "provisional",
-  "host": "AMD Ryzen 9 3950X 16-Core Processor",
-  "manifestSha256": "3f819048906adfebd0bbb54648239bce868cf8b32f6f3089e583b224bb641f1e",
+  "date": "2026-10-24",
+  "pass": "final",
+  "host": "Intel(R) Core(TM) i5-14400F",
+  "manifestSha256": "8e389fd1eb805fe9ea4bc9f8bbcaec8de5fe2f57211f47013b0fb0d8db556db7",
   "buildDescriptor": {
     "os": "windows",
     "isa": "x86-64",
@@ -14,21 +14,21 @@
     "buildSystem": "cmake",
     "dispatch": "auto",
     "compileFlags": "f9ff4e8f00ce7f66d4cd2440f42d9d98eab4b9d7b572661ca6ae899ee72b08b9",
-    "engineFlags": "d1ae4c8e83b0af6c411d7dbcd0677ece0be592a65ca7bfaa17d6e3ba41903427"
+    "engineFlags": "3a4aa7da6830d408a34aaac3ccea06366ed09f073dd14db61353d7a288ce482d"
   },
   "machineTier": "avx2",
-  "certificationEpoch": "ac4cb6abad3c4f6af568a4c47650e5e7b3f48dfea901a26f854144327b29fa37",
-  "certifiedBuildsSha256": "d7f344e4484df10f7339ca66ea61b14b10a7092445d4b9d06ff5467e1ee537f2",
+  "certificationEpoch": "fa84a22ae76797ef4c7586f74dc9f31925f93d32d1ac9e32195768dba6b0dc31",
+  "certifiedBuildsSha256": "05ff709a96cbc587f2bb112e30181c4177e4f22692be6871f207282c40b8bcbb",
   "certifiedCell": "clangcl18.1.8-auto@avx2",
   "dispatchedTier": "avx2",
   "hostBestTier": "avx2",
   "enginePin": {
-    "tag": "v1.8.0",
-    "commit": "9ed52bb55af881348be6ccb591efdaa133f84329",
-    "engine_tree_sha": "ffad24449984ba5b7390a2cec007be9404bc1c64dfd529c1f420de37653e567c"
+    "tag": "v1.15.0",
+    "commit": "165962acafe901753dfe37153d7116b132a18b5a",
+    "engine_tree_sha": "74199a9ba16373f55da296d51ed83cb7248baf57386e2b5c965360a9725aac20"
   },
-  "productCommit": "440dac49833e24ec184e1d6765f403fd6fe08cef",
-  "derivationInputsSha256": "4de1c601c9e5bade4e1e835b3282f7b2e3c4cf3285621ae5ccd78f5232995d37",
+  "productCommit": "e62ed0a163d3e17223d63384ec6bb5b853108a1f",
+  "derivationInputsSha256": "c9f722bf58b2c55b86ec830e6bb94bd0ce50ecb6d701c2caec3fe28468fabe75",
   "rowDigest": "e8ad5d05c31eced1afa8967f0babc72212718effea9e19b0c46d2282e9bcde72",
   "tokenIdDigest": "e440e227fb5bdd3cc58895ac4fa536e533c8e5988fc993c4f3286e36680de835"
 }

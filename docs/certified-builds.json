@@ -13,10 +13,10 @@
       "buildSystem": "cmake",
       "dispatch": "auto",
       "compileFlags": "a333e94163c8e0d119be8b19ad2d3f38dabab5e50abd1bff51f5a9fab3a0ba9b",
-      "engineFlags": "e2216d1eaad5bb061cfc5315726515eb4e35894158e25c6a3de542ea1dafcdc9",
+      "engineFlags": "4b9d80381e374a2665e8d13b9c5dd32440f371c129a464380cd4a624b1adeac0",
       "cpuTier": "avx2",
       "artifact": "qwen3-embedding-0.6b-1p5.sslm sha256=0be28bf42637264df85481eb925c46f674da7db97fd7601c6732881ad8f99fbf; tokenizer qwen3-embedding-0.6b-tokenizer.sslm sha256=2ba15e621e28f4f58046a89a4e4b1e3e6ea8c4e1a4f5397238634b589082b9d3",
-      "host": "AMD Ryzen 9 3950X 16-Core Processor",
+      "host": "Intel(R) Core(TM) i5-14400F",
       "evidence": "docs/certification/interim"
     },
     {
@@ -30,10 +30,10 @@
       "buildSystem": "cmake",
       "dispatch": "auto",
       "compileFlags": "f9ff4e8f00ce7f66d4cd2440f42d9d98eab4b9d7b572661ca6ae899ee72b08b9",
-      "engineFlags": "d1ae4c8e83b0af6c411d7dbcd0677ece0be592a65ca7bfaa17d6e3ba41903427",
+      "engineFlags": "3a4aa7da6830d408a34aaac3ccea06366ed09f073dd14db61353d7a288ce482d",
       "cpuTier": "avx2",
       "artifact": "qwen3-embedding-0.6b-1p5.sslm sha256=0be28bf42637264df85481eb925c46f674da7db97fd7601c6732881ad8f99fbf; tokenizer qwen3-embedding-0.6b-tokenizer.sslm sha256=2ba15e621e28f4f58046a89a4e4b1e3e6ea8c4e1a4f5397238634b589082b9d3",
-      "host": "AMD Ryzen 9 3950X 16-Core Processor",
+      "host": "Intel(R) Core(TM) i5-14400F",
       "evidence": "docs/certification/interim"
     }
   ],
