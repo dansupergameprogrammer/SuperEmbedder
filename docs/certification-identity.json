@@ -3,8 +3,8 @@
   "product": "superembedder",
   "line": 1,
   "enginePin": {
-    "tag": "v1.8.0",
-    "commit": "9ed52bb55af881348be6ccb591efdaa133f84329",
+    "tag": "v1.15.0",
+    "commit": "165962acafe901753dfe37153d7116b132a18b5a",
     "engine_tree_sha": "74199a9ba16373f55da296d51ed83cb7248baf57386e2b5c965360a9725aac20"
   },
   "proofCorpus": {
