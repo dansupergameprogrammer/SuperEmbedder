@@ -5,7 +5,7 @@
   "enginePin": {
     "tag": "v1.8.0",
     "commit": "9ed52bb55af881348be6ccb591efdaa133f84329",
-    "engine_tree_sha": "ffad24449984ba5b7390a2cec007be9404bc1c64dfd529c1f420de37653e567c"
+    "engine_tree_sha": "74199a9ba16373f55da296d51ed83cb7248baf57386e2b5c965360a9725aac20"
   },
   "proofCorpus": {
     "path": "tests/fixtures/c12b/corpus-239.jsonl",
