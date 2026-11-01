@@ -16,7 +16,7 @@ certification corpus.
 ## [1.0.0] - {{RELEASE_DATE}}
 <!-- filled by: REL-4 step 7 (the tag date) -->
 
-The first release, pinned to SuperSLM `1.8.0`. Release notes: [docs/releases/1.0.0.md](docs/releases/1.0.0.md).
+The first release, pinned to SuperSLM `1.18.1`. Release notes: [docs/releases/1.0.0.md](docs/releases/1.0.0.md).
 
 ### Added
 

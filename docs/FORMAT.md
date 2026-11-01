@@ -197,9 +197,9 @@ file, not the list:** a certified cell's `certification_epoch` is the SHA-256 of
   "product": "superembedder",
   "line": 1,
   "enginePin": {
-    "tag": "v1.8.0",
-    "commit": "9ed52bb55af881348be6ccb591efdaa133f84329",
-    "engine_tree_sha": "ffad24449984ba5b7390a2cec007be9404bc1c64dfd529c1f420de37653e567c"
+    "tag": "v1.18.1",
+    "commit": "c3c14b16690a0c0c54de781f6f30380d88e62bd1",
+    "engine_tree_sha": "0d385b026d36558a454b1970c9c840bc6b58c530b39a1f0f87d63bbd1c5c5a64"
   },
   "proofCorpus": {
     "path": "tests/fixtures/c12b/corpus-239.jsonl",

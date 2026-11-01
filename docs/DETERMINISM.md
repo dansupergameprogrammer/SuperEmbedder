@@ -117,7 +117,7 @@ when it does they will be stated per certified cell.
 
 ### The engine pin, as a consumer obligation
 
-**SuperEmbedder 1.0 requires exactly the SuperSLM it pins, `1.8.0`.** Configure refuses any other version, and
+**SuperEmbedder 1.0 requires exactly the SuperSLM it pins, `1.18.1`.** Configure refuses any other version, and
 every open refuses an engine build other than the one configure verified. The pin must never fall below
 `1.3.0`, for the reason below.
 

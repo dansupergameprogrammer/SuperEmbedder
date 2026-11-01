@@ -21,7 +21,7 @@ certified machine.
 
 | Project | Role |
 |---|---|
-| [SuperSLM](https://github.com/dansupergameprogrammer/SuperSLM) | The integer transformer engine SuperEmbedder runs on. SuperEmbedder 1.0 pins SuperSLM `1.8.0` |
+| [SuperSLM](https://github.com/dansupergameprogrammer/SuperSLM) | The integer transformer engine SuperEmbedder runs on. SuperEmbedder 1.0 pins SuperSLM `1.18.1` |
 | [SuperFAISS](https://github.com/dansupergameprogrammer/superfaiss) | Searches the banks SuperEmbedder bakes, with the query vectors it emits |
 
 **Contents:** [Get the model](#get-the-model) · [Build and install](#build-and-install) ·
@@ -40,7 +40,7 @@ SHA-256:
 |---|---:|---|
 | `{{MODEL_ASSET_NAME}}` | 634,489,808 bytes | `{{MODEL_SHA256}}` |
 | `{{TOKENIZER_ASSET_NAME}}` | {{TOKENIZER_BYTES}} bytes | `{{TOKENIZER_SHA256}}` |
-<!-- filled by: the v1.8.0 pin step (tokenizer re-minted there; model size re-read there) and REL-4 step 7
+<!-- filled by: the v1.18.1 pin step (tokenizer re-minted there; model size re-read there) and REL-4 step 7
      (the published release assets and their digests) -->
 
 ```sh
@@ -49,10 +49,10 @@ certutil -hashfile {{MODEL_ASSET_NAME}} SHA256                              # Wi
 ```
 
 **Converting instead.** You can produce the files yourself from the Hugging Face checkpoint at revision
-`97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3`, with SuperSLM `1.8.0`'s converter:
+`97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3`, with SuperSLM `1.18.1`'s converter:
 
 ```sh
-# In a SuperSLM 1.8.0 checkout, after building its verifier (see SuperSLM's quickstart):
+# In a SuperSLM 1.18.1 checkout, after building its verifier (see SuperSLM's quickstart):
 python tools/t2700_fused_k_calibration.py flow --checkpoint <checkpoint dir> \
     --out qwen3-embedding-0.6b.sslm --work <scratch dir> \
     --capture build/t2700_fused_k_capture --channel-scale-headroom 1.25 \

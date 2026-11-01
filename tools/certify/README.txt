@@ -106,7 +106,7 @@ BUILDING THE PACKAGE (dev box)
 ------------------------------
 Each numbered step is one command, safe to re-run after a crash. Use a fresh
 checkout of the frozen tree (REL-4 step 1) at <repo>, the package folder <pkg>, a
-SuperSLM clone holding v1.8.0 at <slm>, and a SuperFAISS clone at <sf>. Pin and build
+SuperSLM clone holding v1.18.1 at <slm>, and a SuperFAISS clone at <sf>. Pin and build
 refuse by name (SEMB-PACKAGE-BUILD-ENV-FLAGS-SET) while CFLAGS, CXXFLAGS, LDFLAGS or
 CMAKE_TOOLCHAIN_FILE is set.
 
