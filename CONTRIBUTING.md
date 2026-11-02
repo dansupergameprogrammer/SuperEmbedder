@@ -45,7 +45,6 @@ Three things make a proposal much easier to accept:
   check for such changes on the certification corpus; see
   [docs/DETERMINISM.md](docs/DETERMINISM.md). A change meant to leave vectors
   alone should say how you checked that they did.
-  <!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 - **Regenerate, don't hand-edit, generated files.** Fixtures, golden files and
   `docs/certification-identity.json` are produced by tools in `tools/`;

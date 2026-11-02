@@ -4,9 +4,6 @@ This page states what SuperEmbedder guarantees about the bytes it emits, what th
 what it does not cover. Every measured number on it names the cell it was measured in: the build, the CPU
 tier or device, the artifact and the corpus.
 
-<!-- Placeholders in {{DOUBLE_BRACES}} are filled before the release; each carries a comment naming the step
-     that produces it. Every comment of this form is removed when its placeholder is filled. -->
-
 ## The guarantee
 
 **The same text, encoded by two installations whose `encoder_fingerprint` is equal and whose builds are
@@ -164,23 +161,22 @@ five fields to find out.
 ## Cost
 
 **Encode cost grows faster than linearly in token count.** A query pays for its own text plus the compiled-in
-query prefix; a document pays for its own text. Measured on {{SPAN_CURVE_CELL}}:
-<!-- filled by: U2-4 (the readiness tool, C20) — build, tier, host -->
+query prefix; a document pays for its own text. Measured on `msvc19.33-auto@avx2` (the MSVC 19.33.31631
+Release auto build at AVX2), on an AMD Ryzen 9 5950X, CPU device, warm file cache:
 
-| Tokens | Encode time |
-|---:|---:|
-| 256 | {{SPAN_MS_256}} |
-| 1,024 | {{SPAN_MS_1024}} |
-| 4,096 | {{SPAN_MS_4096}} |
-<!-- filled by: U2-4 (C20 span curve) -->
+| Tokens | Encode time | Tokens/s | Per token |
+|---:|---:|---:|---:|
+| 256 | 2,681 ms | 95.48 | 10.47 ms |
+| 1,024 | 12,925 ms | 79.23 | 12.62 ms |
+| 4,096 | 95,688 ms | 42.81 | 23.36 ms |
 
 A document at the full 32,768-token context takes far longer than these; submitting one is legal and is not
 fast.
 
 **Time to ready runs from process start through the first query result**, including process startup,
-encoder open, bank open and the first encoded query. Measured on a pre-release MSVC 19.33 build at AVX2,
-on an AMD Ryzen 9 3950X, CPU device: 31,971 ms from a cold file cache, 31,994 ms warm. These readings do not
-isolate encoder-open cost. Keep an encoder open to reuse it across encodes.
+encoder open, bank open and the first encoded query. Measured on `msvc19.33-auto@avx2`, on an AMD Ryzen 9
+5950X, CPU device: 9,204 ms with a warm file cache (median of 3 runs). A cold-cache reading was not taken on
+this build. This reading does not isolate encoder-open cost. Keep an encoder open to reuse it across encodes.
 
 ## What is not guaranteed
 

@@ -1,8 +1,5 @@
 # SuperEmbedder
 
-<!-- Placeholders in {{DOUBLE_BRACES}} are filled before the release; each carries a comment naming the step
-     that produces it, and every such comment is removed when its placeholder is filled. -->
-
 SuperEmbedder turns text into embedding vectors whose bytes are identical on every certified build and
 machine. It is a C++20 library with a C interface, and a command line tool, `semb`, that bakes a corpus into
 a vector bank and encodes queries against it.
@@ -116,8 +113,8 @@ The compiler environment each certified cell was built in:
 
 | Member | Compiler | Environment |
 |---|---|---|
-| `msvc19.33-auto` | MSVC 19.33.31631 | Windows 11 Pro 10.0.26300; an x64 shell from `vcvars64.bat -vcvars_ver=14.33` (MSVC toolset 14.33.31629, `cl` 19.33.31631) |
-| `clangcl18.1.8-auto` | clang-cl 18.1.8 | Windows 11 Pro 10.0.26300; the same `vcvars64.bat -vcvars_ver=14.33` shell (MSVC STL 202205L), with `CC` and `CXX` set to clang-cl 18.1.8 |
+| `msvc19.33-auto` | MSVC 19.33.31631 | Windows 11 Pro 10.0.26300; Visual Studio Community 2022 17.14, an x64 shell from `vcvars64.bat -vcvars_ver=14.33` (MSVC toolset 14.33.31629, `cl` 19.33.31631) |
+| `clangcl18.1.8-auto` | clang-cl 18.1.8 | Windows 11 Pro 10.0.26300; Visual Studio Community 2022 17.14, the same `vcvars64.bat -vcvars_ver=14.33` shell (MSVC STL 202205L), with `CC` and `CXX` set to clang-cl 18.1.8 |
 
 ### Using the installed library
 
@@ -219,8 +216,8 @@ document's positions, at least 64 and at most the 32,768-position context. It is
 encode. A workspace above 4,096 positions is released after its encode, and only one such encode runs at a time
 per handle. When an encode's workspace cannot grow, that encode returns `SEMB_ALLOCATION_FAILED` and the handle
 stays usable. Open returns `SEMB_ALLOCATION_FAILED` when the model, the tokenizer or the witness cannot be
-allocated. Measured host memory after open: 636.3 MiB, with a peak of 1,234.2 MiB during
-the open, on a pre-release MSVC 19.33 build at AVX2, on an AMD Ryzen 9 3950X, CPU device.
+allocated. Measured host memory after open: 635.6 MiB (working set), with a peak of 1,233.7 MiB during the
+open, on the `msvc19.33-auto@avx2` build on an AMD Ryzen 9 5950X, CPU device.
 
 **Errors.** No function declared in `semb.h` lets a C++ exception escape: every call except `semb_status_name` returns a `semb_status`.
 When a call on a bank, a query, or an encoder opened for the CPU fails because memory cannot be allocated, it
@@ -278,34 +275,43 @@ must ship them beside its own executable.
 - **After a device loss** (a driver reset, a timeout, a removed GPU), every later GPU open in the process is
   refused `SEMB_DEVICE_UNAVAILABLE` until the process restarts.
 - **Memory.** A document too long for the free GPU memory is refused `SEMB_ALLOCATION_FAILED`, and the handle
-  keeps working. Free memory, or bake that document on the CPU. `[REMEASURE-1.18.1]` The following figures
-  were measured before the 1.18.1 pin, on the engine's older one-row GPU path, and will be re-measured on the
-  multi-row path: a document needed 57,344 bytes of GPU memory per position of its workspace size, beside the model (1.88 GB at
-  the 32,768-position context); an open GPU encoder held 479.0 MiB of GPU memory, the model and the open's own
-  checks together; the peak at the context cap was 2,275.2 MiB.
+  keeps working. Free memory, or bake that document on the CPU. Measured at 1.18.1 on an AMD Radeon RX 7900 XT:
+  an open GPU encoder holds 472.06 MiB of GPU memory, the model and the open's own checks together; a document
+  at the 32,768-position context cap peaks at 2,300.31 MiB, about 58,504 bytes per position beside the open
+  encoder.
 - **Very long documents on slow GPUs.** Windows resets a GPU that takes too long on one submission (2 s by
   default). A document near the 32,768-token context can trigger that reset on a slow GPU, which ends GPU work
-  for the process. Bake such documents on the CPU. `[REMEASURE-1.18.1]` The threshold measured before the
-  1.18.1 pin, on the older one-row path, was a GPU at less than about half an RTX 2080 SUPER's speed at long positions; it will be
-  re-measured on the multi-row path.
+  for the process. On a slow GPU, bake such documents on the CPU. On the AMD Radeon RX 7900 XT, a
+  32,768-position document and a 32,767-position capture (2 runs) completed with no device reset. The longest
+  single submission was not timed, so 1.0 gives no speed below which a GPU is at risk.
 
-**What the GPU buys.** `[REMEASURE-1.18.1]` Every figure in this table and the paragraph after it was measured
-before the 1.18.1 pin, on the engine's older one-row GPU path, and will be re-measured on the multi-row path on an AMD Radeon
-RX 7900 XT. Treat them as the old path's numbers, not 1.0's. Measured on a pre-release MSVC 19.33 build with the
-GPU path, on an AMD Ryzen 9 3950X with an NVIDIA RTX 2080 SUPER:
+**What the GPU buys.** Measured at 1.18.1 on a GPU-enabled MSVC 19.33 build, on an AMD Ryzen 9 5950X
+(16 cores) with an AMD Radeon RX 7900 XT (driver 32.0.21030.2001), Windows 11 Pro 10.0.26300. Bake rates are
+forward positions per second (each document's tokens plus its end token), whole-process wall time with one
+encoder open included. Each corpus is split into thirds by document length:
+
+| Bake, positions/s | Documents | Positions | CPU, 1 worker | CPU, 8 workers | GPU |
+|---|---:|---:|---:|---:|---:|
+| Certification corpus, shortest third | 79 | 648 | 28.83 | 87.23 | 30.98 |
+| Certification corpus, middle third | 80 | 991 | 40.35 | 131.63 | 43.50 |
+| Certification corpus, longest third | 80 | 1,327 | 47.53 | 160.62 | 52.68 |
+| 80 long FiQA-2018 documents, shortest third | 26 | 1,570 | 55.00 | 179.08 | 59.86 |
+| 80 long FiQA-2018 documents, middle third | 27 | 3,089 | 65.57 | 248.13 | 82.80 |
+| 80 long FiQA-2018 documents, longest third | 27 | 7,385 | 72.13 | 329.87 | 110.11 |
+| One 4,096-token document | 1 | 4,097 | 35.54 (115.28 s) | — | 62.68 (65.36 s) |
 
 | | CPU | GPU |
 |---|---:|---:|
-| Bake, short documents, tokens/s | 28.58 | 13.92 |
-| Bake, 4,096-token document, tokens/s | 2.26 | 29.95 |
-| Query on an open handle | 1,278 ms | 339 ms |
-| Encoder open | 30.41 s | 37.92 s |
-| One `semb query` process, end to end | 31.67 s | 38.12 s |
+| Query on an open handle (100 FiQA-2018 queries) | 0.4096 s | 0.2149 s |
+| Encoder open | 9.43 s | 15.41 s |
+| One `semb query` process, end to end | 10.00 s | 14.79 s |
 
-The GPU is faster for queries **on a handle that stays open** — the library, or `semb query --stdin` — and for
-long documents. **A single `semb query` process is slower on the GPU**, because a GPU open costs more than the
-query saves. For short documents the GPU bakes at about half the multi-threaded CPU's rate, and leaves the CPU free. The bake
-rows are whole-process wall time, one encoder open included.
+**For bakes, the CPU is faster.** `semb bake` uses 8 workers by default, and at 8 workers the CPU bakes about
+three times the GPU's rate on these corpora. The GPU is 7% to 53% faster than one CPU worker, so a GPU bake
+mainly leaves the CPU free. On one long document the GPU is about 1.8 times one CPU worker. **For queries on a
+handle that stays open** — the library, or `semb query --stdin` — the GPU takes about half the CPU's time.
+**A single `semb query` process is faster on the CPU** (10.00 s against 14.79 s), because the GPU open costs
+more than one query saves.
 
 **What the GPU guarantee rests on**, in three parts:
 
@@ -441,25 +447,26 @@ case.
 
 ## Readiness
 
-Measured on a pre-release build at the 1.0 engine pin, with the 1.0 model and tokenizer, on the CPU.
-Time to ready runs from process start through the first query result, including process startup, encoder
-open, bank open and the first encoded query.
+Measured on the `msvc19.33-auto@avx2` build at the 1.18.1 engine pin, with the 1.0 model and tokenizer, on an
+AMD Ryzen 9 5950X, CPU device. Time to ready runs from process start through the first query result,
+including process startup, encoder open, bank open and the first encoded query.
 
-| Reading | a pre-release MSVC 19.33 build at AVX2, on an AMD Ryzen 9 3950X, CPU device |
+| Reading | `msvc19.33-auto@avx2`, AMD Ryzen 9 5950X, CPU device |
 |---|---:|
-| Time to ready, warm file cache | 31,994 ms |
-| Time to ready, cold (first run after reboot) | 31,971 ms |
-| Host memory with the encoder open | 636.3 MiB |
-| Peak host memory during open | 1,234.2 MiB |
-| Median query, one `--stdin` session, 239 queries | 1,260 ms |
-| One 256-token document | {{SPAN_MS_256_A}} ms |
-| One 1,024-token document | {{SPAN_MS_1024_A}} ms |
-| One 4,096-token document | {{SPAN_MS_4096_A}} ms |
-<!-- filled by: U2-4 on the dev box — SPAN_MS_256_A, SPAN_MS_1024_A, SPAN_MS_4096_A (auto = AVX2) -->
+| Time to ready, warm file cache (median of 3 runs) | 9,204 ms |
+| Host memory with the encoder open (working set) | 635.6 MiB |
+| Peak host memory during open | 1,233.7 MiB |
+| Median query, one `--stdin` session, 239 queries | 376.5 ms (289.3 to 512.1 ms) |
+| One 256-token document, warm | 2,681 ms (95.48 tokens/s) |
+| One 1,024-token document, warm | 12,925 ms (79.23 tokens/s) |
+| One 4,096-token document, warm | 95,688 ms (42.81 tokens/s) |
 
-**Plan for these numbers.** Opening an encoder takes about half a minute on the CPU, and a query on an open
-encoder takes about a second. Open it once, off the frame — at load time or on a worker thread — and keep it
-open. Neither figure is a per-frame budget.
+Time to ready from a cold file cache was not measured on this build. On an earlier pre-release build, on an
+AMD Ryzen 9 3950X, cold and warm differed by less than 0.1%.
+
+**Plan for these numbers.** On this machine, opening an encoder takes about 9 seconds on the CPU, and a query
+on an open encoder about 0.4 s; a slower machine takes longer. Open it once, off the frame — at load time or on
+a worker thread — and keep it open. Neither figure is a per-frame budget.
 
 Encode time grows faster than linearly with length. A document at the full 32,768-token context is legal and
 takes far longer than the 4,096-token row. A new `semb query` process repeats startup, encoder open,
