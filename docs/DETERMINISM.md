@@ -209,7 +209,7 @@ The guarantee on a GPU rests on three things:
    239-document certification corpus passed the open-time check, and all 239 rows matched the CPU's, with the
    same digest. The full GPU suite and a long correctness run on that card are still in progress.
    **The multi-row GPU path has not yet been run on NVIDIA at 1.18.1.** Earlier NVIDIA evidence was on the
-   engine's older one-row GPU path and does not carry over: an NVIDIA RTX 2080 SUPER and the AMD RX 7900 XT
+   engine's older one-row GPU path and does not carry over: an NVIDIA RTX 2080 SUPER and an AMD RX 7900 XTX
    produced identical bytes at engine 1.7.1 or earlier, and an NVIDIA RTX 5060 was checked at engine 1.17,
    after the engine fixed an int64 carry bug in NVIDIA's Blackwell driver.
 3. **Every GPU open re-proves byte equality with the CPU** on 22 witness sequences, on the hardware and

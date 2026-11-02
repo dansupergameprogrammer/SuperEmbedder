@@ -332,7 +332,7 @@ execution there. GPUs that have been verified are listed under [Verified GPUs](#
 **Known issue: the GPU path is not yet verified on NVIDIA at 1.18.1.** The multi-row path has not been run on
 an NVIDIA GPU at this pin. Every GPU open still runs the open-time check and refuses on any difference, but on
 NVIDIA nothing beyond those 97 positions has been executed at 1.18.1. Earlier NVIDIA evidence was on the
-engine's older one-row path and does not carry over: an NVIDIA RTX 2080 SUPER and the AMD RX 7900 XT produced
+engine's older one-row path and does not carry over: an NVIDIA RTX 2080 SUPER and an AMD RX 7900 XTX produced
 the same bytes at engine 1.7.1 or earlier, and an NVIDIA RTX 5060 was checked at engine 1.17, after the engine
 fixed an int64 carry bug in NVIDIA's Blackwell driver.
 
