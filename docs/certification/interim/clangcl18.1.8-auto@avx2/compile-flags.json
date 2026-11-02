@@ -1,7 +1,7 @@
 {
  "family": "clangcl",
  "record": {
-  "semb:<src>\\src\\main.cpp": {
+  "semb:<src>/src/main.cpp": {
    "flags": [
     "-DSEMB_BUILD_ARCH=\"AMD64\"",
     "-DSEMB_BUILD_COMPILER_FRONTEND=\"MSVC\"",
@@ -26,7 +26,7 @@
     "-I<src>\\include"
    ]
   },
-  "semb_witness:<src>\\src\\witness\\witness_main.cpp": {
+  "semb_witness:<src>/src/witness/witness_main.cpp": {
    "flags": [
     "-MD",
     "-TP",
@@ -45,29 +45,7 @@
     "-imsvc<engine>\\include"
    ]
   },
-  "superembedder:<src>\\src\\superembedder\\bank.cpp": {
-   "flags": [
-    "-DSEMB_BUILDING_LIBRARY",
-    "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
-    "-DSEMB_BUILD_SYSTEM=\"cmake\"",
-    "-MD",
-    "-TP",
-    "-std:c++20",
-    "/DNDEBUG",
-    "/DWIN32",
-    "/D_WINDOWS",
-    "/EHsc",
-    "/O2",
-    "/Ob2",
-    "/fp:precise"
-   ],
-   "includes": [
-    "-I<src>\\include",
-    "-I<build>\\generated",
-    "-imsvc<engine>\\include"
-   ]
-  },
-  "superembedder:<src>\\src\\superembedder\\certification.cpp": {
+  "superembedder:<src>/src/superembedder/bank.cpp": {
    "flags": [
     "-DSEMB_BUILDING_LIBRARY",
     "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
@@ -89,7 +67,7 @@
     "-imsvc<engine>\\include"
    ]
   },
-  "superembedder:<src>\\src\\superembedder\\encoder.cpp": {
+  "superembedder:<src>/src/superembedder/certification.cpp": {
    "flags": [
     "-DSEMB_BUILDING_LIBRARY",
     "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
@@ -111,7 +89,7 @@
     "-imsvc<engine>\\include"
    ]
   },
-  "superembedder:<src>\\src\\superembedder\\engine_adapter_interim.cpp": {
+  "superembedder:<src>/src/superembedder/encoder.cpp": {
    "flags": [
     "-DSEMB_BUILDING_LIBRARY",
     "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
@@ -133,7 +111,7 @@
     "-imsvc<engine>\\include"
    ]
   },
-  "superembedder:<src>\\src\\superembedder\\engine_link_check.cpp": {
+  "superembedder:<src>/src/superembedder/engine_adapter_interim.cpp": {
    "flags": [
     "-DSEMB_BUILDING_LIBRARY",
     "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
@@ -155,7 +133,7 @@
     "-imsvc<engine>\\include"
    ]
   },
-  "superembedder:<src>\\src\\superembedder\\json_lite.cpp": {
+  "superembedder:<src>/src/superembedder/engine_link_check.cpp": {
    "flags": [
     "-DSEMB_BUILDING_LIBRARY",
     "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
@@ -177,7 +155,7 @@
     "-imsvc<engine>\\include"
    ]
   },
-  "superembedder:<src>\\src\\superembedder\\ps1_pool.cpp": {
+  "superembedder:<src>/src/superembedder/json_lite.cpp": {
    "flags": [
     "-DSEMB_BUILDING_LIBRARY",
     "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
@@ -199,7 +177,7 @@
     "-imsvc<engine>\\include"
    ]
   },
-  "superembedder:<src>\\src\\superembedder\\ps_n_pool.cpp": {
+  "superembedder:<src>/src/superembedder/ps1_pool.cpp": {
    "flags": [
     "-DSEMB_BUILDING_LIBRARY",
     "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
@@ -221,7 +199,7 @@
     "-imsvc<engine>\\include"
    ]
   },
-  "superembedder:<src>\\src\\superembedder\\query.cpp": {
+  "superembedder:<src>/src/superembedder/ps_n_pool.cpp": {
    "flags": [
     "-DSEMB_BUILDING_LIBRARY",
     "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
@@ -243,7 +221,7 @@
     "-imsvc<engine>\\include"
    ]
   },
-  "superembedder:<src>\\src\\superembedder\\seam_serialize.cpp": {
+  "superembedder:<src>/src/superembedder/query.cpp": {
    "flags": [
     "-DSEMB_BUILDING_LIBRARY",
     "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
@@ -265,7 +243,7 @@
     "-imsvc<engine>\\include"
    ]
   },
-  "superembedder:<src>\\src\\superembedder\\wa_digest.cpp": {
+  "superembedder:<src>/src/superembedder/seam_serialize.cpp": {
    "flags": [
     "-DSEMB_BUILDING_LIBRARY",
     "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
@@ -287,7 +265,7 @@
     "-imsvc<engine>\\include"
    ]
   },
-  "superembedder:<src>\\src\\superembedder\\wb_corpus.cpp": {
+  "superembedder:<src>/src/superembedder/wa_digest.cpp": {
    "flags": [
     "-DSEMB_BUILDING_LIBRARY",
     "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
@@ -309,7 +287,7 @@
     "-imsvc<engine>\\include"
    ]
   },
-  "superembedder:<src>\\src\\superembedder\\witness_build_generation.cpp": {
+  "superembedder:<src>/src/superembedder/wb_corpus.cpp": {
    "flags": [
     "-DSEMB_BUILDING_LIBRARY",
     "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
@@ -331,7 +309,29 @@
     "-imsvc<engine>\\include"
    ]
   },
-  "superembedder:<src>\\src\\version.cpp": {
+  "superembedder:<src>/src/superembedder/witness_build_generation.cpp": {
+   "flags": [
+    "-DSEMB_BUILDING_LIBRARY",
+    "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
+    "-DSEMB_BUILD_SYSTEM=\"cmake\"",
+    "-MD",
+    "-TP",
+    "-std:c++20",
+    "/DNDEBUG",
+    "/DWIN32",
+    "/D_WINDOWS",
+    "/EHsc",
+    "/O2",
+    "/Ob2",
+    "/fp:precise"
+   ],
+   "includes": [
+    "-I<src>\\include",
+    "-I<build>\\generated",
+    "-imsvc<engine>\\include"
+   ]
+  },
+  "superembedder:<src>/src/version.cpp": {
    "flags": [
     "-DSEMB_BUILDING_LIBRARY",
     "-DSEMB_BUILD_CONFIGURATION=\"Release\"",
@@ -356,5 +356,5 @@
  },
  "residual": [],
  "schemaVersion": 1,
- "sha256": "f9ff4e8f00ce7f66d4cd2440f42d9d98eab4b9d7b572661ca6ae899ee72b08b9"
+ "sha256": "4444e0b0a27a41f52fcc7ed63ec71fa6fc36a366bd946be25bb4abfac168816d"
 }

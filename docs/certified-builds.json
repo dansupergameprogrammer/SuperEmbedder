@@ -12,11 +12,11 @@
       "configuration": "Release",
       "buildSystem": "cmake",
       "dispatch": "auto",
-      "compileFlags": "a333e94163c8e0d119be8b19ad2d3f38dabab5e50abd1bff51f5a9fab3a0ba9b",
-      "engineFlags": "4b9d80381e374a2665e8d13b9c5dd32440f371c129a464380cd4a624b1adeac0",
+      "compileFlags": "205f4e0199088defb1cf1580a8916464db86477664998b078136fc366104c29b",
+      "engineFlags": "751427436f68e8ef11d5d2286f6ed1aaa27e6100891ff671013af148e6f09ecf",
       "cpuTier": "avx2",
       "artifact": "qwen3-embedding-0.6b-1p5.sslm sha256=0be28bf42637264df85481eb925c46f674da7db97fd7601c6732881ad8f99fbf; tokenizer qwen3-embedding-0.6b-tokenizer.sslm sha256=2ba15e621e28f4f58046a89a4e4b1e3e6ea8c4e1a4f5397238634b589082b9d3",
-      "host": "Intel(R) Core(TM) i5-14400F",
+      "host": "AMD Ryzen 9 5950X 16-Core Processor",
       "evidence": "docs/certification/interim"
     },
     {
@@ -29,11 +29,11 @@
       "configuration": "Release",
       "buildSystem": "cmake",
       "dispatch": "auto",
-      "compileFlags": "f9ff4e8f00ce7f66d4cd2440f42d9d98eab4b9d7b572661ca6ae899ee72b08b9",
-      "engineFlags": "3a4aa7da6830d408a34aaac3ccea06366ed09f073dd14db61353d7a288ce482d",
+      "compileFlags": "4444e0b0a27a41f52fcc7ed63ec71fa6fc36a366bd946be25bb4abfac168816d",
+      "engineFlags": "31afddd0d48dda54b3b4b6b8a4c7729e81af25c02821e4e8ca565dc4325f3652",
       "cpuTier": "avx2",
       "artifact": "qwen3-embedding-0.6b-1p5.sslm sha256=0be28bf42637264df85481eb925c46f674da7db97fd7601c6732881ad8f99fbf; tokenizer qwen3-embedding-0.6b-tokenizer.sslm sha256=2ba15e621e28f4f58046a89a4e4b1e3e6ea8c4e1a4f5397238634b589082b9d3",
-      "host": "Intel(R) Core(TM) i5-14400F",
+      "host": "AMD Ryzen 9 5950X 16-Core Processor",
       "evidence": "docs/certification/interim"
     }
   ],
@@ -42,8 +42,8 @@
       "a": "msvc19.33-auto@avx2",
       "b": "clangcl18.1.8-auto@avx2",
       "runIds": [
-        "te444-msvc19.33-auto-avx2-2026-09-26",
-        "te444-clangcl18.1.8-auto-avx2-2026-09-26"
+        "workhorse-msvc19.33-auto-avx2-2026-11-01",
+        "workhorse-clangcl18.1.8-auto-avx2-2026-11-01"
       ],
       "rowDigest": "e8ad5d05c31eced1afa8967f0babc72212718effea9e19b0c46d2282e9bcde72",
       "tokenIdDigest": "e440e227fb5bdd3cc58895ac4fa536e533c8e5988fc993c4f3286e36680de835"

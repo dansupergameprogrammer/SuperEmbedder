@@ -1,10 +1,10 @@
 {
   "cellId": "clangcl18.1.8-auto@avx2",
-  "runId": "te444-clangcl18.1.8-auto-avx2-2026-09-26",
-  "date": "2026-10-24",
+  "runId": "workhorse-clangcl18.1.8-auto-avx2-2026-11-01",
+  "date": "2026-11-01",
   "pass": "final",
-  "host": "Intel(R) Core(TM) i5-14400F",
-  "manifestSha256": "8e389fd1eb805fe9ea4bc9f8bbcaec8de5fe2f57211f47013b0fb0d8db556db7",
+  "host": "AMD Ryzen 9 5950X 16-Core Processor",
+  "manifestSha256": "83a87317276a590365941b8a804b9140c50a050b854c3a2b72e58815a16842c6",
   "buildDescriptor": {
     "os": "windows",
     "isa": "x86-64",
@@ -13,22 +13,22 @@
     "configuration": "Release",
     "buildSystem": "cmake",
     "dispatch": "auto",
-    "compileFlags": "f9ff4e8f00ce7f66d4cd2440f42d9d98eab4b9d7b572661ca6ae899ee72b08b9",
-    "engineFlags": "3a4aa7da6830d408a34aaac3ccea06366ed09f073dd14db61353d7a288ce482d"
+    "compileFlags": "4444e0b0a27a41f52fcc7ed63ec71fa6fc36a366bd946be25bb4abfac168816d",
+    "engineFlags": "31afddd0d48dda54b3b4b6b8a4c7729e81af25c02821e4e8ca565dc4325f3652"
   },
   "machineTier": "avx2",
-  "certificationEpoch": "fa84a22ae76797ef4c7586f74dc9f31925f93d32d1ac9e32195768dba6b0dc31",
-  "certifiedBuildsSha256": "05ff709a96cbc587f2bb112e30181c4177e4f22692be6871f207282c40b8bcbb",
+  "certificationEpoch": "77cff77602bd9304b6bd316a2ff84ea1fe5be1b34184e0f51bebe1c6f0c8d7ef",
+  "certifiedBuildsSha256": "aa6aaf55e949b001a81371ed044bdc473cecc7439f668b2dd170a5626d7dff3d",
   "certifiedCell": "clangcl18.1.8-auto@avx2",
   "dispatchedTier": "avx2",
   "hostBestTier": "avx2",
   "enginePin": {
-    "tag": "v1.15.0",
-    "commit": "165962acafe901753dfe37153d7116b132a18b5a",
-    "engine_tree_sha": "74199a9ba16373f55da296d51ed83cb7248baf57386e2b5c965360a9725aac20"
+    "tag": "v1.18.1",
+    "commit": "c3c14b16690a0c0c54de781f6f30380d88e62bd1",
+    "engine_tree_sha": "0d385b026d36558a454b1970c9c840bc6b58c530b39a1f0f87d63bbd1c5c5a64"
   },
-  "productCommit": "e62ed0a163d3e17223d63384ec6bb5b853108a1f",
-  "derivationInputsSha256": "c9f722bf58b2c55b86ec830e6bb94bd0ce50ecb6d701c2caec3fe28468fabe75",
+  "productCommit": "15940ecbf70c295d8b9468caf139427a1553bece",
+  "derivationInputsSha256": "435df9c79bec4f80b173cad57835fb40c5651ad0e4441a0d6657c628c38a5694",
   "rowDigest": "e8ad5d05c31eced1afa8967f0babc72212718effea9e19b0c46d2282e9bcde72",
   "tokenIdDigest": "e440e227fb5bdd3cc58895ac4fa536e533c8e5988fc993c4f3286e36680de835"
 }
