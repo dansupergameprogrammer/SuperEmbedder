@@ -285,16 +285,22 @@ must ship them beside its own executable.
   after a GPU is in use removes that device.
 - **After a device loss** (a driver reset, a timeout, a removed GPU), every later GPU open in the process is
   refused `SEMB_DEVICE_UNAVAILABLE` until the process restarts.
-- **Memory.** A document needs 57,344 bytes of GPU memory per position of its workspace size, beside the model:
-  1.88 GB at the 32,768-position context. A document too long for the free GPU memory is refused
-  `SEMB_ALLOCATION_FAILED`, and the handle keeps working. Free memory, or bake that document on the CPU. An open
-  GPU encoder held 479.0 MiB of GPU memory, the model and the open's own checks together; the peak at the
-  context cap was 2,275.2 MiB.
+- **Memory.** A document too long for the free GPU memory is refused `SEMB_ALLOCATION_FAILED`, and the handle
+  keeps working. Free memory, or bake that document on the CPU. `[REMEASURE-1.18.1]` The following figures
+  were measured before the 1.18.1 pin, on the engine's older one-row GPU path, and will be re-measured on the
+  multi-row path: a document needed 57,344 bytes of GPU memory per position of its workspace size, beside the model (1.88 GB at
+  the 32,768-position context); an open GPU encoder held 479.0 MiB of GPU memory, the model and the open's own
+  checks together; the peak at the context cap was 2,275.2 MiB.
 - **Very long documents on slow GPUs.** Windows resets a GPU that takes too long on one submission (2 s by
-  default). On a GPU at less than about half an RTX 2080 SUPER's speed at long positions, a document near the
-  32,768-token context can trigger that reset, which ends GPU work for the process. Bake such documents on the CPU.
+  default). A document near the 32,768-token context can trigger that reset on a slow GPU, which ends GPU work
+  for the process. Bake such documents on the CPU. `[REMEASURE-1.18.1]` The threshold measured before the
+  1.18.1 pin, on the older one-row path, was a GPU at less than about half an RTX 2080 SUPER's speed at long positions; it will be
+  re-measured on the multi-row path.
 
-**What the GPU buys.** Measured on a pre-release MSVC 19.33 build with the GPU path, on an AMD Ryzen 9 3950X with an NVIDIA RTX 2080 SUPER:
+**What the GPU buys.** `[REMEASURE-1.18.1]` Every figure in this table and the paragraph after it was measured
+before the 1.18.1 pin, on the engine's older one-row GPU path, and will be re-measured on the multi-row path on an AMD Radeon
+RX 7900 XT. Treat them as the old path's numbers, not 1.0's. Measured on a pre-release MSVC 19.33 build with the
+GPU path, on an AMD Ryzen 9 3950X with an NVIDIA RTX 2080 SUPER:
 
 | | CPU | GPU |
 |---|---:|---:|
@@ -313,12 +319,22 @@ rows are whole-process wall time, one encoder open included.
 
 1. The embedding path is integer arithmetic, which leaves a driver's shader compiler no legal freedom to change
    a result.
-2. Identity across vendors is executed: an NVIDIA RTX 2080 SUPER and an AMD RX 7900 XTX produce the same bytes.
+2. Identity with the CPU is executed at 1.18.1 on one AMD GPU. At this pin the GPU encode runs the engine's
+   multi-row prompt kernels. On an AMD Radeon RX 7900 XT (driver 32.0.21030.2001), a full bake of the
+   239-document certification corpus passed the open-time check, and all 239 rows matched the CPU's, with the
+   same digest. The full GPU suite and a long correctness run on that card are still in progress.
 3. Every GPU open re-proves byte equality with the CPU on the hardware and driver it is running on.
 
 On a GPU no one has verified, that open-time check covers positions up to the longest witness sequence,
 97 positions. Longer positions on that hardware rest on parts 1 and 2 alone, not on an
 execution there. GPUs that have been verified are listed under [Verified GPUs](#verified-gpus).
+
+**Known issue: the GPU path is not yet verified on NVIDIA at 1.18.1.** The multi-row path has not been run on
+an NVIDIA GPU at this pin. Every GPU open still runs the open-time check and refuses on any difference, but on
+NVIDIA nothing beyond those 97 positions has been executed at 1.18.1. Earlier NVIDIA evidence was on the
+engine's older one-row path and does not carry over: an NVIDIA RTX 2080 SUPER and the AMD RX 7900 XT produced
+the same bytes at engine 1.7.1 or earlier, and an NVIDIA RTX 5060 was checked at engine 1.17, after the engine
+fixed an int64 carry bug in NVIDIA's Blackwell driver.
 
 ## Using a bank with SuperFAISS
 

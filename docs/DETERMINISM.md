@@ -204,14 +204,22 @@ The guarantee on a GPU rests on three things:
 
 1. **The embedding path is integer arithmetic**, which leaves a driver's shader compiler no legal freedom to
    change a result.
-2. **Cross-vendor identity is executed**: an NVIDIA RTX 2080 SUPER and an AMD RX 7900 XTX produce identical
-   bytes.
+2. **GPU identity is executed, on one vendor so far at 1.18.1.** At this pin the GPU encode runs the engine's
+   multi-row prompt kernels. On an AMD Radeon RX 7900 XT (driver 32.0.21030.2001), a full bake of the
+   239-document certification corpus passed the open-time check, and all 239 rows matched the CPU's, with the
+   same digest. The full GPU suite and a long correctness run on that card are still in progress.
+   **The multi-row GPU path has not yet been run on NVIDIA at 1.18.1.** Earlier NVIDIA evidence was on the
+   engine's older one-row GPU path and does not carry over: an NVIDIA RTX 2080 SUPER and the AMD RX 7900 XT
+   produced identical bytes at engine 1.7.1 or earlier, and an NVIDIA RTX 5060 was checked at engine 1.17,
+   after the engine fixed an int64 carry bug in NVIDIA's Blackwell driver.
 3. **Every GPU open re-proves byte equality with the CPU** on 22 witness sequences, on the hardware and
    driver it is running on, and refuses (`SEMB_DEVICE_DIVERGED`) if any differs.
 
 **What that does not cover:** on hardware no one has verified, the open-time check proves positions only up
 to the longest witness sequence, 97 positions. Longer positions on that hardware
-rest on parts 1 and 2 alone, not on an execution there.
+rest on parts 1 and 2 alone, not on an execution there. At 1.18.1 that includes every NVIDIA GPU: part 2 has
+not yet been executed on NVIDIA at this pin, so on NVIDIA longer positions rest on part 1 and the open-time
+check alone.
 
 GPUs that have been verified are listed in the README's certified-platforms table under *Verified GPUs*.
 A GPU is never a certified cell: the verdict is decided on the build's CPU cell.

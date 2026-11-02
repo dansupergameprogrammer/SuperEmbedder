@@ -87,8 +87,9 @@ the float bank compares the returned value with the manifest's
 `encoder_fingerprint` itself ([docs/FORMAT.md](docs/FORMAT.md)).
 
 The certified set is interim: the MSVC 19.33 and clang-cl 18.1.8 builds on one
-AVX2 host, which bake the 239-document corpus to identical bytes (evidence in
-`docs/certification/interim/`). `python tools/check_certified_builds.py --root .`
+AVX2 host, an AMD Ryzen 9 5950X, which bake the 239-document corpus to identical
+bytes (evidence in `docs/certification/interim/`). Their row digest is the same
+as the earlier certification on an Intel i5-14400F at SuperSLM v1.15.0. `python tools/check_certified_builds.py --root .`
 checks the committed certification package. The release set (AVX-512, AVX2 and
 SSE2) is certified before the 1.0 tag.
 
