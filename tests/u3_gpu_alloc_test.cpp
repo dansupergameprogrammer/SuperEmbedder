@@ -50,7 +50,7 @@
 //   SEMB_DEVICE_UNAVAILABLE", is u3_gpu_cells_test --cell
 //   c10d_refused_after_creation, which constructs exactly that.)
 //
-// POPULATION (planned; the dev box's reading at v1.8.0 on the real model).
+// POPULATION (planned; the dev box's reading on the real model, measured at v1.8.0).
 // One armed call counts every replaced operator new in the process: for one
 // encode of --text that was host=164,574 (dev=24), and for one GPU open
 // host=13,893,260 (dev=1,931), against the plan's 674 host and 120 D3D12 sites
@@ -75,7 +75,7 @@
 //        first, last, every Nth and the few largest, ~90 sites (the rule at
 //        D3hStride; the PLAN line prints it and N);
 //   d3d  every D3D12 creation made inside sslm_gpu_model_map during the open;
-//   d2   every D3D12 creation of the encode (24 at v1.8.0), unchanged.
+//   d2   every D3D12 creation of the encode (24, measured at v1.8.0), unchanged.
 // The count leg prints the breakdown (CLASS lines) that shows where K goes.
 //
 // COMMISSIONED before its first decision-bearing run (P:4215): against the
@@ -196,7 +196,7 @@ struct Site {
 };
 
 // d3h's sample (conductor's ruling, a build-time item under the plan's stopping
-// rule; row 5(d3), te266 P:4215). At v1.8.0 the model map makes 1,742 host
+// rule; row 5(d3), te266 P:4215). Measured at v1.8.0, the model map makes 1,742 host
 // allocations, and each site costs two real opens (~80 s): ~38.7 h
 // exhaustively. The sample is deterministic and fixed by the counting run:
 // with the map's sites in allocation order s[0..M-1], it sweeps s[0] (first),

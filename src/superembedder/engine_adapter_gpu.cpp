@@ -83,12 +83,27 @@ constexpr const char* kStatusNames[] = {
     "SSLM_GPU_PARALLEL_FOR_INVALID",
     "SSLM_GPU_PARALLEL_FOR_INCOMPLETE",
     "SSLM_GPU_RESIDENCY_FLAGS_INVALID",
+    "SSLM_GPU_KV_BUDGET_EXCEEDED",
+    "SSLM_GPU_KV_POOL_EXHAUSTED",
+    "SSLM_GPU_KV_POOL_TOO_LARGE",
+    "SSLM_GPU_HOLDER_MODE_MISMATCH",
+    "SSLM_GPU_PREFIX_REJECTED",
+    "SSLM_GPU_PREFIX_SCHEMA_MISMATCH",
+    "SSLM_RESTORE_PRODUCER_MISMATCH",
+    "SSLM_GPU_FORCED_TABLE_ABSENT",
+    "SSLM_GPU_CONTEXT_CAP_EXCEEDED",
+    "SSLM_GPU_ROWS_CHUNK_OPEN",
 };
 constexpr size_t kStatusCount = sizeof(kStatusNames) / sizeof(kStatusNames[0]);
 static_assert(static_cast<uint32_t>(SslmGpuStatus::SSLM_DEVICE_LOST) == 8 &&
                   static_cast<uint32_t>(SslmGpuStatus::SSLM_SEQUENCE_REJECTED) == 11 &&
                   static_cast<uint32_t>(SslmGpuStatus::SSLM_GPU_ALLOCATION_FAILED) == 16 &&
-                  static_cast<uint32_t>(SslmGpuStatus::SSLM_GPU_RESIDENCY_FLAGS_INVALID) == kStatusCount - 1,
+                  static_cast<uint32_t>(SslmGpuStatus::SSLM_GPU_RESIDENCY_FLAGS_INVALID) == 23 &&
+                  static_cast<uint32_t>(SslmGpuStatus::SSLM_GPU_KV_BUDGET_EXCEEDED) == 24 &&
+                  static_cast<uint32_t>(SslmGpuStatus::SSLM_RESTORE_PRODUCER_MISMATCH) == 30 &&
+                  static_cast<uint32_t>(SslmGpuStatus::SSLM_GPU_FORCED_TABLE_ABSENT) == 31 &&
+                  static_cast<uint32_t>(SslmGpuStatus::SSLM_GPU_CONTEXT_CAP_EXCEEDED) == 32 &&
+                  static_cast<uint32_t>(SslmGpuStatus::SSLM_GPU_ROWS_CHUNK_OPEN) == kStatusCount - 1,
               "the status name table follows the pinned engine's SslmGpuStatus order");
 
 [[maybe_unused]] const char* StatusName(SslmGpuStatus s) noexcept {

@@ -23,7 +23,7 @@ with the pin tool's own target list):
            superslm_gpu together differs from it.
 
 Dev-box legs (Windows, the engine's GPU build): PT-real, a real `--with-gpu`
-install and a real CPU-only install of v1.8.0 give equal tree= and equal
+install and a real CPU-only install of the pinned engine give equal tree= and equal
 engineFlags, and one invocation writes both the build record and the GPU
 install (J10). Off Windows: MISSING PREREQUISITE.
 
@@ -147,7 +147,7 @@ def main(argv: list[str]) -> int:
          f"{a[:16]} / {c[:16]}")
 
     if platform.system() == "Windows":
-        emit("MISSING PREREQUISITE", "PT-real a real --with-gpu and CPU-only install of v1.8.0: equal tree= and "
+        emit("MISSING PREREQUISITE", "PT-real a real --with-gpu and CPU-only install of the pinned engine: equal tree= and "
              "engineFlags, one invocation writing both the build record and the GPU install (J10)",
              "run by the builder's pin step on the dev box (te266 sec 4.7 step 1b); not constructible in this cell")
     else:

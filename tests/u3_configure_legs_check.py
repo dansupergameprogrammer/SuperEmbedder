@@ -19,7 +19,7 @@ Legs:
   G10-win    WINDOWS ONLY: -DSEMB_BUILD_GPU=ON against a CPU-only pin install
              fails and names SEMB_ENGINE_GPU_MISSING (P:4176). The install is
              its own prerequisite, --cpu-engine-prefix (SEMB_U3_CPU_ENGINE_PREFIX:
-             a v1.8.0 pin install made WITHOUT --with-gpu; the dev box has U2's).
+             a pin install made WITHOUT --with-gpu; the dev box has U2's).
              It is never the tree's own --engine-prefix: a SEMB_BUILD_GPU=ON tree
              configured only against a --with-gpu install, so that prefix
              exports superslm_gpu and the nested configure succeeds (the U3
@@ -125,7 +125,7 @@ def main(argv: list[str]) -> int:
             leg = "G10-win -DSEMB_BUILD_GPU=ON against a CPU-only pin install names SEMB_ENGINE_GPU_MISSING (P:4176)"
             cpu = Path(args.cpu_engine_prefix).resolve() if args.cpu_engine_prefix else None
             if not cpu or not cpu.is_dir():
-                emit("MISSING PREREQUISITE", leg, "--cpu-engine-prefix (SEMB_U3_CPU_ENGINE_PREFIX): a v1.8.0 pin "
+                emit("MISSING PREREQUISITE", leg, "--cpu-engine-prefix (SEMB_U3_CPU_ENGINE_PREFIX): a pin "
                      "install made without --with-gpu")
             elif (cpu / "share" / "superslm" / "gpu-shaders").is_dir():
                 emit("FAIL", leg, f"SETUP: {cpu} ships share/superslm/gpu-shaders, so it is a --with-gpu install, "

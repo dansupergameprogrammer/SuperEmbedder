@@ -109,8 +109,9 @@
 //   c10d_after_success    P:4158 -- unset open succeeds and bakes; the out-of-range index
 //                         then refuses a second open; unset, a third open succeeds.
 //   c10d_refused_after_creation  P:4159 -- --remove-shader <one .cso the engine loads>,
-//                         by default the staged <exe dir>/shaders/down_proj_gemm_site.cso
-//                         (te266 P:1496, T-2842 F1's measured construction; SETUP fails
+//                         by default the staged <exe dir>/shaders/down_proj_gemm_wide_h8.cso
+//                         (te266 P:1496, T-2842 F1's construction, re-aimed at the
+//                         multi-row prompt's GEMM since SuperSLM 1.18; SETUP fails
 //                         if it is absent), renamed away and restored: the open refuses
 //                         SEMB_DEVICE_UNAVAILABLE during its agreement check, the log shows
 //                         context create and model map SSLM_OK before the refusing call,

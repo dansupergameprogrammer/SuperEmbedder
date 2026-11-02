@@ -2089,13 +2089,19 @@ set_tests_properties(
 # PREREQUISITE (exit 77, skipped) anywhere but a Windows tree configured with
 # SEMB_BUILD_GPU=ON; tests/u3_devbox_steps.py runs them one ctest per step.
 # ---------------------------------------------------------------------------
-# Empty = the plan's measured construction (te266 P:1496, T-2842 F1): hide
-# down_proj_gemm_site.cso, which every prefill dispatches, from the copy the
-# engine actually loads -- the shaders/ directory staged beside
-# u3_gpu_cells_test (the engine reads <executable dir>/shaders). A shader the
-# pair's prefill never dispatches (e.g. attention_score_site.cso) leaves every
-# call SSLM_OK and the cell red for the wrong reason.
-set(SEMB_U3_SHADER_TO_REMOVE "" CACHE FILEPATH "U3 C10 (d)/row 5 (d): the .cso the must-reject renames away (empty = the staged down_proj_gemm_site.cso, P:1496)")
+# Empty = the plan's construction (te266 P:1496, T-2842 F1), re-aimed for the
+# multi-row engine: hide down_proj_gemm_wide_h8.cso from the copy the engine
+# actually loads -- the shaders/ directory staged beside u3_gpu_cells_test (the
+# engine reads <executable dir>/shaders). Since SuperSLM 1.18 a prompt of two or
+# more rows runs the row-widened shaders (<site>_wide_h<H>.cso, H the variant
+# for min(8, rows)), and the one-row down_proj_gemm_site.cso runs only for a
+# one-row tail. The open's agreement check prefills the W-B documents first,
+# each well over eight composed tokens, so its first pass is H = 8 and builds
+# every h8 pipeline, down_proj_gemm_wide_h8 among them. A shader the open's
+# prefills never dispatch (e.g. attention_score_site.cso on the pair, or the
+# one-row down_proj_gemm_site.cso when no witness sequence leaves a one-row
+# tail) leaves every call SSLM_OK and the cell red for the wrong reason.
+set(SEMB_U3_SHADER_TO_REMOVE "" CACHE FILEPATH "U3 C10 (d)/row 5 (d): the .cso the must-reject renames away (empty = the staged down_proj_gemm_wide_h8.cso, the multi-row prompt's GEMM; P:1496)")
 set(SEMB_U3_OFF_BUILD_DIR "" CACHE PATH "U3 C10 (b): a SEMB_BUILD_GPU=OFF build tree of the same commit")
 # fiqa-long80 (D-SLM7873) is C10 (h)'s population and C11's FiQA documents
 # (the planner's U3 rulings 3-4); it lives in the records repository, and its
@@ -2104,9 +2110,9 @@ set(SEMB_U3_C10H_CORPUS "" CACHE FILEPATH "U3 C10 (h): fiqa-long80.jsonl (record
 set(SEMB_U3_FIQA_CORPUS "" CACHE FILEPATH "U3 C11: FiQA documents; empty = SEMB_U3_C10H_CORPUS (fiqa-long80)")
 set(SEMB_U3_FIQA_QUERIES "" CACHE FILEPATH "U3 C11: the minted 100 FiQA queries (tests/fixtures/u3/fiqa_sets.py mint)")
 set(SEMB_U3_GPU_ENGINE_PREFIX "" CACHE PATH "U3 row 8: a --with-gpu pin install, for the ON/OFF compileFlags leg")
-set(SEMB_U3_CPU_ENGINE_PREFIX "" CACHE PATH "U3 G10-win: a CPU-only v1.8.0 pin install (no --with-gpu), distinct from this tree's engine")
+set(SEMB_U3_CPU_ENGINE_PREFIX "" CACHE PATH "U3 G10-win: a CPU-only install of the pinned engine (superslm.lock; no --with-gpu), distinct from this tree's engine")
 # Tree B: configure with -DSEMB_ENGINE_LOCK_FILE=<the v1.7.1 lock the pin tool wrote>
-# (EngineGuards' override); the checked-in lock pins 1.8.0 and refuses SEMB_ENGINE_PIN_MISMATCH.
+# (EngineGuards' override); the checked-in lock pins a later engine and refuses SEMB_ENGINE_PIN_MISMATCH.
 option(SEMB_U3_COMMISSION_TREE "U3 row 5 (d): this tree links the must-reject engine (v1.7.1); register the commissioning legs" OFF)
 # The U3 locals, derived from cache variables only. A macro, because
 # semb_add_u3_seam_tests runs deferred in the ROOT directory's scope, where this
@@ -2272,7 +2278,7 @@ function(semb_add_u3_seam_tests)
 	if(SEMB_U3_SHADER_TO_REMOVE STREQUAL "" AND NOT TARGET u3_gpu_cells_test)
 		set(_semb_u3_shader_to_remove "")  # no GPU binary here: the driver reports MISSING PREREQUISITE first
 	elseif(SEMB_U3_SHADER_TO_REMOVE STREQUAL "")
-		set(_semb_u3_shader_to_remove "$<TARGET_FILE_DIR:u3_gpu_cells_test>/shaders/down_proj_gemm_site.cso")
+		set(_semb_u3_shader_to_remove "$<TARGET_FILE_DIR:u3_gpu_cells_test>/shaders/down_proj_gemm_wide_h8.cso")
 	else()
 		set(_semb_u3_shader_to_remove "${SEMB_U3_SHADER_TO_REMOVE}")
 	endif()

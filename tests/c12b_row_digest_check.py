@@ -73,6 +73,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import subprocess
 import sys
 import time
@@ -186,6 +187,24 @@ def write_anchors(path: Path, rows: Dict[str, Row], header: List[str]) -> None:
             f.write(f"{label}\t{n}\t{seam}\t{sel}\t{vec}\n")
 
 
+def anchor_artifact_mismatch(anchors: Path, model: Path, model_sha: str) -> str:
+    """Empty when the anchors' `# artifact: <name> sha256=<hex> ...` header line names `model_sha`; otherwise
+    the reason R1 refuses to grade."""
+    with open(anchors, encoding="utf-8") as f:
+        for line in f:
+            if not line.startswith("#"):
+                break
+            m = re.match(r"#\s*artifact:\s*(\S+)\s+sha256=([0-9a-fA-F]{64})\b", line)
+            if m:
+                if m.group(2).lower() == model_sha:
+                    return ""
+                return (f"--model {model} has sha256={model_sha}, but {anchors.name} was minted from {m.group(1)} "
+                        f"sha256={m.group(2).lower()}: wrong model copy (or re-mint the anchors with "
+                        f"--mint-anchors); no row is graded against bytes the anchors do not describe")
+    return (f"{anchors.name} carries no '# artifact: <name> sha256=<hex>' header line, so --model {model} "
+            f"(sha256={model_sha}) cannot be confirmed as the artifact the anchors were minted from")
+
+
 def main(argv: List[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--instrument", default="", help="path to semb_c12b_row_digest; empty = not built (RED)")
@@ -267,56 +286,66 @@ def main(argv: List[str]) -> int:
         verdict("R1 real artifact", False, f"--model {args.model} does not exist")
     else:
         model = Path(args.model)
-        dump_real = scratch / "dump_real_last.tsv"
-        real_chunk, out_c, t_c = inst.run(model, REAL_CORPUS, CANDIDATE_APPEND_ID, dump=dump_real, tag="r1chunk")
-        real_token, out_t, t_t = inst.run(model, REAL_CORPUS, CANDIDATE_APPEND_ID, leg="token", tag="r1token")
-        summary_c = [ln for ln in out_c.splitlines() if ln.startswith("c12b:")]
-        summary_t = [ln for ln in out_t.splitlines() if ln.startswith("c12b:")]
-        print("\n".join(summary_c + summary_t))
-        n_rows = len(real_chunk)
-        d = compare(real_chunk, real_token, (0, 1, 2, 3))
-        verdict(f"R1.a real: chunk-batched leg == per-token leg on all {n_rows} rows",
-                n_rows == 239 and not d, f"rows={n_rows}; differing: {len(d)} ({d[:5]}); "
-                                          f"wall chunk={t_c:.1f}s token={t_t:.1f}s")
-        real_chunk2, _, _ = inst.run(model, REAL_CORPUS, CANDIDATE_APPEND_ID, tag="r1chunk2")
-        d = compare(real_chunk, real_chunk2, (0, 1, 2, 3))
-        verdict("R1.b real: second process byte-identical on every row", not d, f"differing: {d or 'none'}")
-        ok5r, msg5r = oracle_check(dump_real)
-        verdict("R1.c real: C1' oracle on every selected position", ok5r, msg5r)
-        real_second, _, _ = inst.run(model, REAL_CORPUS, CANDIDATE_APPEND_ID, select="second-last", tag="r1second")
-        seam_moved = compare(real_chunk, real_second, (1,))
-        sel_same = [lb for lb in real_chunk if real_chunk[lb][2] == real_second[lb][2]]
-        vec_same = [lb for lb in real_chunk if real_chunk[lb][3] == real_second[lb][3]]
-        verdict("R1.d real MUST-REJECT: second-to-last selection moves both PS-N columns on every row, seam held",
-                not seam_moved and not sel_same and not vec_same,
-                f"seam moved: {len(seam_moved)}; selected unchanged: {len(sel_same)}; vector unchanged: {len(vec_same)}")
+        # The committed anchors name the artifact they were minted from; a run against any other bytes grades
+        # every row red for a reason that is not the forward (a wrong model copy once read 239/239 red). A
+        # minting run writes a new header, so it is not held to the old one.
+        model_sha = sha256_file(model)
         anchors = Path(args.anchors)
-        if args.mint_anchors:
-            header = [
-                "tests/fixtures/c12b/anchors-*.tsv -- C12b per-row anchors (sec 8, C12b; D-SLM4648): one row per",
-                "corpus document, computed by semb_c12b_row_digest over tests/fixtures/c12b/corpus-239.tokens.tsv",
-                "(appended token id 151643), chunk-batched leg, whole-document chunk budget, PS-N last-position",
-                "selection, post-final-norm. NEVER hand-edited; re-minted only by this check's --mint-anchors.",
-                f"artifact: {model.name} sha256={sha256_file(model)} bytes={model.stat().st_size}",
-                f"engine pin: {args.engine_pin or '(not stated on the command line)'}",
-                f"host: {os.environ.get('COMPUTERNAME') or (os.uname().nodename if hasattr(os, 'uname') else '?')}",
-                f"minted: {time.strftime('%Y-%m-%d')}",
-            ]
-            write_anchors(anchors, real_chunk, header)
-            verdict("R1.e anchors MINTED (a minting run grades nothing against them)", True, str(anchors))
-        elif anchors.exists():
-            anc = read_anchors(anchors)
-            d_seam = compare(anc, real_chunk, (0, 1))
-            d_sel = compare(anc, real_chunk, (2,))
-            d_vec = compare(anc, real_chunk, (3,))
-            verdict("R1.e real vs committed anchors, per row",
-                    not d_seam and not d_sel and not d_vec,
-                    f"anchor rows={len(anc)}; seam differs on {len(d_seam)} rows {d_seam[:5]}; "
-                    f"selected differs on {len(d_sel)}; vector differs on {len(d_vec)} -- a seam move is the "
-                    f"forward or the port (investigate: pin, artifact bytes, adapter); a PS-N-only move is the "
-                    f"selection or the dequantize")
+        artifact_mismatch = ""
+        if not args.mint_anchors and anchors.exists():
+            artifact_mismatch = anchor_artifact_mismatch(anchors, model, model_sha)
+        if artifact_mismatch:
+            verdict("R1 real artifact is the one the committed anchors were minted from", False, artifact_mismatch)
         else:
-            verdict("R1.e real vs committed anchors", None, f"no anchor table at {anchors}; run with --mint-anchors")
+            dump_real = scratch / "dump_real_last.tsv"
+            real_chunk, out_c, t_c = inst.run(model, REAL_CORPUS, CANDIDATE_APPEND_ID, dump=dump_real, tag="r1chunk")
+            real_token, out_t, t_t = inst.run(model, REAL_CORPUS, CANDIDATE_APPEND_ID, leg="token", tag="r1token")
+            summary_c = [ln for ln in out_c.splitlines() if ln.startswith("c12b:")]
+            summary_t = [ln for ln in out_t.splitlines() if ln.startswith("c12b:")]
+            print("\n".join(summary_c + summary_t))
+            n_rows = len(real_chunk)
+            d = compare(real_chunk, real_token, (0, 1, 2, 3))
+            verdict(f"R1.a real: chunk-batched leg == per-token leg on all {n_rows} rows",
+                    n_rows == 239 and not d, f"rows={n_rows}; differing: {len(d)} ({d[:5]}); "
+                                              f"wall chunk={t_c:.1f}s token={t_t:.1f}s")
+            real_chunk2, _, _ = inst.run(model, REAL_CORPUS, CANDIDATE_APPEND_ID, tag="r1chunk2")
+            d = compare(real_chunk, real_chunk2, (0, 1, 2, 3))
+            verdict("R1.b real: second process byte-identical on every row", not d, f"differing: {d or 'none'}")
+            ok5r, msg5r = oracle_check(dump_real)
+            verdict("R1.c real: C1' oracle on every selected position", ok5r, msg5r)
+            real_second, _, _ = inst.run(model, REAL_CORPUS, CANDIDATE_APPEND_ID, select="second-last", tag="r1second")
+            seam_moved = compare(real_chunk, real_second, (1,))
+            sel_same = [lb for lb in real_chunk if real_chunk[lb][2] == real_second[lb][2]]
+            vec_same = [lb for lb in real_chunk if real_chunk[lb][3] == real_second[lb][3]]
+            verdict("R1.d real MUST-REJECT: second-to-last selection moves both PS-N columns on every row, seam held",
+                    not seam_moved and not sel_same and not vec_same,
+                    f"seam moved: {len(seam_moved)}; selected unchanged: {len(sel_same)}; vector unchanged: {len(vec_same)}")
+            if args.mint_anchors:
+                header = [
+                    "tests/fixtures/c12b/anchors-*.tsv -- C12b per-row anchors (sec 8, C12b; D-SLM4648): one row per",
+                    "corpus document, computed by semb_c12b_row_digest over tests/fixtures/c12b/corpus-239.tokens.tsv",
+                    "(appended token id 151643), chunk-batched leg, whole-document chunk budget, PS-N last-position",
+                    "selection, post-final-norm. NEVER hand-edited; re-minted only by this check's --mint-anchors.",
+                    f"artifact: {model.name} sha256={model_sha} bytes={model.stat().st_size}",
+                    f"engine pin: {args.engine_pin or '(not stated on the command line)'}",
+                    f"host: {os.environ.get('COMPUTERNAME') or (os.uname().nodename if hasattr(os, 'uname') else '?')}",
+                    f"minted: {time.strftime('%Y-%m-%d')}",
+                ]
+                write_anchors(anchors, real_chunk, header)
+                verdict("R1.e anchors MINTED (a minting run grades nothing against them)", True, str(anchors))
+            elif anchors.exists():
+                anc = read_anchors(anchors)
+                d_seam = compare(anc, real_chunk, (0, 1))
+                d_sel = compare(anc, real_chunk, (2,))
+                d_vec = compare(anc, real_chunk, (3,))
+                verdict("R1.e real vs committed anchors, per row",
+                        not d_seam and not d_sel and not d_vec,
+                        f"anchor rows={len(anc)}; seam differs on {len(d_seam)} rows {d_seam[:5]}; "
+                        f"selected differs on {len(d_sel)}; vector differs on {len(d_vec)} -- a seam move is the "
+                        f"forward or the port (investigate: pin, artifact bytes, adapter); a PS-N-only move is the "
+                        f"selection or the dequantize")
+            else:
+                verdict("R1.e real vs committed anchors", None, f"no anchor table at {anchors}; run with --mint-anchors")
 
     print("\nc12b_row_digest_check summary:")
     for cell, state, _ in verdicts:

@@ -14,13 +14,15 @@ its own [PASS]/[FAIL]/[RED-UNIMPLEMENTED] lines into build/_u3_logs/.
   python tests/u3_devbox_steps.py --build-dir <tree> --run <step>  (that step again)
   python tests/u3_devbox_steps.py --build-dir <tree> --status
 
-Tree A (--build-dir) is the SEMB_BUILD_GPU=ON tree at the v1.8.0 pin. Leave
+Tree A (--build-dir) is the SEMB_BUILD_GPU=ON tree at the checked-in pin. Leave
 SEMB_U3_SHADER_TO_REMOVE empty: c10d_refused_after_creation then hides the
-staged <u3_gpu_cells_test dir>/shaders/down_proj_gemm_site.cso, the plan's
-measured construction (te266 P:1496, T-2842 F1). Set it only to name another
+staged <u3_gpu_cells_test dir>/shaders/down_proj_gemm_wide_h8.cso, the plan's
+construction (te266 P:1496, T-2842 F1) re-aimed at the multi-row prompt's GEMM
+(since SuperSLM 1.18 the one-row down_proj_gemm_site.cso runs only for a
+one-row tail). Set it only to name another
 shader the prefill dispatches; one it never dispatches (attention_score_site.cso
 on the pair) leaves every call SSLM_OK and the cell red for the wrong reason.
-Tree A also needs -DSEMB_U3_CPU_ENGINE_PREFIX=<a v1.8.0 pin install made
+Tree A also needs -DSEMB_U3_CPU_ENGINE_PREFIX=<a pin install made
 WITHOUT --with-gpu> (U2's CPU-only install serves): G10-win configures ON
 against it and must be refused SEMB_ENGINE_GPU_MISSING. Without it
 u3_configure_legs_check skips (77) on Windows instead of passing.
@@ -41,7 +43,7 @@ numbered by the old exhaustive population:
                                      inside an engine call of the encode plus a sample of
                                      U3's frames, d3h/d3d every allocation / creation
                                      inside sslm_gpu_model_map -- instead of every counted
-                                     allocation (164,574 / 13,893,260 at v1.8.0). Delete
+                                     allocation (164,574 / 13,893,260, measured at v1.8.0). Delete
                                      build/_u3_logs/alloc_{d1,d3h,d3d}*.sweep.log first:
                                      their sites were numbered by the old population. The
                                      count step's CLASS lines show where K goes.
@@ -67,7 +69,7 @@ Commissioning steps (row 5 (d), P:4215) run in a SECOND tree (tree B)
 configured against the engine at v1.7.1 with -DSEMB_U3_COMMISSION_TREE=ON; pass
 that tree as --commission-build-dir. They come before any decision-bearing (d)
 run. Tree B cannot configure against the checked-in superslm.lock (it pins
-1.8.0, so the configure refuses SEMB_ENGINE_PIN_MISMATCH): point EngineGuards'
+a later engine, so the configure refuses SEMB_ENGINE_PIN_MISMATCH): point EngineGuards'
 own override at the v1.7.1 lock the pin tool wrote for the --with-gpu install,
 never by editing the checked-in lock:
   cmake -S <repo> -B <tree B> -DSEMB_BUILD_GPU=ON -DSEMB_U3_COMMISSION_TREE=ON
@@ -104,7 +106,7 @@ STEPS: list[tuple[str, str]] = [
     ("u3_gpu_alloc_d4_commission", "commission"),
     # The seam cells, one process each.
     *[(f"u3_gpu_cell_{c}", "main") for c in GPU_CELLS],
-    # Row 5 (d) at v1.8.0.
+    # Row 5 (d) at the checked-in pin.
     ("u3_gpu_alloc_count", "main"), ("u3_gpu_alloc_mr_removed", "main"), ("u3_gpu_alloc_d1", "main"),
     ("u3_gpu_alloc_d2", "main"), ("u3_gpu_alloc_d3h", "main"), ("u3_gpu_alloc_d3d", "main"),
     ("u3_gpu_alloc_d4", "main"),

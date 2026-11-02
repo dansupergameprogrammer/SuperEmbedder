@@ -17,9 +17,13 @@ Verdict: [PASS] when every graded site passed and none crashed; [FAIL] with the
 counts otherwise. OUTSIDE-MAP sites (d3) are listed, not graded.
 
 C64 sweeps number their sites 1..K-1 with no gaps (END carries K), so a site
-missing from the log is a hole, never a pass: the driver re-runs from the first
-hole even after END (the binary takes --first only, so the sites after it are
-read again), a site read twice with different verdicts is a [FAIL], and a hole
+missing from the log is a hole, never a pass. A sparse row (semb_encoder_open,
+whose binary prints its finite site plan as PLAN/PLANSITE lines) is held to the
+sites its plan names instead of to every k: a planned site missing from the log
+is a hole, and launches that print different plans are a [FAIL] (delete the
+log: its sites were numbered by another plan). In both cases the driver re-runs
+from the first hole even after END (the binary takes --first only, so the sites
+after it are read again), a site read twice with different verdicts is a [FAIL], and a hole
 still open at the end is a [FAIL]. The alloc legs are sampled (d3h) or fresh per
 site, so they are not held to a contiguous set.
 
@@ -50,6 +54,8 @@ PLAN_FIGURES = {"d1": "530 (50 + 480)", "d2": "120", "d4": "a permanent loss"}
 RESULT = re.compile(r"^(SITE|ARM) .*?\bk=(\d+)\b.*\b(PASS|FAIL|OUTSIDE-MAP)\s*$")
 BEGIN = re.compile(r"^BEGIN .*?\bk=(\d+)\b")
 END = re.compile(r"^END .*?\bk=(\d+)\b")
+PLAN = re.compile(r"^PLAN \S+ K=(\d+) sites=(\d+)\s*$")
+PLANSITE = re.compile(r"^PLANSITE \S+ k=(\d+)\b")
 
 
 def read_state(log: Path) -> tuple[dict[int, str], set[int], int | None, list[str]]:
@@ -84,9 +90,37 @@ def read_state(log: Path) -> tuple[dict[int, str], set[int], int | None, list[st
     return results, crashed, end_k, lines
 
 
-def holes(results: dict[int, str], end_k: int | None) -> list[int]:
-    """C64 sites missing from 1..K-1 (or 1..max read so far, before END)."""
+def read_plan(log: Path) -> tuple[frozenset[int] | None, str]:
+    """A sparse row's site plan: the PLANSITE k's of each PLAN block the log holds (every launch of the binary
+    prints one). None when the log holds no PLAN line (a full row). The second value is non-empty when the
+    blocks disagree with each other or with their own sites= count; a plan that moves is not a plan."""
+    blocks: list[tuple[int, list[int]]] = []
+    if log.is_file():
+        for line in log.read_text(errors="replace").splitlines():
+            m = PLAN.match(line)
+            if m:
+                blocks.append((int(m.group(2)), []))
+                continue
+            m = PLANSITE.match(line)
+            if m and blocks:
+                blocks[-1][1].append(int(m.group(1)))
+    if not blocks:
+        return None, ""
+    plans = [frozenset(ks) for _, ks in blocks]
+    for n, ks in blocks:
+        if len(ks) != n or len(set(ks)) != n:
+            return plans[0], f"a PLAN block announces sites={n} but lists {len(set(ks))} distinct PLANSITE k"
+    if any(p != plans[0] for p in plans[1:]):
+        return plans[0], f"the log holds {len(set(plans))} different site plans across {len(plans)} launches"
+    return plans[0], ""
+
+
+def holes(results: dict[int, str], end_k: int | None, plan: frozenset[int] | None = None) -> list[int]:
+    """C64 sites missing from 1..K-1 (or 1..max read so far, before END). A sparse row (`plan` given) is held
+    to its planned sites in that range only; a full row (`plan` None) to every k."""
     top = end_k - 1 if end_k is not None else (max(results) if results else 0)
+    if plan is not None:
+        return sorted(k for k in plan if k <= top and k not in results)
     return [k for k in range(1, top + 1) if k not in results]
 
 
@@ -171,7 +205,11 @@ def main(argv: list[str]) -> int:
     refilled: set[int] = set()
     while True:
         results, crashed, end_k, _ = read_state(log)
-        gap = holes(results, end_k) if contiguous else []
+        plan, plan_err = read_plan(log) if contiguous else (None, "")
+        if plan_err:
+            print(f"[FAIL] {step}: {plan_err}")
+            return 1
+        gap = holes(results, end_k, plan) if contiguous else []
         if gap and gap[0] in refilled:
             print(f"[FAIL] {step}: a re-run from k={gap[0]} did not read that site")
             return 1
@@ -217,7 +255,11 @@ def main(argv: list[str]) -> int:
               f"site(s) read (the plan's figure: {PLAN_FIGURES.get(args.leg, '-')}); "
               f"{'the leg is alive' if ok else 'DEAD: it passes on the must-reject population'}")
         return 0 if ok else 1
-    missing = holes(results, end_k) if contiguous else []
+    plan, plan_err = read_plan(log) if contiguous else (None, "")
+    if plan_err:
+        print(f"[FAIL] {step}: {plan_err}")
+        return 1
+    missing = holes(results, end_k, plan) if contiguous else []
     if missing:
         summary += f"; {len(missing)} site(s) never read, first k={missing[0]}"
     ok = bool(graded) and not fails and not crashed and not missing
