@@ -6,8 +6,8 @@ This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 -------------------------------------------------------------------------------
 
 The SuperEmbedder release distributes a converted form of the following model,
-as the release downloads {{MODEL_ASSET_NAME}} (model) and
-{{TOKENIZER_ASSET_NAME}} (tokenizer). The source code in this repository does
+as the release downloads qwen3-embedding-0.6b-1p5.sslm (model) and
+qwen3-embedding-0.6b-tokenizer.sslm (tokenizer). The source code in this repository does
 not contain the model's weights.
 
 Qwen3-Embedding-0.6B
@@ -21,9 +21,3 @@ Modifications: the model's weights were converted to the SuperSLM integer
 format by SuperSLM's offline converter, and its tokenizer to SuperSLM's
 tokenizer format. The conversion changes the numeric representation of the
 weights; it adds no weights and no training.
-
--------------------------------------------------------------------------------
-Placeholders in {{DOUBLE_BRACES}} are filled before the release and this
-paragraph is removed:
-  MODEL_ASSET_NAME, TOKENIZER_ASSET_NAME - the release step that publishes the
-    downloads (REL-4 step 7).

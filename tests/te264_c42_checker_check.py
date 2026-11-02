@@ -72,9 +72,10 @@ LIST = "docs/certified-builds.json"
 CORPUS = "tests/fixtures/c12b/corpus-239.jsonl"
 # te267 P:1056-1057: the derivation inputs the package root must carry for clause (c').
 DERIVATION_INPUTS = ("src", "include", "cmake", "CMakeLists.txt", "tests/fixtures/wq")
-# The interim cells' real 239-line row digests (both cells' files are byte-identical). U2-3's re-executed
-# msvc19.33-auto@avx2 run replaced the Slice 7 run at win-x64-msvc-avx2-zen2/ (item 9) with the same bytes.
-REAL_ROWS = ROOT / EVIDENCE / "msvc19.33-auto@avx2" / "row-digests.tsv"
+# The real 239-line row digests, from the committed 1.0 release evidence (every cell's file is byte-identical;
+# the interim evidence tree they used to be read from was retired at REL-4). EVIDENCE stays the fixture's own
+# path inside its temporary package root.
+REAL_ROWS = ROOT / "docs" / "certification" / "1.0.0" / "msvc19.33-auto@avx2" / "row-digests.tsv"
 DATE = "2026-09-25"
 
 # The two interim cells in cell form (P:1139-1140). toolchain/stdlib: semb_build_descriptor.h's formatting of

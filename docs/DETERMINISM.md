@@ -45,9 +45,14 @@ planned for a later update; adding them keeps the epoch, because the epoch diges
 proof corpus. `semb --version` prints the verdict for the build on the host you run it on:
 
 ```text
-{{SEMB_VERSION_SAMPLE_OUTPUT}}
+semb 1.0.0 (engine pin v1.18.1 @ c3c14b16690a0c0c54de781f6f30380d88e62bd1, engine_path_sha=9a1a8a28e9d540a9520669b913497ad687dce36390671dfbf75b2cb23c4c29e6)
+build: os=Windows arch=AMD64 compiler=MSVC/19.33.31631.0 frontend=MSVC configuration=Release buildSystem=cmake
+descriptor: os=windows isa=x86-64 toolchain="MSVC 193331631.0" stdlib="MSVC STL 202205L" configuration=Release buildSystem=cmake dispatch=auto compileFlags=205f4e0199088defb1cf1580a8916464db86477664998b078136fc366104c29b engineFlags=751427436f68e8ef11d5d2286f6ed1aaa27e6100891ff671013af148e6f09ecf engineToolchain="MSVC 193331631.0" engineStdlib="MSVC STL 202205L"
+tier: avx2
+cell: msvc19.33-auto@avx2 epoch=77cff77602bd9304b6bd316a2ff84ea1fe5be1b34184e0f51bebe1c6f0c8d7ef
+certification: line=1 identity_sha256=77cff77602bd9304b6bd316a2ff84ea1fe5be1b34184e0f51bebe1c6f0c8d7ef certified_builds_sha256=2b2c499757ad155b6ca63cc4bfc0cea872fd8181551aa61aff7aa5814b60434b
+engine: build_record=sslm-build-record-v1:41759ef0d67a0fca2dba24384900219bcf688b9a28d0da48103c13c96b58aa51 expected=sslm-build-record-v1:41759ef0d67a0fca2dba24384900219bcf688b9a28d0da48103c13c96b58aa51 forced_tier=auto required_isa=none check=SEMB_OK
 ```
-<!-- filled by: REL-4 step 7 — `semb --version` from the released auto build on the certification host -->
 
 A line prints `uncertified` when the build is not a certified cell on this host. That build still runs; it
 computes the uncertified epoch, so its fingerprint differs from every certified build's, and a bank baked
@@ -55,7 +60,6 @@ by one is refused by the other by name (`SEMB_FINGERPRINT_MISMATCH`).
 
 To check a build end to end, run `semb verify` against the reference bank in `docs/certification/reference-bank/`
 (see the README's *Checking your build*).
-<!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 ## What changes the fingerprint, and what does not
 
@@ -65,7 +69,6 @@ moving the fingerprint. The certified set's proofs and `semb verify` against the
 such changes on the certification corpus; the fingerprint alone does not catch them.
 An uncommitted edit is never itself a new certification line; adopting one is the transition described
 under *Epochs and re-baking*.
-<!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 **With the certification identity and the other four fields unchanged, and both builds certified cells, a
 different compiler, optimisation level or warning level does *not* change it, which is the point of the
@@ -108,8 +111,7 @@ state is returned untouched because the library never touches it.** A source-lev
 asserts it.
 
 What is measured, and where: **no floating-point exception was raised on the corpora and operand sets
-certified**, with every exception unmasked, in {{FP_EXCEPTION_CERTIFYING_CELL}}.
-<!-- filled by: the REL-2 verify of the cleared-mask cell (C41) — name the build, tier and host it executed on -->
+certified**, with every exception unmasked, in `msvc19.33-auto@avx2` (the MSVC 19.33.31631 Release auto build at AVX2, on an AMD Ryzen 9 5950X).
 
 Two stronger statements are **not** made on this page, because no execution establishes them yet: that the
 reproducible path performs no floating-point operation at all, and that a host running with exceptions

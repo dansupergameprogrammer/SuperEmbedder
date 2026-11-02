@@ -56,7 +56,7 @@ PIN_TOOL = REPO_ROOT / "tools" / "pin-superslm" / "pin_superslm.py"
 LOCK = REPO_ROOT / "superslm.lock"
 IDENTITY = "docs/certification-identity.json"
 LIST = "docs/certified-builds.json"
-EVIDENCE = "docs/certification/interim"
+EVIDENCE = "docs/certification/1.0.0"
 WINDOWS = os.name == "nt"
 DESCRIPTOR_FIELDS = version_line.DESCRIPTOR_FIELDS
 

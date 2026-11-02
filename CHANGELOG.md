@@ -9,7 +9,6 @@ changes it and requires banks to be re-baked. A code change outside what the
 witnesses execute can change output without moving the fingerprint. The certified
 set and `semb verify` against the reference bank check for such changes on the
 certification corpus.
-<!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 ## [Unreleased]
 
@@ -42,7 +41,6 @@ The first release, pinned to SuperSLM `1.18.1`. Release notes: [docs/releases/1.
   Not yet certified (planned for a later update, which keeps the epoch):
   AVX-512 cells, forced-SSE2 builds, MSVC 19.44 and GCC 13.3 builds, and
   NVIDIA GPUs at 1.18.1.
-  <!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 - A check at every encoder and bank open that the linked engine is the one the
   build was configured against.
 - A GPU path on Windows (Direct3D 12), built with `SEMB_BUILD_GPU=ON` and
@@ -53,7 +51,6 @@ The first release, pinned to SuperSLM `1.18.1`. Release notes: [docs/releases/1.
 - The model and tokenizer as release downloads with their SHA-256.
 - A reference bank in `docs/certification/reference-bank/` for checking a
   build with `semb verify`.
-  <!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 ### Upgrading from a pre-release build
 

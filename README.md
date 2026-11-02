@@ -37,14 +37,12 @@ SHA-256:
 
 | File | Size | SHA-256 |
 |---|---:|---|
-| `{{MODEL_ASSET_NAME}}` | 634,489,808 bytes | `{{MODEL_SHA256}}` |
-| `{{TOKENIZER_ASSET_NAME}}` | {{TOKENIZER_BYTES}} bytes | `{{TOKENIZER_SHA256}}` |
-<!-- filled by: the v1.18.1 pin step (tokenizer re-minted there; model size re-read there) and REL-4 step 7
-     (the published release assets and their digests) -->
+| `qwen3-embedding-0.6b-1p5.sslm` | 634,489,808 bytes | `0be28bf42637264df85481eb925c46f674da7db97fd7601c6732881ad8f99fbf` |
+| `qwen3-embedding-0.6b-tokenizer.sslm` | 3,465,492 bytes | `2ba15e621e28f4f58046a89a4e4b1e3e6ea8c4e1a4f5397238634b589082b9d3` |
 
 ```sh
-sha256sum {{MODEL_ASSET_NAME}} {{TOKENIZER_ASSET_NAME}}                    # Linux
-certutil -hashfile {{MODEL_ASSET_NAME}} SHA256                              # Windows
+sha256sum qwen3-embedding-0.6b-1p5.sslm qwen3-embedding-0.6b-tokenizer.sslm   # Linux
+certutil -hashfile qwen3-embedding-0.6b-1p5.sslm SHA256                        # Windows
 ```
 
 **Converting instead.** You can produce the files yourself from the Hugging Face checkpoint at revision
@@ -115,14 +113,11 @@ shows, so the engine pin tool and the build both refuse to run while any is set
 (`SEMB_PIN_AMBIENT_COMPILER_INPUT`, `SEMB_BUILD_AMBIENT_COMPILER_INPUT`), naming the variable.
 
 The compiler environment each certified cell was built in:
-<!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 | Member | Compiler | Environment |
 |---|---|---|
-| `msvc19.33-auto` | MSVC 19.33.31631 | {{ENV_MSVC1933}} |
-| `clangcl18.1.8-auto` | clang-cl 18.1.8 | {{ENV_CLANGCL1818}} |
-<!-- filled by: REL-4 step 4 — the package's recorded environment per member (Visual Studio / Build Tools
-     edition and vcvars version; LLVM install) -->
+| `msvc19.33-auto` | MSVC 19.33.31631 | Windows 11 Pro 10.0.26300; an x64 shell from `vcvars64.bat -vcvars_ver=14.33` (MSVC toolset 14.33.31629, `cl` 19.33.31631) |
+| `clangcl18.1.8-auto` | clang-cl 18.1.8 | Windows 11 Pro 10.0.26300; the same `vcvars64.bat -vcvars_ver=14.33` shell (MSVC STL 202205L), with `CC` and `CXX` set to clang-cl 18.1.8 |
 
 ### Using the installed library
 
@@ -366,7 +361,6 @@ table is generated from it.
 |---|---|---|---|---|---|
 | `msvc19.33-auto@avx2` | Windows x64 | MSVC 19.33.31631 | auto | AVX2 | AMD Ryzen 9 5950X |
 | `clangcl18.1.8-auto@avx2` | Windows x64 | clang-cl 18.1.8 (MSVC frontend 19.33.31631) | auto | AVX2 | AMD Ryzen 9 5950X |
-<!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 1.0 certifies what was tested: two cells, one pairwise proof, on one machine. Both are 64-bit Windows builds at
 AVX2.
@@ -385,13 +379,11 @@ when those cells are added.
 Reading the table:
 
 - **Membership is by exact compiler build.** MSVC 19.33.31631 is a member; another MSVC 19.33 build is not.
-  <!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 - **An auto-dispatching build is certified per tier, and 1.0 certifies AVX2 only.** An `-auto` build picks its
   CPU kernels at run time from the host. On a host whose best tier is AVX-512 or SSE2 it runs a tier with no
   cell, so it is uncertified there. **If you ship a baked bank to players, this matters:** on such a player's
   machine the bank is refused at query open (`SEMB_FINGERPRINT_MISMATCH`) rather than searched with different
   vectors.
-  <!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 - **Check your own build on your own host** with `semb --version`. It prints the SuperEmbedder version, the engine
   pin, the build's descriptor, the tier it dispatched to, the certification line and the SHA-256 of the identity
   file and of the list, the linked engine's build report, and the cell this build is on this host — or
@@ -405,23 +397,21 @@ banks refuse each other by name (`SEMB_FINGERPRINT_MISMATCH`) rather than mixing
 A GPU is never a cell: a GPU process takes its build's CPU cell. These GPUs have reproduced their cell's
 certified rows on a GPU-enabled build:
 
-{{VERIFIED_GPUS_TABLE}}
-<!-- filled by: REL-4 step 4 — generated from docs/certified-builds.json's gpuVerifications[]: vendor, device,
-     adapter name, driver, cell -->
+| Vendor | Device | Adapter | Driver | Cell |
+|---|---|---|---|---|
+| `0x1002` (AMD) | `0x744c` | AMD Radeon RX 7900 XT | 32.0.21030.2001 | `msvc19.33-auto@avx2` |
 
 ### Checking your build
 
 `docs/certification/reference-bank/` holds a bank of the certification corpus baked by a certified cell.
-<!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 To check that your build reproduces it, use the `corpus-239-cli.jsonl` corpus file committed beside the bank. Each
 row has string `id` and `text` members, with the certification fixture's `label` used as `id`:
 
 ```sh
-semb verify docs/certification/reference-bank/{{REFERENCE_BANK_STEM}} \
+semb verify docs/certification/reference-bank/corpus-239 \
     --model <model>.sslm --tokenizer <tokenizer>.sslm \
     --corpus docs/certification/reference-bank/corpus-239-cli.jsonl
 ```
-<!-- filled by: REL-4 step 5.4 — the committed reference bank's stem -->
 
 `semb verify` exits 0 when every row matches, and otherwise names the mismatch (`SEMB_BANK_DIGEST_MISMATCH`,
 `SEMB_CORPUS_DIGEST_MISMATCH`, or `SEMB_FINGERPRINT_MISMATCH` for a build on a different epoch).
@@ -438,7 +428,6 @@ executed witness results and the certification epoch. A change to any of these c
 records it, and a query against a bank with a different fingerprint is refused. A code change outside what
 the witnesses execute can change output without moving the fingerprint. The certified set and `semb verify`
 against the reference bank check for such changes on the certification corpus.
-<!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 
 **Epochs and re-baking.** A bank's epoch names a certification line.
 
@@ -490,10 +479,7 @@ with a paired 95% bootstrap interval:
 
 Measured on an MSVC 19.33.31631 Release build (commit `2001662`) on an AMD Ryzen 9 3950X, over a fixed query-sampled pool per set (SciFact: 300 queries, 411 documents; FiQA-2018: 150 queries, 546 documents; SCIDOCS: 150 queries, 824 documents); the figures are relative to
 that pool, not to each set's full leaderboard corpus. They equal the SuperSLM engine's own embedding on the same
-pool exactly. English is the only language measured. {{RETRIEVAL_CARRY_SENTENCE}}
-<!-- filled by: RETRIEVAL_CARRY_SENTENCE by REL-2 step 2 and REL-4 step 5.3: "The 1.0.0 release produces the same document
-     and query vectors as the build measured, so these figures apply to it unchanged." — or, if vectors moved,
-     the re-measured figures replace the table. -->
+pool exactly. English is the only language measured. The 1.0.0 release produces the same document and query vectors as the build measured, so these figures apply to it unchanged.
 
 ## Limits
 

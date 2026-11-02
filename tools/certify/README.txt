@@ -40,7 +40,7 @@ PACKAGE CONTENTS
   python\                 the embeddable CPython 3.13 (amd64) with numpy in Lib\site-packages
   python-runtime.json     the two downloads' names and SHA-256s and the unpacked tree's digest
                           (also in package.json under pythonRuntime)
-  gpu-legs.json           GPU mode's other legs (U3 fills it; see GPU MODE)
+  gpu-legs.json           GPU mode's other legs (empty for 1.0; see GPU MODE)
   results\                created by the script; the only place it writes
 
 RUNNING IT
