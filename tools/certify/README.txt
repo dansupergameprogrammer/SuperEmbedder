@@ -13,31 +13,25 @@ binaries, the model and tokenizer, the corpus, and one script. Nothing on the ma
 that runs it needs Visual Studio, CMake or a compiler. It runs every certified cell's
 bake on the host whose tier the cell names and writes the run files the release list
 cites (docs/certification/1.0.0/<cell id>/, U2-3 item 12), plus msvc19.33-auto's
-query session, round trip and readings, C63 on the forced AVX-512 member, and the GPU
-binary's runs.
+query session, round trip and readings, and the GPU binary's runs. The 1.0 certified set
+is two members, msvc19.33-auto and clangcl18.1.8-auto, and the GPU binary.
 
 The host needs:
   - Windows PowerShell 5.1 or PowerShell 7 (either works; the script is ASCII-only).
   - Nothing else for Python: the package carries its own (python\, the Windows embeddable
     CPython 3.13 with numpy), which runs msvc19.33-auto's round trip and readings on both
     hosts. Nothing on PATH is used. -Python <python.exe> overrides it (not for certification).
-  - The Ubuntu-24.04 WSL distro, for the WSL member (runtime only; no compiler):
-        wsl --install -d Ubuntu-24.04 --no-launch
-        wsl -d Ubuntu-24.04 -u root          (once, to initialize it; then exit)
   - The Microsoft Visual C++ runtime the MSVC binaries load (the VS 2022 redistributable).
 
 PACKAGE CONTENTS
 ----------------
   run_certify.ps1         the entry script
   package.json            product commit, derivation-input digest, artifact hashes
-  bin\<member>\           semb.exe (semb for the WSL member), compile-flags.json,
-                          engine-flags.json, member.json -- one folder per member:
-                            msvc19.33-auto  msvc19.33-sse2  msvc19.33-avx2
-                            msvc19.33-avx512 (also c63.exe)  clangcl18.1.8-auto
-                            msvc19.44.35214-auto  gcc13.3.0-wsl-auto
+  bin\<member>\           semb.exe, compile-flags.json, engine-flags.json, member.json --
+                          one folder per member: msvc19.33-auto  clangcl18.1.8-auto
   bin\msvc19.33-auto-gpu\ the GPU binary: semb.exe and shaders\ (not a member)
-  bin\tools\              host_cpuid.exe and host_cpuid (the CPU probe, Windows and
-                          Linux builds), sf_roundtrip.exe (the round trip's program)
+  bin\tools\              host_cpuid.exe (the CPU probe), sf_roundtrip.exe (the round
+                          trip's program)
   artifacts\              the model and tokenizer
   corpus\                 corpus-239 as semb bake's {id, text} JSONL
   c63\                    C63's two texts
@@ -55,18 +49,11 @@ Open PowerShell in the package folder.
 
   Dev box, REL-4 step 2 (provisional binaries, frozen tree):
       .\run_certify.ps1 -Gpu
-  Work machine, sitting 1 (REL-4 step 3):
-      .\run_certify.ps1 -Host -Gpu
   Dev box, REL-4 step 5.1 (final binaries):
-      .\run_certify.ps1 -Final -Members msvc19.33-auto,msvc19.33-sse2,msvc19.33-avx2,clangcl18.1.8-auto,msvc19.44.35214-auto,gcc13.3.0-wsl-auto
-  Work machine, sitting 2 (REL-4 step 5.2):
-      .\run_certify.ps1 -Final -Members msvc19.33-auto,msvc19.33-avx512,clangcl18.1.8-auto,msvc19.44.35214-auto,gcc13.3.0-wsl-auto
+      .\run_certify.ps1 -Final -Members msvc19.33-auto,clangcl18.1.8-auto
 
-Without -Members the script runs the members this host runs: on a host with
-AVX-512F/BW (the work machine) msvc19.33-avx512 and the four auto members, on any
-other host (the dev box) msvc19.33-sse2, msvc19.33-avx2 and the four auto members.
+Without -Members the script runs both members.
 Windows PowerShell may need: powershell -ExecutionPolicy Bypass -File run_certify.ps1
-Use a 64-bit PowerShell: a 32-bit one cannot see System32\wsl.exe and refuses the WSL member.
 
 IF IT STOPS OR THE MACHINE CRASHES
 ----------------------------------
@@ -98,9 +85,8 @@ GPU MODE
 -Gpu runs the GPU binary's `semb bake --device gpu` over the proof corpus and files it
 under results\docs\certification\1.0.0\gpu\<runId>\, with the manifest's device and
 four gpu_* labels copied into run.json (U2-3 item 15). It then runs every leg in
-gpu-legs.json whose hostTier is this host's (the work machine's C10(c), C10(g) and
-C11 cells, te266 sec 4.5), each filed under its own run id. The list ships empty:
-U3 fills it, and adds --device gpu to the product, before REL-4 step 3.
+gpu-legs.json whose hostTier is this host's, each filed under its own run id. For 1.0 it
+holds the RX 7900 XT's one leg.
 
 BUILDING THE PACKAGE (dev box)
 ------------------------------
@@ -110,10 +96,8 @@ SuperSLM clone holding v1.18.1 at <slm>, and a SuperFAISS clone at <sf>. Pin and
 refuse by name (SEMB-PACKAGE-BUILD-ENV-FLAGS-SET) while CFLAGS, CXXFLAGS, LDFLAGS or
 CMAKE_TOOLCHAIN_FILE is set.
 
-For each MSVC 19.33 member (auto, sse2, avx2, avx512) and clangcl18.1.8-auto, in a
-shell after `vcvars64.bat -vcvars_ver=14.33` (clang-cl: also set CC and CXX to
-clang-cl); for msvc19.44.35214-auto after BuildTools' `vcvars64.bat`; for
-gcc13.3.0-wsl-auto inside `wsl -d Ubuntu-24.04 -u root`:
+For msvc19.33-auto and clangcl18.1.8-auto, in a shell after
+`vcvars64.bat -vcvars_ver=14.33` (clang-cl: also set CC and CXX to clang-cl):
   1. python tools/certify/build_package.py pin   --member <m> --engine-prefix <e_m> --source <slm>
   2. python tools/certify/build_package.py build --member <m> --engine-prefix <e_m> --build-dir <b_m>
   3. python tools/certify/build_package.py stage --package <pkg> --member <m> --build-dir <b_m> --engine-prefix <e_m>
@@ -124,9 +108,8 @@ The GPU binary, after msvc19.33-auto is staged, in the MSVC 19.33 shell (needs U
      msvc19.33-auto's.
 Tools:
   5. In the MSVC 19.33 shell: cl /nologo /O2 /EHsc tools\certify\host_cpuid.cpp /Fe:<t>\host_cpuid.exe
-  6. In the WSL distro: g++ -O2 -o <t>/host_cpuid tools/certify/host_cpuid.cpp
   7. In the MSVC 19.33 shell (compiles sf_roundtrip.exe from the pinned SuperFAISS tree):
-     python tools/certify/build_package.py tools --package <pkg> --probe-windows <t>\host_cpuid.exe --probe-linux <t>/host_cpuid --superfaiss-source <sf>
+     python tools/certify/build_package.py tools --package <pkg> --probe-windows <t>\host_cpuid.exe --superfaiss-source <sf>
 Python (the package's own; download these two files, nothing else, on any machine):
      a. https://www.python.org/downloads/windows/ -> the newest Python 3.13.x release ->
         "Windows embeddable package (64-bit)": python-3.13.<n>-embed-amd64.zip
@@ -137,5 +120,3 @@ Python (the package's own; download these two files, nothing else, on any machin
      version or architecture, a wheel not tagged cp313-cp313-win_amd64, or a SHA-256 that
      differs; a re-run whose files still match does nothing)
   9. python tools/certify/build_package.py finish --package <pkg> --model <model.sslm> --tokenizer <tokenizer.sslm>
-Before the work machine's first sitting, after the dev box's own run:
-  10. python tools/certify/build_package.py receipts --package <pkg> --from <pkg>\results

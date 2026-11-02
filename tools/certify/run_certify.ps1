@@ -9,22 +9,19 @@
 # USAGE
 #   .\run_certify.ps1                   provisional runs of the members this host runs (below), with, for
 #                                       msvc19.33-auto, the query session, the round trip and U2-4's readings,
-#                                       and, for msvc19.33-avx512, C63 at max_concurrency 1 and 4
 #   .\run_certify.ps1 -Gpu              the same, then GPU mode: the GPU binary's proof-corpus bake
 #                                       (U2-3 item 15) and every gpu-legs.json leg for this host's tier
 #   .\run_certify.ps1 -Host -Gpu        the work machine's first sitting: the above, plus host mode, which bakes
 #                                       the forced-SSE2 and forced-AVX2 members here and compares their rows
 #                                       with the dev-box receipts in receipts\
-#   .\run_certify.ps1 -Final -Members msvc19.33-auto,msvc19.33-avx512,...
+#   .\run_certify.ps1 -Final -Members msvc19.33-auto,clangcl18.1.8-auto
 #                                       final mode: only the named members, under <cell id>\final\
 #   -Python <python.exe>                the Python that runs the round trip and the readings; default: the
 #                                       package's own python\python.exe (embeddable CPython 3.13 with numpy,
 #                                       D-SLM7811), so both hosts run the same interpreter and the same numpy
 #
-# MEMBERS THIS HOST RUNS (default). The CPU probe reads the host's best tier. A host with AVX-512F/BW (the work
-# machine) runs msvc19.33-avx512 and the four auto members; any other host (the dev box) runs msvc19.33-sse2,
-# msvc19.33-avx2 and the four auto members. A forced member whose tier the host lacks is refused by name before
-# anything runs.
+# MEMBERS (default): the 1.0 certified set, msvc19.33-auto and clangcl18.1.8-auto, both auto-dispatched. The
+# CPU probe still reads the host's best tier, which each run records.
 #
 # RESUMABLE. Each step (one member's bake, the query session, the round trip, the readings, C63, one GPU leg)
 # writes its files into a staging directory, moves them into place, and then records results\state\<machine>\
@@ -61,8 +58,7 @@ $Results = Join-Path $Root "results"
 $LogsDir = Join-Path $Results "logs"
 $Release = "1.0.0"
 $WslDistro = "Ubuntu-24.04"
-$AllMembers = @("msvc19.33-auto", "msvc19.33-sse2", "msvc19.33-avx2", "msvc19.33-avx512", "clangcl18.1.8-auto",
-                "msvc19.44.35214-auto", "gcc13.3.0-wsl-auto")
+$AllMembers = @("msvc19.33-auto", "clangcl18.1.8-auto")
 $AutoMember = "msvc19.33-auto"
 $WslMember = "gcc13.3.0-wsl-auto"
 $C63Member = "msvc19.33-avx512"
@@ -249,6 +245,7 @@ function Get-Semb([string]$member) {
 # --------------------------------------------------------------------------------------------------------------
 if ($Final -and ($Gpu -or $HostMode)) { Add-Refusal "SEMB-PACKAGE-USAGE -Final runs neither -Gpu nor -Host (REL-4 step 5)" }
 if ($Final -and $Members.Count -eq 0) { Add-Refusal "SEMB-PACKAGE-USAGE -Final runs only the members named with -Members" }
+if ($HostMode) { Add-Refusal "SEMB-PACKAGE-USAGE -Host bakes the forced members, which the 1.0 package does not carry" }
 $Members = @($Members | ForEach-Object { $_ -split ',' } | Where-Object { $_ } | ForEach-Object { $_.Trim() })
 foreach ($m in $Members) { if ($AllMembers -notcontains $m) { Add-Refusal "SEMB-PACKAGE-UNKNOWN-MEMBER $m" } }
 
@@ -280,12 +277,7 @@ if (-not (Test-Path -LiteralPath $winProbe -PathType Leaf)) {
 
 # The members this invocation runs.
 if ($Members.Count -eq 0 -and $null -ne $HostProbe) {
-    if ($HostProbe.Tier -eq "avx512") {
-        $Members = @("msvc19.33-auto", "msvc19.33-avx512", "clangcl18.1.8-auto", "msvc19.44.35214-auto", $WslMember)
-    } else {
-        $Members = @("msvc19.33-auto", "msvc19.33-sse2", "msvc19.33-avx2", "clangcl18.1.8-auto",
-                     "msvc19.44.35214-auto", $WslMember)
-    }
+    $Members = $AllMembers
 }
 $HostLegs = @()
 if ($HostMode) { $HostLegs = $HostModeMembers }
@@ -304,7 +296,8 @@ if ($Final) { $needMembers = $Members } else { $needMembers = $AllMembers }
 foreach ($m in $needMembers) { if ($null -eq (Get-Semb $m)) { Add-Refusal "SEMB-PACKAGE-BINARY-MISSING $m" } }
 if (-not $Final) {
     if ($null -eq (Get-Semb $GpuBinary)) { Add-Refusal "SEMB-PACKAGE-BINARY-MISSING $GpuBinary" }
-    if (-not (Test-Path -LiteralPath (Join-Path (Get-MemberDir $C63Member) "c63.exe") -PathType Leaf)) {
+    if (($Members -contains $C63Member) -and
+        -not (Test-Path -LiteralPath (Join-Path (Get-MemberDir $C63Member) "c63.exe") -PathType Leaf)) {
         Add-Refusal "SEMB-PACKAGE-BINARY-MISSING c63"
     }
 }

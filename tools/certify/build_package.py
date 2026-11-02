@@ -70,9 +70,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 
-# The ruled members (D-SLM4739, D-SLM7253), in the order the package runs them, and the GPU binary (TE-401).
-MEMBERS = ("msvc19.33-auto", "msvc19.33-sse2", "msvc19.33-avx2", "msvc19.33-avx512", "clangcl18.1.8-auto",
-           "msvc19.44.35214-auto", "gcc13.3.0-wsl-auto")
+# The 1.0 certified set (Dan, 2026-11-02: certify on what was tested), in the order the package runs them, and the
+# GPU binary (TE-401).
+MEMBERS = ("msvc19.33-auto", "clangcl18.1.8-auto")
 GPU_BINARY = "msvc19.33-auto-gpu"
 GPU_ENGINE_OF = "msvc19.33-auto"
 WSL_MEMBER = "gcc13.3.0-wsl-auto"
@@ -235,7 +235,8 @@ def cmd_tools(args, environ: dict) -> int:
     tools = args.package / "bin" / "tools"
     tools.mkdir(parents=True, exist_ok=True)
     shutil.copy2(args.probe_windows, tools / "host_cpuid.exe")
-    shutil.copy2(args.probe_linux, tools / "host_cpuid")
+    if args.probe_linux is not None:  # only a package carrying the WSL member needs the Linux probe
+        shutil.copy2(args.probe_linux, tools / "host_cpuid")
     program = args.sf_roundtrip
     if program is None:
         import importlib.util
@@ -407,7 +408,7 @@ def main(argv: list[str], environ: dict | None = None) -> int:
     p = sub.add_parser("tools")
     p.add_argument("--package", type=Path, required=True)
     p.add_argument("--probe-windows", type=Path, required=True)
-    p.add_argument("--probe-linux", type=Path, required=True)
+    p.add_argument("--probe-linux", type=Path, default=None)
     p.add_argument("--sf-roundtrip", type=Path, default=None)
     p.add_argument("--superfaiss-source", required=True)
     p.add_argument("--repo", type=Path, default=REPO)
