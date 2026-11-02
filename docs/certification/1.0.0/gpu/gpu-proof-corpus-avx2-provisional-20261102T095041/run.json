@@ -1,0 +1,41 @@
+{
+    "cellId":  "msvc19.33-auto@avx2",
+    "runId":  "gpu-proof-corpus-avx2-provisional-20261102T095041",
+    "date":  "2026-11-02",
+    "pass":  "provisional",
+    "host":  "AMD Ryzen 9 5950X 16-Core Processor",
+    "manifestSha256":  "9b8ff45749d431339739516ed78ef9fc9ea59482f17383795c6626a72bcdc86e",
+    "buildDescriptor":  {
+                            "os":  "windows",
+                            "isa":  "x86-64",
+                            "toolchain":  "MSVC 193331631.0",
+                            "stdlib":  "MSVC STL 202205L",
+                            "configuration":  "Release",
+                            "buildSystem":  "cmake",
+                            "dispatch":  "auto",
+                            "compileFlags":  "205f4e0199088defb1cf1580a8916464db86477664998b078136fc366104c29b",
+                            "engineFlags":  "751427436f68e8ef11d5d2286f6ed1aaa27e6100891ff671013af148e6f09ecf"
+                        },
+    "machineTier":  "avx2",
+    "certificationEpoch":  "77cff77602bd9304b6bd316a2ff84ea1fe5be1b34184e0f51bebe1c6f0c8d7ef",
+    "certifiedBuildsSha256":  "aa6aaf55e949b001a81371ed044bdc473cecc7439f668b2dd170a5626d7dff3d",
+    "certifiedCell":  "msvc19.33-auto@avx2",
+    "dispatchedTier":  "avx2",
+    "hostBestTier":  "avx2",
+    "hostFeatures":  "sse2=1 osxsave=1 avx=1 fma=1 avx2=1 avx512f=0 avx512bw=0 xcr0=0x7",
+    "enginePin":  {
+                      "tag":  "v1.18.1",
+                      "commit":  "c3c14b16690a0c0c54de781f6f30380d88e62bd1",
+                      "engine_tree_sha":  "0d385b026d36558a454b1970c9c840bc6b58c530b39a1f0f87d63bbd1c5c5a64"
+                  },
+    "productCommit":  "d46efa5c5b396c79c7754b5de9aa5cddfe6ca233",
+    "derivationInputsSha256":  "435df9c79bec4f80b173cad57835fb40c5651ad0e4441a0d6657c628c38a5694",
+    "rowDigest":  "e8ad5d05c31eced1afa8967f0babc72212718effea9e19b0c46d2282e9bcde72",
+    "tokenIdDigest":  "e440e227fb5bdd3cc58895ac4fa536e533c8e5988fc993c4f3286e36680de835",
+    "device":  "gpu",
+    "gpu_vendor_id":  "0x1002",
+    "gpu_device_id":  "0x744c",
+    "gpu_adapter_name":  "AMD Radeon RX 7900 XT",
+    "gpu_driver_version":  "32.0.21030.2001",
+    "gpuLeg":  "proof-corpus"
+}
