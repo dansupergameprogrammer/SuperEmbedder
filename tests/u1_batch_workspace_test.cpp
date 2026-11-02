@@ -1379,28 +1379,37 @@ int main(int argc, char** argv) {
   // forced to 1 in every earlier cell -- none of them can tell a genuinely
   // parallel acquisition from the original single-workspace path. This cell
   // opens a pool of kPoolSize > 1 and issues a batch call over MORE
-  // documents than the pool, so T == kPoolSize (assuming this host's own
-  // hardware concurrency is at least kPoolSize, true of any machine this
-  // suite runs on today) and proves, at the seam's own per-acquisition
+  // documents than the pool, so T == min(kPoolSize, hardware concurrency)
+  // -- the product's own T formula (engine_adapter_interim.cpp's
+  // HardwareConcurrencyOrOne()), computed here rather than assumed: a hosted
+  // CI runner with fewer hardware threads than kPoolSize realizes a smaller
+  // T, and this cell asserts against that T (kParallel below). On a host
+  // whose T would be 1 the cell cannot observe parallelism at all and is
+  // reported [MISSING PREREQUISITE] rather than failed. With that T, the
+  // cell proves, at the seam's own per-acquisition
   // granularity (OnAcquired fires once per slot acquired, TE-350's own
   // restatement above):
   //
-  //   1. the call genuinely acquires MORE than one workspace (kPoolSize of
-  //      them, parked simultaneously -- not kPoolSize sequential
+  //   1. the call genuinely acquires MORE than one workspace (T of
+  //      them, parked simultaneously -- not T sequential
   //      acquisitions disguised as one observation);
   //   2. every row it produces is byte-identical to a serial (pool-of-1)
   //      reference, for every document, not only the first or the last;
-  //   3. every one of the kPoolSize workspaces acquired is released before
+  //   3. every one of the T workspaces acquired is released before
   //      the call returns -- proven by a SECOND full-size call, through the
-  //      SAME handle, reaching kPoolSize simultaneous parks again. A leaked
+  //      SAME handle, reaching T simultaneous parks again. A leaked
   //      lease from the first call caps the second call's own parked count
-  //      strictly below kPoolSize, which `semb_test_seam_wait_parked` below
+  //      strictly below T, which `semb_test_seam_wait_parked` below
   //      reports as a timeout (a named FAIL, not a silent pass at a lower
-  //      number, since the Verdict compares the exact reading to kPoolSize).
+  //      number, since the Verdict compares the exact reading to T).
   // =========================================================================
   {
     constexpr unsigned kPoolSize = 4;
     constexpr unsigned kDocCount = 9;  // > kPoolSize, so every worker's own queue holds > 1 document
+    // T = min(documents, pool, hardware concurrency), exactly as production
+    // computes it; kDocCount > kPoolSize, so the document bound never binds.
+    const unsigned hc_raw = std::thread::hardware_concurrency();
+    const unsigned kParallel = std::min(kPoolSize, hc_raw == 0 ? 1u : hc_raw);
     std::vector<std::pair<std::string, std::string>> docs_named;
     for (unsigned i = 0; i < kDocCount; ++i) {
       docs_named.emplace_back("c52-" + std::to_string(i),
@@ -1422,8 +1431,12 @@ int main(int argc, char** argv) {
       }
     }
 
-    semb_encoder enc = Open(a, kPoolSize);
-    if (enc && reference.size() == kDocCount) {
+    semb_encoder enc = kParallel >= 2 ? Open(a, kPoolSize) : nullptr;
+    if (kParallel < 2) {
+      Missing("C52",
+              "hardware_concurrency()=" + std::to_string(hc_raw) +
+                  " makes T = 1, so no parallel acquisition exists to observe");
+    } else if (enc && reference.size() == kDocCount) {
       ResetSeam(deadline30());
 
       std::vector<semb_document> docs;
@@ -1433,24 +1446,25 @@ int main(int argc, char** argv) {
       float* aligned = reinterpret_cast<float*>((p + 15) & ~uintptr_t(15));
 
       auto RunFullPoolBatch = [&](const char* label) -> bool {
-        Verdict(semb_test_seam_arm_park(kPoolSize) == 1,
-                std::string(label) + " (setup) arm " + std::to_string(kPoolSize) + " park(s)", "");
+        Verdict(semb_test_seam_arm_park(kParallel) == 1,
+                std::string(label) + " (setup) arm " + std::to_string(kParallel) + " park(s)", "");
         size_t req = 0xBAD5EED;
         semb_status batch_status = -1000;
         auto job = std::async(std::launch::async, [&] {
           batch_status = semb_encode_batch(enc, docs.data(), docs.size(), aligned, buf.size() - 16, &req);
         });
         const bool all_parked =
-            semb_test_seam_wait_parked(kPoolSize, 10000) == 1 && semb_test_seam_parked() == kPoolSize;
+            semb_test_seam_wait_parked(kParallel, 10000) == 1 && semb_test_seam_parked() == kParallel;
         Verdict(all_parked,
-                std::string(label) + " all " + std::to_string(kPoolSize) +
-                    " workspace(s) acquired and parked SIMULTANEOUSLY (T > 1 genuinely reached, not "
-                    "kPoolSize sequential single-workspace acquisitions)",
+                std::string(label) + " all " + std::to_string(kParallel) +
+                    " workspace(s) acquired and parked SIMULTANEOUSLY (T = min(kPoolSize=" +
+                    std::to_string(kPoolSize) + ", hardware_concurrency()) > 1 genuinely reached, not "
+                    "T sequential single-workspace acquisitions)",
                 "parked=" + std::to_string(semb_test_seam_parked()));
         if (all_parked) {
           const uint64_t acquisitions = semb_test_seam_acquisitions();
-          Verdict(acquisitions >= kPoolSize,
-                  std::string(label) + " at least kPoolSize acquisitions recorded while parked",
+          Verdict(acquisitions >= kParallel,
+                  std::string(label) + " at least T acquisitions recorded while parked",
                   std::to_string(acquisitions));
         }
         ReleaseBounded(deadline30());
@@ -1473,7 +1487,8 @@ int main(int argc, char** argv) {
         }
         Verdict(rows_match,
                 "C52 every one of " + std::to_string(kDocCount) +
-                    " documents in a genuinely T == kPoolSize parallel batch call is byte-identical to "
+                    " documents in a genuinely T = " + std::to_string(kParallel) +
+                    " parallel batch call is byte-identical to "
                     "the serial (pool-of-1) reference -- threading changes only which worker computes "
                     "which document, never what it computes",
                 "");
