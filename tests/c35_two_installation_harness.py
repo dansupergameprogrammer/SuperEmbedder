@@ -17,8 +17,15 @@ bank is queried from the other with the real artifact.  Legs:
          superslm.lib standing: SEMB_FINGERPRINT_MISMATCH at query open.
   (ix)   an arithmetic edit in a non-inline engine .cpp (src/silu_lut.cpp),
          B's library otherwise identical: SEMB_FINGERPRINT_MISMATCH.
-  (xiii) B's docs/certified-builds.json differs by one byte:
-         SEMB_FINGERPRINT_MISMATCH.
+  (xiii) B's docs/certification-identity.json differs by one byte (one
+         letter of its `product` value case-swapped, so the file stays
+         parseable ASCII JSON of the same length): B's certification_epoch
+         moves, and B refuses A's bank with SEMB_FINGERPRINT_MISMATCH.  The
+         edit is to the identity file, not docs/certified-builds.json:
+         certification_epoch digests the identity file's bytes alone, and the
+         certified-builds list never moves it (tools/write_certification_
+         identity.py; cmake/CertifiedBuilds.cmake), so an edit to the list
+         could never satisfy this leg's precondition.
   (p)    a bank baked by the provisional build (an installation exported at the
          pre-change revision) queried by the final build:
          SEMB_FINGERPRINT_MISMATCH by name -- the upgrade path every U1-era
@@ -70,7 +77,9 @@ developer shell so `cl`, `ninja` and `cmake` are on PATH):
 
 Order for one full reading: install A (msvc, none), install P (--rev <the
 provisional revision>), install B_i, B_vi, B_x, B_ix, B_xiii; bake A and P;
-identity for every B; then the six legs.  Not run in CI.
+identity for every B and for A (leg (p) queries P's bank on A, `--bank-from P
+--query-on A`, and reads the final fingerprint from A's identity bank); then
+the six legs.  Not run in CI.
 """
 from __future__ import annotations
 
@@ -134,20 +143,34 @@ def apply_edit(tree: Path, edit: tuple[str, str, str]) -> str:
 
 
 def edit_cert_doc(tree: Path) -> str:
-    doc = tree / "docs" / "certified-builds.json"
+    """Leg (xiii)'s construction: one byte of docs/certification-identity.json,
+    the file certification_epoch digests (a certified cell's epoch is its
+    SHA-256, an uncertified build's the SHA-256 of "SEMB-UNCERTIFIED\\0" and
+    its bytes), so the edit moves the epoch on either verdict.  One letter of
+    the `product` value is case-swapped: configure refuses an identity that
+    is not parseable JSON (SEMB_CERTIFICATION_IDENTITY_UNPARSEABLE), the
+    encoder reads only its `line` member, and configure's structural check
+    never reads it, so the edited file builds and nothing but the epoch
+    changes.  docs/certified-builds.json is left as exported."""
+    rel = "docs/certification-identity.json"
+    doc = tree / rel
     if not doc.is_file():
-        raise SystemExit("RED: docs/certified-builds.json is absent from this revision -- the certification epoch is "
-                         "still the pending sentinel (U1 Slice 7 step 4 unbuilt), so leg (xiii) has no document to "
-                         "differ by one byte")
+        raise SystemExit(f"RED: {rel} is absent from this revision -- certification_epoch has no identity to "
+                         f"digest (U2-3 item 9 unbuilt), so leg (xiii) has no document to differ by one byte")
     original = doc.read_bytes()
-    m = re.search(rb'"evidence"\s*:\s*"([^"\\]*)"', original)
+    m = re.search(rb'"product"\s*:\s*"([^"\\]*)"', original)
     index = next((i for i in range(m.start(1), m.end(1)) if original[i:i + 1].isalpha()), None) if m else None
     if index is None:
-        raise SystemExit("INEVALUABLE: the document carries no pairwiseProofs[].evidence string with a letter to edit")
+        raise SystemExit(f"INEVALUABLE: {rel} carries no `product` string with a letter to edit")
     edited = original[:index] + original[index:index + 1].swapcase() + original[index + 1:]
-    json.loads(edited.decode("utf-8"))
+    before, after = json.loads(original.decode("ascii")), json.loads(edited.decode("ascii"))
+    if (len(edited) != len(original) or sum(x != y for x, y in zip(original, edited)) != 1
+            or after.get("line") != before.get("line") or sorted(after) != sorted(before)):
+        raise SystemExit(f"INEVALUABLE: the {rel} edit is not a one-byte change leaving `line` and the members as "
+                         f"they were")
     doc.write_bytes(edited)
-    return f"docs/certified-builds.json byte {index}: {original[index:index + 1]!r} -> {edited[index:index + 1]!r}"
+    return (f"{rel} byte {index}: {original[index:index + 1]!r} -> {edited[index:index + 1]!r} (sha256 "
+            f"{hashlib.sha256(original).hexdigest()} -> {hashlib.sha256(edited).hexdigest()})")
 
 
 def lock_fields(lock: Path) -> dict:

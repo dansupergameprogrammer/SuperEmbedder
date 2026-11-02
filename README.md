@@ -180,7 +180,7 @@ sec 4.4d item 4; D-SLM6161 holds hosted CI scarce):
   engine prefix; the 239-document corpus is baked on one and queried from the
   other. Its 1.0 legs: an identical rebuild and an MSVC-against-clang-cl pair
   must accept; an edited epilogue, an edited non-inline engine `.cpp`, a
-  one-byte certification-document edit and a bank baked by the provisional
+  one-byte certification-identity edit and a bank baked by the provisional
   build must each be refused with `SEMB_FINGERPRINT_MISMATCH`. It runs in
   phases from a Visual Studio developer shell, never in CI; the phase order is
   in the script's docstring.
