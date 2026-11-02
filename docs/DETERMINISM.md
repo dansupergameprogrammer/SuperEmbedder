@@ -39,12 +39,15 @@ table is generated from it. Its format is in [FORMAT.md](FORMAT.md#3-certified-b
 
 An epoch names a **certification line**. A later release can add cells to a line without moving its epoch,
 so a list published later contains every earlier one: check membership against the line's latest published
-list. `semb --version` prints the verdict for the build on the host you run it on:
+list. 1.0's list holds two cells, `msvc19.33-auto@avx2` and `clangcl18.1.8-auto@avx2`, certified on an AMD
+Ryzen 9 5950X. AVX-512 cells, forced-SSE2 builds, MSVC 19.44 and GCC 13.3 builds, and NVIDIA GPUs at 1.18.1 are
+planned for a later update; adding them keeps the epoch, because the epoch digests only the engine pin and the
+proof corpus. `semb --version` prints the verdict for the build on the host you run it on:
 
 ```text
 {{SEMB_VERSION_SAMPLE_OUTPUT}}
 ```
-<!-- filled by: REL-4 step 7 — `semb --version` from the released auto build on the work machine -->
+<!-- filled by: REL-4 step 7 — `semb --version` from the released auto build on the certification host -->
 
 A line prints `uncertified` when the build is not a certified cell on this host. That build still runs; it
 computes the uncertified epoch, so its fingerprint differs from every certified build's, and a bank baked
@@ -86,12 +89,10 @@ A bank's `certification_epoch` names the certification line it was baked under.
   moves, the fingerprint moves, and banks baked on the old line are refused by name by builds on the new
   one. **Re-bake them.**
 
-{{INT8_BANK_BYTES_WORDING}}
-<!-- filled by: REL-4, the C15 comparison (int8 bank bytes SuperFAISS bakes from one bank, compared across
-     two machines). Equal bytes: "The guarantee holds over identical bank bytes plus identical query bytes:
-     an int8 bank SuperFAISS bakes from one bank file is byte-identical on every certified cell, so bake it
-     once and ship it." Unequal: state that int8 banks must be re-baked per machine from the shipped
-     .wvbank, and that the guarantee is stated over emitted vectors only. -->
+**int8 banks.** The guarantee is stated over emitted vectors. 1.0 has not compared the int8 bank bytes
+SuperFAISS bakes from one bank file on two machines, so it makes no claim that re-baking an int8 bank on
+another machine gives the same bytes. Bake the int8 bank once and ship those bytes; SuperFAISS's identical-hits
+guarantee holds given identical bank bytes.
 
 ## The floating-point environment
 
@@ -207,7 +208,9 @@ The guarantee on a GPU rests on three things:
 2. **GPU identity is executed, on one vendor so far at 1.18.1.** At this pin the GPU encode runs the engine's
    multi-row prompt kernels. On an AMD Radeon RX 7900 XT (driver 32.0.21030.2001), a full bake of the
    239-document certification corpus passed the open-time check, and all 239 rows matched the CPU's, with the
-   same digest. The full GPU suite and a long correctness run on that card are still in progress.
+   same digest. On the same card, the GPU test suite passed except for one known test issue, since fixed in
+   the tests (a timing-record drift in the C64 a/a2 legs, not a vector difference), and a 32,767-token
+   long-context correctness capture passed 2 of 2.
    **The multi-row GPU path has not yet been run on NVIDIA at 1.18.1.** Earlier NVIDIA evidence was on the
    engine's older one-row GPU path and does not carry over: an NVIDIA RTX 2080 SUPER and an AMD RX 7900 XTX
    produced identical bytes at engine 1.7.1 or earlier, and an NVIDIA RTX 5060 was checked at engine 1.17,

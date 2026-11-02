@@ -13,8 +13,7 @@ certification corpus.
 
 ## [Unreleased]
 
-## [1.0.0] - {{RELEASE_DATE}}
-<!-- filled by: REL-4 step 7 (the tag date) -->
+## [1.0.0] - 2026-11-02
 
 The first release, pinned to SuperSLM `1.18.1`. Release notes: [docs/releases/1.0.0.md](docs/releases/1.0.0.md).
 
@@ -35,10 +34,14 @@ The first release, pinned to SuperSLM `1.18.1`. Release notes: [docs/releases/1.
 - The encoder fingerprint over the model, the tokenizer, the composition
   literals, an executed witness and the certification epoch, recorded in
   every bank and checked at every query open.
-- The certified set: 7 builds, 11 cells, with every pair's proof published in
-  `docs/certified-builds.json`; the certification identity in
-  `docs/certification-identity.json`; each encoder open decides its own
-  build's cell ([docs/DETERMINISM.md](docs/DETERMINISM.md)).
+- The certified set: two cells, `msvc19.33-auto@avx2` and
+  `clangcl18.1.8-auto@avx2`, certified on an AMD Ryzen 9 5950X, with their
+  one pair's proof published in `docs/certified-builds.json`; the
+  certification identity in `docs/certification-identity.json`; each encoder
+  open decides its own build's cell ([docs/DETERMINISM.md](docs/DETERMINISM.md)).
+  Not yet certified (planned for a later update, which keeps the epoch):
+  AVX-512 cells, forced-SSE2 builds, MSVC 19.44 and GCC 13.3 builds, and
+  NVIDIA GPUs at 1.18.1.
   <!-- REL-4: verify against the committed docs/certified-builds.json and docs/certification/reference-bank/ before tagging -->
 - A check at every encoder and bank open that the linked engine is the one the
   build was configured against.
