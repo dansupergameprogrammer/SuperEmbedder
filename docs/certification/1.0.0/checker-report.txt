@@ -1,0 +1,2 @@
+C42(e): 2 provisional receipts and 1 pairs; 2 final replays and 1 agreeing final pairs, computed from the final runs
+ACCEPTED: docs\certified-builds.json -- every clause that grades this list
