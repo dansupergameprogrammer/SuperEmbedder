@@ -134,6 +134,7 @@
 // including both in one TU redefines SembWaPoolStatus; this file already
 // needs the real header for select, so it is the one declaration used here.
 #include "superembedder/encoder_interim_abi.h"
+#include "superembedder/certification.h"  // the cell verdict and descriptor, reported for epoch_store_check (1b)
 
 #include "superslm/artifact.h"
 #include "superslm/sha256.h"
@@ -462,6 +463,10 @@ int main(int argc, char** argv) {
     }
     std::printf("fingerprint=%s\n", Hex(fp.digest).c_str());
   }
+  // What epoch_store_check needs to tell an uncertified host (no live entry
+  // can exist for its fingerprint) from a certified toolchain.
+  std::printf("build_cell=%s\n", semb::certification::ProcessVerdict().cell.c_str());
+  std::printf("build_toolchain=%s\n", semb::certification::ThisBuild().toolchain.c_str());
   std::printf("dims=%u\n", a.dims);
   std::printf("document_count=%zu\n", docs.size());
 

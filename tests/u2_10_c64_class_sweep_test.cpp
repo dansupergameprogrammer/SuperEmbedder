@@ -1395,8 +1395,11 @@ void RunArm(Driver& d, int arm, uint64_t K, uint64_t k0, int64_t live_after_warm
   if (open) {
     const bool close_ok = Closes(c);
     c = Ctx{};  // the driver's carried state (e.g. ps_n_select's codes, m, e) is the harness's, not a leak
+    // Read the live count before building the line: inside the concatenation
+    // chain the partially built heap string would itself be counted.
+    const int64_t leak_after_close = hook::live.load() - live_after_warm;
     Line("CLOSES " + std::to_string(arm) + " ok=" + std::to_string(close_ok ? 1 : 0) +
-         " leak_after_close=" + std::to_string(hook::live.load() - live_after_warm));
+         " leak_after_close=" + std::to_string(leak_after_close));
   }
 }
 

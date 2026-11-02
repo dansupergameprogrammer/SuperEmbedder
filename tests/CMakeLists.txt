@@ -784,7 +784,7 @@ endif()
 # and semb_encode are all already built at Slice 0's own baseline).
 add_executable(c2_lineage_equality_test "${CMAKE_CURRENT_SOURCE_DIR}/c2_lineage_equality_test.cpp")
 target_link_libraries(c2_lineage_equality_test PRIVATE superembedder superslm::superslm)
-target_include_directories(c2_lineage_equality_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(c2_lineage_equality_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/src")
 set_target_properties(c2_lineage_equality_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 
 add_test(
@@ -797,6 +797,8 @@ add_test(
 		--store-root "${CMAKE_CURRENT_SOURCE_DIR}/../epoch-store"
 	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 )
+# 77: no live entry for an uncertified build's fingerprint (MISSING PREREQUISITE).
+set_tests_properties(c2_lineage_equality_test_synthetic PROPERTIES SKIP_RETURN_CODE 77)
 
 if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
 	add_test(
@@ -811,7 +813,7 @@ if(NOT SEMB_C12B_MODEL STREQUAL "" AND NOT SEMB_U1_TOKENIZER STREQUAL "")
 			--corpus-jsonl "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c12b/corpus-239.jsonl"
 		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/.."
 	)
-	set_tests_properties(c2_lineage_equality_test_real_artifact PROPERTIES LABELS "real_artifact")
+	set_tests_properties(c2_lineage_equality_test_real_artifact PROPERTIES LABELS "real_artifact" SKIP_RETURN_CODE 77)
 endif()
 
 # TE-180 item 2 (D-SLM6428 bare cell A): an empty or unreadable
@@ -927,7 +929,7 @@ set_tests_properties(c2_lineage_equality_test_synthetic_missing_corpus_jsonl_fai
 # epoch_store_emit.cpp's own header comment states the full computation).
 add_executable(epoch_store_emit "${CMAKE_CURRENT_SOURCE_DIR}/epoch_store_emit.cpp")
 target_link_libraries(epoch_store_emit PRIVATE superembedder superslm::superslm)
-target_include_directories(epoch_store_emit PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(epoch_store_emit PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_SOURCE_DIR}/src")
 set_target_properties(epoch_store_emit PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 
 # Cell 1: the store check itself.
@@ -1177,8 +1179,9 @@ set_tests_properties(u2_10_c64_class_sweep_check PROPERTIES TIMEOUT 3600)
 
 # U2 cloud build -- U2-10's C65 commissioning constructions (must-accept,
 # must-reject SEMB_C_LINKAGE_UNLISTED, vitality SEMB_C_LINKAGE_STALE) over the
-# shipped archive, on ELF. Red until the census tool (Builds item 5) exists.
-if(NOT WIN32)
+# shipped archive, on ELF (nm's ELF output: not Mach-O, so not on Apple).
+# Red until the census tool (Builds item 5) exists.
+if(NOT WIN32 AND NOT APPLE)
 	add_test(
 		NAME u2_10_c65_census_commissioning_check
 		COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/u2_10_c65_census_commissioning_check.py"
@@ -1188,8 +1191,9 @@ if(NOT WIN32)
 endif()
 
 # U2 cloud build -- U2-10's C66 (b), the RLIMIT_AS sweep (the GCC leg; the
-# Job-object leg is MSVC's). Links the SHIPPED static target, no seam.
-if(NOT WIN32)
+# Job-object leg is MSVC's). Links the SHIPPED static target, no seam. The
+# sweep reads /proc, so Linux only.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 	add_executable(u2_10_c66b_rlimit_sweep_test EXCLUDE_FROM_ALL u2_10_c66b_rlimit_sweep_test.cpp)
 	target_link_libraries(u2_10_c66b_rlimit_sweep_test PRIVATE superembedder superslm::superslm Threads::Threads)
 	add_test(

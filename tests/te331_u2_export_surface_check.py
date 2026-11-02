@@ -205,9 +205,14 @@ def build_so(work: Path, name: str, funcs: list[str], hidden: bool, cc: str) -> 
     return so
 
 
+# The object format the root CMakeLists.txt's POST_BUILD check passes:
+# macho on Apple, elf elsewhere.
+LIBRARY_FORMAT = "macho" if sys.platform == "darwin" else "elf"
+
+
 def check(library: Path) -> subprocess.CompletedProcess:
     return run([sys.executable, str(TOOL), "check", "--header", str(HEADER), "--library", str(library),
-                "--format", "elf"])
+                "--format", LIBRARY_FORMAT])
 
 
 def cell_export_count_check(work: Path, library: str, cc: str) -> str:
@@ -220,11 +225,18 @@ def cell_export_count_check(work: Path, library: str, cc: str) -> str:
         return "MISSING PREREQUISITE"
     verbs = sorted(scan(HEADER.read_text(encoding="utf-8")))
     ok = True
-    exact = build_so(work, "exact", verbs, False, cc)
-    r = check(exact) if exact else None
-    acc = r is not None and r.returncode == 0 and "SEMB_EXPORT_LIST_MISMATCH" not in r.stdout
-    ok &= acc
-    print(f"  must-accept (exactly the {len(verbs)} verbs): exit {r.returncode if r else '-'} ({acc})")
+    # The constructed lib<name>.so fixtures are ELF shared objects; on darwin
+    # they are skipped and only the build's own library is read (as macho).
+    fixtures = sys.platform != "darwin"
+    if fixtures:
+        exact = build_so(work, "exact", verbs, False, cc)
+        r = check(exact) if exact else None
+        acc = r is not None and r.returncode == 0 and "SEMB_EXPORT_LIST_MISMATCH" not in r.stdout
+        ok &= acc
+        print(f"  must-accept (exactly the {len(verbs)} verbs): exit {r.returncode if r else '-'} ({acc})")
+    else:
+        print("  [NOTE] darwin: the ELF .so must-accept/must-reject fixtures are skipped; the build's own "
+              "library is checked as macho")
 
     def refuses(so: Path | None, missing: list[str], extra: list[str], label: str) -> bool:
         if so is None:
@@ -239,10 +251,11 @@ def cell_export_count_check(work: Path, library: str, cc: str) -> str:
         print(f"  must-reject ({label}): exit {r.returncode}, names {named_missing} missing ({good}): {line[:160]}")
         return good
 
-    ok &= refuses(build_so(work, "hidden", verbs, True, cc), verbs, [], f"under-export, 0 of {len(verbs)}")
-    ok &= refuses(build_so(work, "minus", verbs[1:], False, cc), verbs[:1], [], f"{verbs[0]} missing")
-    leak = "semb_interim_encoder_open"
-    ok &= refuses(build_so(work, "extra", verbs + [leak], False, cc), [], [leak], f"{leak} exported")
+    if fixtures:
+        ok &= refuses(build_so(work, "hidden", verbs, True, cc), verbs, [], f"under-export, 0 of {len(verbs)}")
+        ok &= refuses(build_so(work, "minus", verbs[1:], False, cc), verbs[:1], [], f"{verbs[0]} missing")
+        leak = "semb_interim_encoder_open"
+        ok &= refuses(build_so(work, "extra", verbs + [leak], False, cc), [], [leak], f"{leak} exported")
     own = "not given"
     if library:
         r = check(Path(library))
@@ -256,6 +269,12 @@ def cell_export_count_check(work: Path, library: str, cc: str) -> str:
                      r'"\$\{Python3_EXECUTABLE\}"\s+"\$\{_semb_export_tool\}"\s+check\b', cm) is not None and \
         re.search(r'set\(_semb_export_tool\s+"\$\{CMAKE_SOURCE_DIR\}/tools/generate_export_list\.py"\)', cm) is not None
     ok &= step
+    if not fixtures:
+        status = "FAIL" if not ok else ("PASS" if library else "MISSING PREREQUISITE")
+        print(f"[{status}] EXPORT-COUNT-CHECK: darwin, ELF fixtures skipped; the build's own library read as "
+              f"{LIBRARY_FORMAT}: {own}; the root CMakeLists.txt runs the check after the shared library links "
+              f"({step})")
+        return status
     status = "PASS" if ok else "FAIL"
     print(f"[{status}] EXPORT-COUNT-CHECK: accepts exact equality and refuses SEMB_EXPORT_LIST_MISMATCH by name on "
           f"under-export, a missing verb and an extra name; the build's own libsemb.so: {own}; the root "

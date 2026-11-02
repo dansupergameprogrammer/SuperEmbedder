@@ -80,7 +80,8 @@ def install_manifest(prefix: Path) -> dict:
     files = [p for p in prefix.rglob("*") if p.is_file() or p.is_symlink()] if prefix.exists() else []
     rel = [p.relative_to(prefix).as_posix() for p in files]
     return {
-        "shared": [r for r in rel if re.search(r"(^|/)libsemb\.so(\.\d+)*$", r) or r.endswith("/semb.dll")],
+        "shared": [r for r in rel if re.search(r"(^|/)libsemb\.so(\.\d+)*$", r)
+                   or re.search(r"(^|/)libsemb(\.\d+)*\.dylib$", r) or r.endswith("/semb.dll")],
         "headers": sorted(r.split("/")[-1] for r in rel if r.startswith("include/")),
         "header_dirs": sorted({r.rsplit("/", 1)[0] for r in rel if r.startswith("include/")}),
         "config": [r for r in rel if r.endswith("cmake/superembedder/superembedderConfig.cmake")],
@@ -93,7 +94,7 @@ def install_manifest(prefix: Path) -> dict:
 def install_ok(m: dict) -> tuple[bool, str]:
     why = []
     if not m["shared"]:
-        why.append("no libsemb.so")
+        why.append("no libsemb.so (or libsemb*.dylib)")
     if set(m["headers"]) != PUBLIC_HEADERS or m["header_dirs"] != ["include/superembedder"]:
         why.append(f"headers {m['headers']} under {m['header_dirs']} (want exactly semb.h, version.h "
                    f"under include/superembedder)")

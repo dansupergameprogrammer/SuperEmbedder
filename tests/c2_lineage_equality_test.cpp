@@ -78,6 +78,12 @@
 
 #include "superslm/sha256.h"
 
+// The build's cell verdict and compiled-in descriptor (internal to the
+// library; this test links the static archive): used only to tell an
+// uncertified host -- whose fingerprint no committed live entry can carry --
+// from a certified toolchain, where the missing entry stays a FAIL.
+#include "superembedder/certification.h"
+
 namespace {
 
 int g_cells = 0;
@@ -297,6 +303,22 @@ semb_encoder Open(const Args& a) {
   return enc;
 }
 
+// True when this build is a certified member: the process's cell verdict
+// names a cell, or the compiled-in descriptor's toolchain is one a
+// docs/certified-builds.json cell names (so a certified toolchain on a host
+// whose tier no cell lists still FAILs a missing entry). `why` names what was
+// read either way.
+bool CertifiedMember(const std::string& list_path, std::string* why) {
+  namespace cert = semb::certification;
+  const std::string& cell = cert::ProcessVerdict().cell;
+  const std::string& toolchain = cert::ThisBuild().toolchain;
+  std::ifstream in(list_path, std::ios::binary);
+  const std::string list((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const bool listed_toolchain = !toolchain.empty() && list.find("\"toolchain\": \"" + toolchain + "\"") != std::string::npos;
+  *why = "cell=" + cell + " toolchain=\"" + toolchain + "\"" + (in ? "" : " (cannot read " + list_path + ")");
+  return cell != cert::kUncertifiedCell || listed_toolchain;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -393,6 +415,13 @@ int main(int argc, char** argv) {
   std::map<std::string, std::string> lineage_by_id;
   std::string lineage_why;
   const bool have_entry = ReadLineageTsv(lineage_path, &lineage_by_id, &lineage_why);
+  // A live entry is minted only for a certified member's fingerprint. A build
+  // that is neither a proven cell nor a certified toolchain (any tier) has no
+  // entry to compare against by construction: its absence is a MISSING
+  // PREREQUISITE of this host, never the red-first FAIL below.
+  std::string member_why;
+  const bool certified_member = CertifiedMember(a.store_root + "/../docs/certified-builds.json", &member_why);
+  const bool entry_prereq_missing = !have_entry && !certified_member;
   // RED-FIRST, BY NAME, and by DESIGN a FAIL rather than a MISSING
   // PREREQUISITE: unlike a real-artifact leg that is legitimately and
   // permanently optional, the epoch store's absence is the unimplemented
@@ -400,13 +429,19 @@ int main(int argc, char** argv) {
   // discipline) -- the founder's own job (sub-plan sec 4.3 "Founding
   // entry"), owed once this ticket's build round lands, not an
   // indefinitely-skippable precondition of this test.
-  Verdict(have_entry, "C2 lineage equality: a live entry exists under fingerprint " + fingerprint_hex,
-          have_entry ? lineage_path : lineage_why + " (epoch-store/ does not exist at 310c47d; this is the red-first state)");
+  if (entry_prereq_missing) {
+    Missing("C2 lineage equality: a live entry exists under fingerprint " + fingerprint_hex,
+            lineage_why + " -- this build is not a certified member (" + member_why + ")");
+  } else {
+    Verdict(have_entry, "C2 lineage equality: a live entry exists under fingerprint " + fingerprint_hex,
+            have_entry ? lineage_path : lineage_why + " (epoch-store/ does not exist at 310c47d; this is the red-first state)");
+  }
 
   // ---- C2 itself: per document, independent seam digest == the store's
   // own lineage.tsv row for the SAME document id. ----
   int c2_checked = 0, c2_mismatches = 0;
   for (const DocTokens& doc : docs) {
+    if (entry_prereq_missing) break;  // reported once above
     if (!have_entry) {
       Verdict(false, "C2 lineage equality: '" + doc.id + "'", "no live entry to compare against (red-first)");
       ++c2_mismatches;
@@ -453,6 +488,9 @@ int main(int argc, char** argv) {
       Verdict(false, "(cell 4) vectors.f32 rows equal semb_encode(text) bit for bit",
               "--corpus-jsonl was given but " + (jwhy.empty() ? std::string("carries no readable document (empty corpus)") : jwhy) +
               " -- an empty or unreadable corpus is a FAIL, not MISSING PREREQUISITE (S7, TE-174)");
+    } else if (entry_prereq_missing) {
+      Missing("(cell 4) vectors.f32 rows equal semb_encode(text) bit for bit",
+              "no live entry for an uncertified build (" + member_why + ")");
     } else if (!have_entry) {
       // RED-FIRST, BY DESIGN A FAIL: same reasoning as C2's own live-entry
       // check above -- the store's absence is the unimplemented feature,
@@ -533,5 +571,8 @@ int main(int argc, char** argv) {
   }
 
   std::printf("\nc2_lineage_equality_test: %d cell(s), %d failure(s)\n", g_cells, g_failures);
+  // ctest SKIP_RETURN_CODE 77: nothing failed, and the live entry this test
+  // exists to compare against is a MISSING PREREQUISITE of this host.
+  if (!g_failures && entry_prereq_missing) return 77;
   return g_failures ? 1 : 0;
 }

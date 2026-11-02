@@ -75,6 +75,7 @@ Exit codes: 0 every evaluated row PASS or MISSING PREREQUISITE; 1 any FAIL.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -187,6 +188,25 @@ def run_emit(repo_root: Path, emit_binary: str, model: str, tokenizer: str, dims
     return proc.returncode == 0, proc.stdout + proc.stderr, fields
 
 
+def certified_member(repo_root: Path, fields: Dict[str, str]) -> Tuple[bool, str]:
+    """True when the build under test is a certified member: epoch_store_emit's
+    cell verdict names a cell, or its descriptor's toolchain is one a
+    docs/certified-builds.json cell names (a certified toolchain at an unlisted
+    tier still FAILs a missing entry). A build reporting neither field is
+    treated as certified, so an older emit binary keeps the red-first FAIL."""
+    cell = fields.get("build_cell")
+    toolchain = fields.get("build_toolchain")
+    if cell is None and toolchain is None:
+        return True, "epoch_store_emit reported no build_cell/build_toolchain"
+    try:
+        builds = json.loads((repo_root / "docs" / "certified-builds.json").read_text(encoding="utf-8")).get("builds", [])
+    except (OSError, ValueError, AttributeError):
+        builds = []
+    listed = {b.get("toolchain") for b in builds if isinstance(b, dict)}
+    why = f"cell={cell} toolchain={toolchain!r}"
+    return (cell not in (None, "", "uncertified")) or (bool(toolchain) and toolchain in listed), why
+
+
 def check_leg(repo_root: Path, emit_binary: str, label: str, model: str, tokenizer: str, dims: int, tokens: str,
               terminator_id: int, corpus_jsonl: Optional[str], scratch_dir: Path) -> None:
     """Cell 1(b): the entry keyed by this leg's own fingerprint matches
@@ -203,6 +223,14 @@ def check_leg(repo_root: Path, emit_binary: str, label: str, model: str, tokeniz
     verdict(True, f"(1b, {label}) build under test's own fingerprint", fingerprint_hex)
 
     entry_dir = contract.entry_dir(repo_root, contract.LIVE_DIR, fingerprint_hex)
+    member, member_why = certified_member(repo_root, fields)
+    if not member and not entry_dir.is_dir():
+        # A live entry is minted only for a certified member's fingerprint: on
+        # an uncertified build its absence is this host's missing prerequisite,
+        # not the red-first FAIL below (which stands for certified toolchains).
+        missing(f"(1b, {label}) live/{fingerprint_hex}/ matches what the build emits now",
+                f"no live entry under {fingerprint_hex} and this build is not a certified member ({member_why})")
+        return
     for name, status in ((contract.VECTORS_FILE_NAME, contract.STATUS_BYTES_DIVERGED),
                           (contract.ROW_DIGEST_FILE_NAME, contract.STATUS_BYTES_DIVERGED),
                           (contract.LINEAGE_FILE_NAME, contract.STATUS_LINEAGE_DIVERGED)):

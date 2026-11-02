@@ -150,6 +150,15 @@ def _capture_env(script: str) -> dict:
     return env
 
 
+def _version_text(cxx: str, env: dict | None = None) -> str | None:
+    """The driver's `--version` stdout, stripped; None when it does not run."""
+    try:
+        return subprocess.run([cxx, "--version"], capture_output=True, text=True, env=env,
+                              timeout=60).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
 def _compiler_identity(cxx: str, env: dict | None = None) -> tuple[str, str] | None:
     """(family, version) of a GCC- or Clang-style driver, from `--version`; None when it does not run."""
     try:
@@ -192,13 +201,24 @@ def other_toolchains(args, me: Toolchain) -> tuple[list[Toolchain], str]:
     if WINDOWS:
         return [], "no --toolchains-file (SEMB_C51_TOOLCHAINS_FILE)"
     wanted = ("clang++-18", "clang++") if me.family == "gcc" else ("g++",)
+    own_version = _version_text(me.cxx)
+    same = []
     for name in wanted:
         path = shutil.which(name)
         ident = _compiler_identity(path) if path else None
         if ident:
+            # A candidate whose --version is the tree's own compiler's is that
+            # compiler under another name (AppleClang installs g++ as clang):
+            # it is not another toolchain.
+            if own_version and _version_text(path) == own_version:
+                same.append(path)
+                continue
             fam, ver = ident
             return [Toolchain(name=f"{fam}{ver}", cxx=path, cc=_cc_beside(path), family=fam,
                               env=dict(os.environ), member=False)], f"found {path} on PATH"
+    if same:
+        return [], (f"{same} on PATH report the same --version as the tree's own compiler {me.cxx}; "
+                    f"no other compiler among {wanted}")
     return [], f"none of {wanted} on PATH"
 
 

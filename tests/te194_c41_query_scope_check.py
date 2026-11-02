@@ -45,9 +45,10 @@ missing TU is this cell's own EXPECTED state today, not an authoring
 defect in this scan.
 
 Exit codes: 0 only after the object is found and the quarantined scan has
-completed. A missing object, candidate TU, or disassembler is infrastructure
-failure: quarantine protects a completed reading, never a runner that read
-nothing.
+completed. A missing object or candidate TU is infrastructure failure:
+quarantine protects a completed reading, never a runner that read nothing.
+A missing disassembler is MISSING PREREQUISITE (exit 0), as the base scan
+(c41_part4_object_code_scan.py) reports the same absence.
 """
 from __future__ import annotations
 
@@ -79,8 +80,11 @@ def main(argv: list) -> int:
           "invoking c41_part4_object_code_scan.py's own scan/classify machinery unchanged:")
 
     if not objdump or not Path(objdump).exists():
-        print("[FAIL] C41-part4-query-scope: no llvm-objdump found; the scan runner did not execute")
-        return 1
+        # The base scan's own convention (c41_part4_object_code_scan.py): an
+        # absent disassembler is a non-failing MISSING PREREQUISITE, exit 0.
+        print("[MISSING PREREQUISITE] C41-part4-query-scope: no llvm-objdump found (checked --objdump and PATH); "
+              "the scan runner did not execute")
+        return 0
 
     obj = c41.find_object(build_dir, QUERY_TU_CANDIDATE, c41.read_objects_list(args.objects_list))
     if obj is None:

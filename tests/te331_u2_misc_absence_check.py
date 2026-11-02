@@ -110,7 +110,7 @@ def cell_identity_file() -> str:
             or pc.get("rows") != rows:
         problems.append(f"proofCorpus path/sha256/rows {pc.get('path')}/{pc.get('sha256')}/{pc.get('rows')} != "
                         f"{PROOF_CORPUS_PATH}/{hashlib.sha256(corpus).hexdigest()}/{rows}")
-    interim = sorted((REPO_ROOT / "docs" / "certification" / "interim").glob("*/token-id-digest.txt"))
+    interim = sorted((REPO_ROOT / "docs" / "certification" / "1.0.0").glob("*/token-id-digest.txt"))
     interim_digests = {f.read_text(encoding="utf-8").strip() for f in interim}
     tid = pc.get("tokenIdDigest")
     if not isinstance(tid, str) or not tid.startswith(TOKEN_ID_DIGEST_PREFIX) or interim_digests != {tid}:
