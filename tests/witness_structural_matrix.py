@@ -922,13 +922,13 @@ def eval_c36_a():
     # `git clone` in the leg's own captured LastTest.log). D-SLM6191's
     # disposition: unwire the recipe from ctest; this leg checks that the
     # script EXISTS and that its own argparse/output CONTRACT matches what
-    # callers (this leg, README.md's own Pin bump procedure) depend on --
+    # callers (this leg, docs/PIN-BUMP.md) depend on --
     # never that the recipe still produces witness_sha_moved: true, which
     # is exactly what running it here would cost. The recipe itself runs at
     # every pin bump (README.md), not under ctest.
     name = ("C36(a) engine arithmetic change confined to a non-inline .cpp must refuse -- promoted "
              "script's EXISTENCE and CONTRACT only (D-SLM6191: the recipe itself is unwired from "
-             "ctest and runs at every pin bump instead, see README.md's own Pin bump procedure)")
+             "ctest and runs at every pin bump instead, see docs/PIN-BUMP.md)")
     script = _find_engine_perturbation_script()
     if script is None:
         leg_result(name, "a script under tools/ exists, its own --help documents --scratch-root, "
