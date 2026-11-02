@@ -112,10 +112,11 @@ jobs:
             build/semb/semb
           fi
 
-      - name: Run the mechanism-cell suite (excludes real-artifact legs)
+      - name: Run the mechanism-cell suite (excludes real-artifact legs and multi-GB mints)
         shell: bash
-        # -LE real_artifact excludes the cells tests/CMakeLists.txt labels
-        # real_artifact, which it does only when the real model is configured
-        # (-DSEMB_C12B_MODEL / -DSEMB_U1_TOKENIZER). CI configures neither, so
-        # the flag guards a build tree that is later pointed at the model.
-        run: ctest --test-dir build/semb --output-on-failure -LE real_artifact
+        # -LE excludes two labels from tests/CMakeLists.txt. real_artifact is applied
+        # only when the real model is configured (-DSEMB_C12B_MODEL / -DSEMB_U1_TOKENIZER);
+        # CI configures neither, so it guards a build tree later pointed at the model.
+        # multi_gb_mint marks the cells whose fixture mints need several GB of heap,
+        # more than a hosted runner holds; they run on the dev box.
+        run: ctest --test-dir build/semb --output-on-failure -LE "real_artifact|multi_gb_mint"

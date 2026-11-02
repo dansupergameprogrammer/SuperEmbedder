@@ -2071,6 +2071,10 @@ cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL semb_apply_ctest_order
 # time (the first mints build/_scratch/te222_c17_pair; the rest find it and
 # skip the mint).
 set_tests_properties(seam_hidden_capacity_test PROPERTIES RUN_SERIAL TRUE)
+# The same seven carry the multi_gb_mint label: hosted CI excludes them (-LE), because a hosted runner's memory
+# does not hold these mints (v1.0.0's tag run was killed in seam_hidden_capacity_test's). They run on the dev box.
+set_property(TEST seam_hidden_capacity_test superfaiss_roundtrip_synthetic te194_c17_sixth_leg_construction
+	te194_query_check te230_c4_zero_gain_check te230_semb_cli_check u2_6_package_check APPEND PROPERTY LABELS multi_gb_mint)
 set_tests_properties(
 	superfaiss_roundtrip_synthetic
 	te194_c17_sixth_leg_construction
