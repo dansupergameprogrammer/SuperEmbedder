@@ -40,6 +40,22 @@
 //   there the close-all check replaces it: every handle closes SEMB_OK, the
 //   context count reads 0, and the live count returns to its value before the
 //   handles opened.
+//   One decrease is graded as the engine's, not as a defect ("dropped(-d)"): k
+//   inside SslmGpuSeqPrefillPromptForG5Bridge (kEngineDropSite), status
+//   SEMB_ALLOCATION_FAILED, the handle not
+//   poisoned, no sequence release logged, 1 <= d <= kEngineDropMax, and the
+//   same handle's next encode (the follow-up above, which must still return
+//   its reference row) brings the live count back to exactly its value before
+//   the failed call. The engine's process-wide last-call timing snapshot
+//   (SuperSLM src/gpu/gpu_call_timing_snapshot.h: one shared block plus its
+//   per-dispatch vector, two host allocations) is dropped at every chunk open
+//   (PublishEmptyCallTimingNoThrow, superslm_gpu.cpp) and republished at the
+//   finish tail or, as far as the call got, on its catch path; a call failed
+//   between the two leaves it empty (-2) or holding a block with no
+//   per-dispatch times (-1), and the next successful call rebuilds it. It is a
+//   diagnostic, not state the handle owns. Any growth, a drop of more than
+//   kEngineDropMax, or a drop the next encode does not restore stays MOVED and
+//   FAILs.
 //   Every failed call: the try-lock from the test thread succeeds. The mutant
 //   the leg exists to kill -- a boundary holding the lock in its C-linkage
 //   frame -- fails it whatever the status.
@@ -66,7 +82,7 @@
 //   K <row> <K>
 //   BEGIN <row> <arm> k=<k>
 //   ARM <row> <arm> k=<k> where=<engine:<verb>|u3> status=<s> want=<w> trylock=<0|1> follow=<0|1>
-//       moved=<0|1|-> second=<0|1|-> live=<equal|close-all|MOVED> PASS|FAIL
+//       moved=<0|1|-> second=<0|1|-> live=<equal|dropped(-d)|close-all|MOVED> PASS|FAIL
 //   END <row> <arm> k=<k> (past K)
 #include <algorithm>
 #include <cstdint>
@@ -90,6 +106,14 @@ struct Args {
 } a;
 
 int32_t kUnavailable = -1;
+
+// The most host allocations a failed engine call may drop and the next encode
+// rebuild: the engine's last-call timing snapshot's block and its per-dispatch
+// vector (see (c)'s live count above).
+constexpr int64_t kEngineDropMax = 2;
+// The one engine call the drop is accepted in: the prompt prefill, which opens
+// the chunk that drops the snapshot. A decrease at any other site stays MOVED.
+constexpr const char* kEngineDropSite = "engine:SslmGpuSeqPrefillPromptForG5Bridge";
 
 struct Handle {
   semb_encoder enc = nullptr;
@@ -454,6 +478,7 @@ int main(int argc, char** argv) {
     // (c): the follow-ups.
     std::string moved = "-", second = "-";
     bool follow = false, second_ok = true, moved_ok = true;
+    int64_t live_follow = live_after;  // the live count right after the same handle's follow-up encode
     if (is_open) {
       bool h3_ok = true;
       if (s == SEMB_OK && h3.enc) {
@@ -468,6 +493,7 @@ int main(int argc, char** argv) {
     } else {
       const uint64_t c0 = semb_test_seam_gpu_call_count();
       const semb_status sf = h1.Encode(a.text);
+      live_follow = u3hook::Host().live.load();
       const bool mv = semb_test_seam_gpu_call_count() > c0;
       moved = mv ? "1" : "0";
       if (poisoned) {
@@ -505,8 +531,21 @@ int main(int argc, char** argv) {
         break;
       }
     } else {
-      live_ok = live_after == live_before;
-      live = live_ok ? "equal" : "MOVED(" + std::to_string(live_after - live_before) + ")";
+      const int64_t delta = live_after - live_before;
+      // The engine's drop (see (c)'s live count above): an engine site's
+      // allocation failure, at most kEngineDropMax, rebuilt exactly by the
+      // same handle's successful follow-up encode. `released` and `poisoned`
+      // are false on this branch.
+      const bool engine_drop = in_engine && where == kEngineDropSite && s == SEMB_ALLOCATION_FAILED && follow &&
+                               delta < 0 &&
+                               -delta <= kEngineDropMax && live_follow == live_before;
+      live_ok = delta == 0 || engine_drop;
+      live = delta == 0 ? "equal"
+             : engine_drop
+                 ? "dropped(" + std::to_string(delta) + ")"
+                 : "MOVED(" + std::to_string(delta) + (delta < 0 ? ",follow=" + std::to_string(live_follow - live_before)
+                                                                  : std::string()) +
+                       ")";
     }
     const bool ok = s == want && trylock && follow && second_ok && moved_ok && live_ok && on_plan;
     Line("ARM " + a.row + " " + a.arm + " k=" + u3::S(k) + (site ? " site=" + site->cls : std::string()) +

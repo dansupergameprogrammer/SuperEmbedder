@@ -1100,11 +1100,25 @@ int main(int argc, char** argv) {
   // (Claude/Poirot/2c6882c-te167-slice2-reconfirm.md sec 6 F-3): a second
   // thread polls a GUESSED cookie through semb_encoder_dims and
   // semb_wb_digest every 50ms for the whole duration of a real-candidate
-  // open (semb_encoder_open, max_concurrency=2, D-SLM6352: ~19.8s on the
-  // real artifact) -- zero observations expected; a third thread attempts
-  // semb_encoder_close on the same guessed cookie 10s into the call (the
-  // reviewer's own delay, chosen so the insert has already happened) --
-  // SEMB_INVALID_HANDLE expected, never a crash on a half-built handle.
+  // open (semb_encoder_open, max_concurrency=2) -- zero observations
+  // expected; a third thread attempts semb_encoder_close on the same
+  // guessed cookie while the open is held between the registry insert and
+  // `ready` -- SEMB_INVALID_HANDLE expected, never a crash on a half-built
+  // handle.
+  //
+  // SEQUENCED ON AN EVENT, NOT A DELAY. The reviewer's F-3 construction
+  // closed 10s into the call, a delay chosen against a ~19.8s open
+  // (D-SLM6352) so the insert had happened and `ready` had not. An open of
+  // 6.7s (SuperSLM 1.18.1) has returned its handle by 10s, so the guessed
+  // cookie was then the real one and the close succeeded. The closer now
+  // waits for the workspace seam's acquisition park (OnAcquired,
+  // engine_adapter_interim.cpp), armed for one park before the open: the
+  // open's first workspace acquisition is W-B's forward (ComputeWbDigest),
+  // which runs after the registry insert and before `ready` is stored
+  // (encoder.cpp, semb_encoder_open's HandleInsertGuard) -- nothing earlier
+  // in the open acquires a workspace. While the open is parked there the
+  // cookie is provably inserted and not ready, whatever the open's speed.
+  // The closer closes, then releases the park; the open then completes.
   //
   // PRODUCT-LEG ONLY (a.dims == 1024, this suite's own established
   // real-leg signal, tests/u1_workspace_seam_test.cpp's precedent): the
@@ -1136,10 +1150,21 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(50ms);
       }
     });
+    // The window's event: the open's first workspace acquisition (W-B's
+    // forward), after the insert and before `ready`. Armed for one park.
+    const bool park_armed = semb_test_seam_arm_park(1) == 1;
     std::atomic<int> close_during_open_status{-1000};
+    std::atomic<bool> closed_while_parked{false};
     std::thread closer([&] {
-      std::this_thread::sleep_for(10s);  // the reviewer's own F-3 delay -- the insert has happened by then
-      close_during_open_status.store(static_cast<int>(semb_encoder_close(guess)));
+      // A generous bound: the park comes before W-B's forward, early in the open.
+      if (park_armed && semb_test_seam_wait_parked(1, 600000) == 1 && semb_test_seam_parked() == 1) {
+        close_during_open_status.store(static_cast<int>(semb_encoder_close(guess)));
+        // Still parked after the close returned: the close ran inside the window.
+        closed_while_parked.store(semb_test_seam_parked() == 1);
+      }
+      // Always released, so the open completes. A park that has not happened
+      // yet will not happen: release clears the budget.
+      semb_test_seam_release();
     });
 
     semb_config c{};
@@ -1169,10 +1194,19 @@ int main(int argc, char** argv) {
             "unobservable before `ready` is published (D-SLM6390 item 4, N-1/D-SLM6383)",
             "observations=" + std::to_string(observations.load()));
 
+    Verdict(park_armed && closed_while_parked.load(),
+            "N-9(i) (setup) the close ran while the open was parked at its W-B forward's workspace "
+            "acquisition -- after the registry insert, before `ready`",
+            std::string("armed=") + (park_armed ? "1" : "0") +
+                " closed_while_parked=" + (closed_while_parked.load() ? "1" : "0"));
+
     Verdict(Is(static_cast<semb_status>(close_during_open_status.load()), "SEMB_INVALID_HANDLE"),
-            "N-9(i) semb_encoder_close on the guessed cookie, attempted 10s into the open, returns "
-            "SEMB_INVALID_HANDLE -- never a crash on a half-built handle",
-            Name(static_cast<semb_status>(close_during_open_status.load())));
+            "N-9(i) semb_encoder_close on the guessed cookie, attempted while the open is held between "
+            "its registry insert and `ready`, returns SEMB_INVALID_HANDLE -- never a crash on a "
+            "half-built handle",
+            close_during_open_status.load() == -1000
+                ? std::string("not attempted: the open never parked")
+                : std::string(Name(static_cast<semb_status>(close_during_open_status.load()))));
 
     if (Is(open_status, "SEMB_OK") && opened) {
       g_cookie_counter.fetch_add(1, std::memory_order_acq_rel);
