@@ -11,9 +11,6 @@
 #                                       msvc19.33-auto, the query session, the round trip and U2-4's readings,
 #   .\run_certify.ps1 -Gpu              the same, then GPU mode: the GPU binary's proof-corpus bake
 #                                       (U2-3 item 15) and every gpu-legs.json leg for this host's tier
-#   .\run_certify.ps1 -Host -Gpu        the work machine's first sitting: the above, plus host mode, which bakes
-#                                       the forced-SSE2 and forced-AVX2 members here and compares their rows
-#                                       with the dev-box receipts in receipts\
 #   .\run_certify.ps1 -Final -Members msvc19.33-auto,clangcl18.1.8-auto
 #                                       final mode: only the named members, under <cell id>\final\
 #   -Python <python.exe>                the Python that runs the round trip and the readings; default: the
